@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { applyHomeMigration, buildHomeMigrationInventory, migrateConfigObject } from "../src/migration.js";
+import { applyHomeMigration, buildHomeMigrationInventory, ensureRelaymuxHomeLayout, migrateConfigObject } from "../src/migration.js";
 
 function makeLayout() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "relaymux-migrate-"));
@@ -14,7 +14,6 @@ function makeLayout() {
     legacyConfigPath: path.join(root, "xdg", "relaymux", "config.json"),
     legacyStateDir: path.join(root, "state", "relaymux"),
     orchestratorImessageDir: path.join(root, "orchestrator-imessage"),
-    researchDir: path.join(root, "research"),
     agentmuxConfigPath: path.join(root, "agentmux", "config.json"),
     agentmuxStateDir: path.join(root, "agentmux-state"),
   };
@@ -38,31 +37,37 @@ test("migrateConfigObject rewrites only managed legacy relaymux paths", () => {
   assert.deepEqual(migrated.orchestrator.command, ["pi", "--session-dir", "/tmp/relaymux-home/state/sessions", "{prompt}"]);
 });
 
-test("migration inventory finds only relaymux-owned legacy state and scratch", () => {
+test("migration inventory finds only relaymux-owned legacy state", () => {
   const layout = makeLayout();
   fs.mkdirSync(path.dirname(layout.legacyConfigPath), { recursive: true });
   fs.writeFileSync(layout.legacyConfigPath, JSON.stringify({ stateDir: "~/.local/state/relaymux", imessage: {}, daemon: {} }));
   fs.mkdirSync(layout.legacyStateDir, { recursive: true });
   fs.writeFileSync(path.join(layout.legacyStateDir, "runs.jsonl"), "{}\n");
   fs.writeFileSync(path.join(layout.legacyStateDir, "webhook-token"), "do-not-print\n", { mode: 0o644 });
-  fs.mkdirSync(layout.researchDir, { recursive: true });
-  fs.writeFileSync(path.join(layout.researchDir, "personal-notes.md"), "leave me alone\n");
-  fs.mkdirSync(path.join(layout.researchDir, "orchestrator-prompts-abc"));
 
   const inventory = buildHomeMigrationInventory({
     homeDir: layout.home,
     legacyConfigPath: layout.legacyConfigPath,
     legacyStateDir: layout.legacyStateDir,
     orchestratorImessageDir: layout.orchestratorImessageDir,
-    researchDir: layout.researchDir,
     agentmuxConfigPath: layout.agentmuxConfigPath,
     agentmuxStateDir: layout.agentmuxStateDir,
   }, { RELAYMUX_HOME: layout.home });
 
   assert.ok(inventory.items.some((item) => item.operation === "migrate-config" && item.source === layout.legacyConfigPath));
   assert.ok(inventory.items.some((item) => item.source.endsWith("webhook-token") && item.secret));
-  assert.ok(inventory.items.some((item) => item.source.endsWith("orchestrator-prompts-abc")));
-  assert.ok(!inventory.items.some((item) => item.source.endsWith("personal-notes.md")));
+});
+
+test("ensureRelaymuxHomeLayout creates only state and logs directories", () => {
+  const layout = makeLayout();
+
+  ensureRelaymuxHomeLayout(layout.home);
+
+  assert.equal(fs.statSync(path.join(layout.home, "state")).isDirectory(), true);
+  assert.equal(fs.statSync(path.join(layout.home, "logs")).isDirectory(), true);
+  for (const name of ["tasks", "reports", "research", "personal", "implementation-notes"]) {
+    assert.equal(fs.existsSync(path.join(layout.home, name)), false, name);
+  }
 });
 
 test("applyHomeMigration copies config, state, logs, and keeps tokens private", () => {
@@ -86,7 +91,6 @@ test("applyHomeMigration copies config, state, logs, and keeps tokens private", 
     legacyConfigPath: layout.legacyConfigPath,
     legacyStateDir: layout.legacyStateDir,
     orchestratorImessageDir: layout.orchestratorImessageDir,
-    researchDir: layout.researchDir,
     agentmuxConfigPath: layout.agentmuxConfigPath,
     agentmuxStateDir: layout.agentmuxStateDir,
   }, env);

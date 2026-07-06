@@ -32,6 +32,8 @@ test("orchestrator requests include repo-managed best practices by default", () 
   assert.match(prompt, /Delegate by default when the work may take more than about 10 seconds/);
   assert.match(prompt, /repo code changes, PR fixes, deploy\/debugging work, deep research, CI loops, docs rewrites, long validation, and multi-file edits/);
   assert.match(prompt, /Do truly tiny replies and lightweight read-only inspection inline/);
+  assert.match(prompt, /durable relaymux records in the relaymux SQLite DB/);
+  assert.match(prompt, /file artifacts and implementation notes belong under state\//);
   assert.match(prompt, /Do not add --session or --session-mode/);
   assert.match(prompt, /inspect relaymux status and the tmux window\/pane output before claiming that it started/);
   assert.match(prompt, /belongs to an existing active subagent\/tab, send the instruction to that tab instead of launching a duplicate run/);
