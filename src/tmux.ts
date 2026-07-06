@@ -79,6 +79,62 @@ export function killWindowByName({ session, name }) {
   return result.status === 0;
 }
 
+export function resolveCurrentWindowTarget({ env = process.env }: any = {}) {
+  if (!env?.TMUX || !env?.TMUX_PANE) {
+    return {
+      ok: false,
+      error: "not inside tmux (TMUX/TMUX_PANE is not set)",
+    };
+  }
+
+  const result = runCommand("tmux", ["display-message", "-p", "-t", String(env.TMUX_PANE), "#S:#I"], { allowFailure: true, env });
+  if (result.status !== 0) {
+    return {
+      ok: false,
+      error: tmuxFailureMessage(result, "tmux display-message could not resolve the current window target"),
+    };
+  }
+
+  const target = result.stdout.trim().split("\n")[0]?.trim();
+  if (!target) {
+    return {
+      ok: false,
+      error: "tmux display-message did not return a current window target",
+    };
+  }
+
+  return { ok: true, target };
+}
+
+export function killCurrentWindow({ env = process.env }: any = {}) {
+  const resolved = resolveCurrentWindowTarget({ env });
+  if (!resolved.ok) {
+    return {
+      killed: false,
+      target: "",
+      error: resolved.error,
+    };
+  }
+
+  const result = runCommand("tmux", ["kill-window", "-t", resolved.target], { allowFailure: true, env });
+  if (result.status !== 0) {
+    return {
+      killed: false,
+      target: resolved.target,
+      error: tmuxFailureMessage(result, `tmux kill-window failed for ${resolved.target}`),
+    };
+  }
+
+  return { killed: true, target: resolved.target };
+}
+
+function tmuxFailureMessage(result, fallback) {
+  if (result.error?.message) return result.error.message;
+  const stderr = result.stderr?.trim();
+  if (stderr) return stderr;
+  return fallback;
+}
+
 export function selectLayout(target, layout = "tiled") {
   runCommand("tmux", ["select-layout", "-t", target, layout], { allowFailure: true });
 }

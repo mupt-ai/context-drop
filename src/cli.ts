@@ -907,7 +907,7 @@ Usage:
   relaymux schedule add --name <name> --prompt <text> --cron "0 9 * * *" [--reply-mode none|imessage|telegram] [--scheduler auto|launchd|cron]
   relaymux schedule list|remove [--name <name>]
   relaymux status [--json] [--session <name>]
-  relaymux notify [--run-id <id>] [--reply-mode imessage|telegram|none] [--message <text>]
+  relaymux notify [--run-id <id>] [--reply-mode imessage|telegram|none] [--message <text>] [--suicide]
   relaymux db path|init|status [--json]
   relaymux db schema
   relaymux migrate-home [--dry-run] [--apply] [--symlink]
@@ -966,6 +966,7 @@ Request/notify/status options:
   --from <name>              For notify: source/subagent name
   --idempotency-key <key>    For notify: suppress duplicate completion webhook retries
   --metadata-json <json>     For notify: optional metadata object
+  --suicide                  For notify: after success, close only the current tmux window
   --history                  For status: include old run records whose tmux tabs are gone
 
 DB options:
