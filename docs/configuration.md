@@ -2,18 +2,15 @@
 
 `relaymux init` writes a core config with no message adapters at `~/.relaymux/config.json`. The file is private by default and relaymux refuses to overwrite it unless you pass `--force`.
 
-relaymux stores private config, run records, prompts, logs, and local API token state under `~/.relaymux` by default:
+relaymux stores private config, the first-party SQLite database, runtime files, logs, and local API token state under `~/.relaymux` by default:
 
 ```text
 ~/.relaymux/
   AGENTS.md       # primary local orchestrator instructions when present
   config.json     # private config, written mode 0600
   relaymux.sqlite3 # first-party relaymux SQLite database
-  state/          # run records, prompts, scripts, schedules, daemon state, local API token
+  state/          # runtime files: prompts, scripts, schedules, daemon state, local API token
   logs/           # background service stdout/stderr logs
-  tasks/          # optional task scratch space
-  reports/        # optional reports
-  research/       # optional research notes
 ```
 
 ## SQLite Store
@@ -30,6 +27,8 @@ The first-party schema is managed by relaymux migrations and uses the `relaymux_
 | `relaymux_events` | Generic run/event records for first-party local state. |
 
 Use `relaymux db path`, `relaymux db init`, `relaymux db status`, and `relaymux db schema` to inspect or initialize the database. These commands use the system `sqlite3` CLI; relaymux does not install a native SQLite npm dependency.
+
+New durable first-party state should be added here with migrations, not as new top-level home directories. Temporary file artifacts belong under `state/`.
 
 Local extension or domain-specific tables can live in the same database, but relaymux only owns and migrates the `relaymux_` tables. Use a distinct table prefix for extension data.
 
@@ -82,7 +81,7 @@ An agent is a command template in `~/.relaymux/config.json`. If you configure `p
 
 The orchestrator is also a command, but it has a different job from an agent. The orchestrator handles inbound requests from `relaymux ask` or optional message adapters. Agents do delegated work launched with `relaymux launch`. The orchestrator receives incoming text plus relaymux instructions and prints a reply on stdout.
 
-relaymux includes a small built-in orchestration baseline by default: stay local-first, be concise, delegate work that may take more than about 10 seconds with `relaymux launch`, use the configured shared tmux session, prefer prompt files for longer delegated tasks, ask subagents to call `relaymux notify` with idempotency keys, keep quiet updates on `--reply-mode none`, use `relaymux schedule` for recurring prompts, inspect real tmux/repo/test state before claiming completion, and never put secrets in prompts, logs, PRs, or replies.
+relaymux includes a small built-in orchestration baseline by default: stay local-first, be concise, delegate work that may take more than about 10 seconds with `relaymux launch`, use the configured shared tmux session, prefer prompt files for longer delegated tasks, ask subagents to call `relaymux notify` with idempotency keys, keep quiet updates on `--reply-mode none`, use `relaymux schedule` for recurring prompts, keep durable relaymux records in SQLite and unavoidable file artifacts under `state/`, inspect real tmux/repo/test state before claiming completion, and never put secrets in prompts, logs, PRs, or replies.
 
 Inline handling is meant only for truly tiny replies, lightweight read-only inspection, or explicit user requests to stay inline. Repo code changes, PR fixes, debugging/deploy work, deep research, CI loops, docs rewrites, long validation, and multi-file edits should normally become visible relaymux subagent runs.
 

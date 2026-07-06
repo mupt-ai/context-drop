@@ -5,7 +5,7 @@ import path from "node:path";
 import { defaultConfigPath, legacyDefaultConfigPath, legacyDefaultStateDir } from "./config.js";
 import { defaultRelaymuxHome, expandPath, ensureDirectory } from "./paths.js";
 
-const HOME_SUBDIRS = ["state", "logs", "tasks", "reports", "research"];
+const HOME_SUBDIRS = ["state", "logs"];
 const STATE_RELAYMUX_NAMES = new Set([
   "daemon-state.json",
   "events.jsonl",
@@ -109,22 +109,6 @@ export function buildHomeMigrationInventory(options: any = {}, env = process.env
     addOrchestratorImessageDir({ root: orchestratorImessageDir, stateDir, logsDir, addItem });
   }
 
-  const researchDir = expandPath(options.researchDir || path.join(os.homedir(), "research"));
-  if (dirExists(researchDir) && !isInside(researchDir, homeDir)) {
-    for (const entry of fs.readdirSync(researchDir, { withFileTypes: true })) {
-      if (!/^orchestrator-prompts-/.test(entry.name)) continue;
-      const source = path.join(researchDir, entry.name);
-      addItem({
-        operation: "copy",
-        kind: entry.isDirectory() ? "dir" : "file",
-        source,
-        destination: path.join(homeDir, "research", entry.name),
-        reason: "relaymux/orchestrator prompt scratch under ~/research",
-        secret: false,
-      });
-    }
-  }
-
   const agentmuxConfig = expandPath(options.agentmuxConfigPath || path.join(os.homedir(), ".config", "agentmux", "config.json"));
   if (fileExists(agentmuxConfig) && !samePath(agentmuxConfig, targetConfigPath) && isRelaymuxConfigFile(agentmuxConfig)) {
     addItem({
@@ -161,7 +145,7 @@ export function formatHomeMigrationInventory(inventory, { applying = false, forc
   lines.push(`relaymux home: ${inventory.homeDir}`);
   lines.push(`target config: ${inventory.configPath}`);
   lines.push(`mode: ${applying ? "apply" : "dry-run/inventory"}${force ? "; force overwrite" : ""}${symlink ? "; replace migrated sources with symlinks" : ""}`);
-  lines.push("managed layout: config.json, state/, logs/, tasks/, reports/, research/");
+  lines.push("managed layout: config.json, relaymux.sqlite3, state/, logs/");
 
   if (!inventory.items.length) {
     lines.push("No relaymux-owned legacy files found in known locations.");

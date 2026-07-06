@@ -324,7 +324,6 @@ function handleMigrateHome(flags, configInfo, io) {
     legacyConfigPath: flags.legacyConfig,
     legacyStateDir: flags.legacyStateDir,
     orchestratorImessageDir: flags.orchestratorImessageDir,
-    researchDir: flags.researchDir,
     agentmuxConfigPath: flags.agentmuxConfig,
     agentmuxStateDir: flags.agentmuxStateDir,
     configPath: configInfo.exists ? configInfo.path : undefined,
@@ -986,7 +985,7 @@ Useful commands:
   tmux attach -t <session>       attach to the shared or named agent session
   tmux kill-session -t <session> kill only that tmux session; background daemon/adapters keep running
 
-Default home layout: ~/.relaymux/{config.json,relaymux.sqlite3,state,logs,tasks,reports,research}.
+Default home layout: ~/.relaymux/{config.json,relaymux.sqlite3,state,logs}.
 Config defaults to ${defaultConfigPath()} (legacy ~/.config/relaymux/config.json is still read if the new config does not exist).
 `;
 }
