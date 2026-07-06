@@ -35,3 +35,19 @@ test("parseArgv supports global flags before the command", () => {
     config: "relaymux.json",
   });
 });
+
+test("parseArgv recognizes notify --suicide as a boolean flag", () => {
+  const parsed = parseArgv([
+    "notify",
+    "--suicide",
+    "--reply-mode",
+    "imessage",
+    "--message",
+    "done",
+  ]);
+
+  assert.equal(parsed.command, "notify");
+  assert.equal(parsed.flags.suicide, true);
+  assert.equal(parsed.flags.replyMode, "imessage");
+  assert.equal(parsed.flags.message, "done");
+});

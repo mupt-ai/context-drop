@@ -39,6 +39,8 @@ relaymux notify \
 
 Use a stable `--idempotency-key` for one logical update so retries do not send duplicates. Keys are remembered in the daemon state under `~/.relaymux/state`.
 
+For disposable tmux worker tabs, add `--suicide` to `relaymux notify`. relaymux sends or queues the notification first, then closes only the current tmux window. If notification fails, or if the command is not running inside tmux, relaymux leaves windows alone.
+
 ## Reply Modes
 
 | `replyMode` | Behavior |

@@ -48,6 +48,8 @@ Manual notification test:
 relaymux notify --from test --reply-mode telegram --message "hello from relaymux"
 ```
 
+Disposable worker tabs can add `--suicide` to close only the current tmux window after the notification succeeds.
+
 ## tmux is the workspace
 
 relaymux uses one shared `tmux` session named `agents` by default. Each launched agent gets its own tmux window. This is the core idea: Telegram or iMessage starts and receives updates from work, but tmux keeps that work visible and recoverable locally.

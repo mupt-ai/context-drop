@@ -3,11 +3,20 @@ import fs from "node:fs";
 import { recordEvent } from "./state.js";
 import { renderTemplate } from "./command.js";
 import { runCommand } from "./process.js";
+import { killCurrentWindow } from "./tmux.js";
 import { formatHostForUrl, webhookConfig } from "./webhook.js";
 import { expandPath } from "./paths.js";
 import { isReplyMode, replyModesText } from "./reply-modes.js";
 
-export async function handleNotify({ flags, positionals, config, stateDir, io }) {
+export async function handleNotify({ flags, positionals, config, stateDir, io, tmux = defaultNotifyTmux(io) }) {
+  await performNotify({ flags, positionals, config, stateDir, io });
+
+  if (flags.suicide) {
+    await suicideCurrentTmuxWindow({ io, tmux });
+  }
+}
+
+async function performNotify({ flags, positionals, config, stateDir, io }) {
   const runId = flags.runId || process.env.RELAYMUX_RUN_ID;
   const message = flags.message || flags.text || positionals.join(" ");
   const replyMode = flags.replyMode;
@@ -46,6 +55,44 @@ export async function handleNotify({ flags, positionals, config, stateDir, io })
   }
 
   io.stdout.write(`${JSON.stringify(event)}\n`);
+}
+
+function defaultNotifyTmux(io) {
+  return {
+    killCurrentWindow: () => killCurrentWindow({ env: io.env || process.env }),
+  };
+}
+
+async function suicideCurrentTmuxWindow({ io, tmux }) {
+  await flushOutput(io);
+
+  try {
+    const result = await tmux.killCurrentWindow();
+    if (!result?.killed) {
+      const detail = result?.target
+        ? `failed to kill current tmux window ${result.target}: ${result.error || "unknown error"}`
+        : `could not resolve the current tmux window: ${result?.error || "unknown error"}`;
+      io.stderr.write(`relaymux notify: --suicide requested but ${detail}; leaving window open\n`);
+    }
+  } catch (error) {
+    io.stderr.write(`relaymux notify: --suicide requested but current tmux window cleanup failed: ${error.message}; leaving window open\n`);
+  }
+}
+
+async function flushOutput(io) {
+  await Promise.all([
+    flushWritable(io.stdout),
+    flushWritable(io.stderr),
+  ]);
+}
+
+function flushWritable(stream) {
+  if (!stream || typeof stream.write !== "function" || stream.write.length < 2) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    stream.write("", resolve);
+  });
 }
 
 export async function dispatchNotifiers(config, event, io) {
