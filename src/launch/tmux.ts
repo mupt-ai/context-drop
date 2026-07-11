@@ -1,4 +1,4 @@
-import { createAgentWindow, sendShellCommand, setWindowMetadata } from "../tmux.js";
+import { createCommandWindow, setWindowMetadata } from "../tmux.js";
 import { recordRun } from "../state.js";
 
 import { prepareLaunchArtifacts } from "./artifacts.js";
@@ -26,10 +26,11 @@ export function launchTmuxAgent(request) {
     request.io.stdout.write(`${artifacts.shellCommand}\n`);
   }
 
-  const target = createAgentWindow({
+  const target = createCommandWindow({
     session: sessionInfo.session,
     name: request.name,
     cwd: request.workdir,
+    shellCommand: artifacts.shellCommand,
   });
 
   const started = new Date().toISOString();
@@ -43,8 +44,6 @@ export function launchTmuxAgent(request) {
     relaymux_session_mode: sessionInfo.mode,
     relaymux_started: started,
   });
-  sendShellCommand(target.target, artifacts.shellCommand);
-
   recordRun(request.stateDir, {
     time: started,
     runId: request.runId,
