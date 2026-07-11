@@ -27,12 +27,6 @@ export function hasSession(session) {
   return result.status === 0;
 }
 
-export function createAgentWindow({ session, name, cwd }) {
-  validateSessionName(session);
-
-  return createWindow({ session, name, cwd });
-}
-
 export function createCommandWindow({ session, name, cwd, shellCommand }) {
   validateSessionName(session);
 
@@ -137,11 +131,6 @@ function tmuxFailureMessage(result, fallback) {
 
 export function selectLayout(target, layout = "tiled") {
   runCommand("tmux", ["select-layout", "-t", target, layout], { allowFailure: true });
-}
-
-export function sendShellCommand(target, shellCommand) {
-  runCommand("tmux", ["send-keys", "-t", target, "-l", shellCommand]);
-  runCommand("tmux", ["send-keys", "-t", target, "C-m"]);
 }
 
 export function setWindowMetadata(windowTarget, metadata) {
