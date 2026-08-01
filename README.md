@@ -5,10 +5,10 @@
 
 Coordinate local coding-agent CLIs in visible tmux windows, with an optional local daemon for requests, schedules, and iMessage or Telegram replies.
 
-relaymux keeps the work on your machine. It starts coding-agent CLIs (Pi, Codex, Claude, or any command you configure) as normal local processes, gives each run its own tmux window, and records run state in an SQLite store. The agents retain the same local permissions they would have if you launched them yourself.
+relaymux keeps the work on your machine. It starts coding-agent CLIs (Pi, Codex, Claude, or any command you configure) as normal local processes, gives each run its own tmux window, and records run state in a SQLite store. The agents retain the same local permissions they would have if you launched them yourself.
 
-Two concepts are worth distinguishing early:
-- **Agents** are the coding-agent CLIs (Pi, Codex, Claude) that relaymux launches into tmux windows to do work.
+Four concepts are worth distinguishing early:
+- **Agents** are the coding-agent CLIs ([Pi](https://github.com/earendil-works/pi-coding-agent), Codex, Claude) that relaymux launches into tmux windows to do work.
 - **The orchestrator** is a separate local CLI that handles free-form requests from `relaymux ask`, scheduled prompts, or message adapters. It decides whether to answer inline or delegate to an agent with `relaymux launch`. By default the orchestrator is Pi when Pi is installed on PATH; otherwise setup writes a placeholder orchestrator that prints a setup reminder.
 - **The daemon** is a background process (LaunchAgent on macOS, systemd user service on Linux) that serves the local API, polls adapters, and routes notifications. It is optional for direct launches.
 - **Message adapters** (Telegram, iMessage/SMS) are optional inbound/outbound bridges between the daemon and a remote chat.
@@ -46,6 +46,67 @@ tmux attach -t agents
 
 Detach from tmux with `Ctrl-b d`. Terminal disconnection does not stop the run; machine sleep, shutdown, or loss of power does.
 
+### Quick start with the Dari router
+
+[Dari](https://dari.dev) runs a hosted model router that dispatches requests to a backing model per request. If you have a Dari router endpoint, you can point the orchestrator at it instead of relying on a locally installed model CLI. The orchestrator still runs locally as `pi --print`; only the model traffic goes to your Dari endpoint.
+
+Register the Dari provider in Pi's model config, then set the orchestrator command to use it:
+
+1. Install [Pi](https://github.com/earendil-works/pi-coding-agent) and relaymux as above.
+
+2. Add a Dari provider to `~/.pi/agent/models.json` (the `!cat` prefix tells Pi to read the key from that file):
+
+```json
+{
+  "providers": {
+    "relaymux": {
+      "baseUrl": "https://routing.dari.dev/<your-router-id>",
+      "api": "openai-completions",
+      "apiKey": "!cat ~/.pi/agent/secrets/dari-router-key",
+      "compat": { "supportsStore": false, "supportsReasoningEffort": false, "sendSessionAffinityHeaders": true },
+      "models": [
+        {
+          "id": "dari/routing",
+          "name": "Dari Routing",
+          "reasoning": false,
+          "input": ["text", "image"],
+          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+          "contextWindow": 200000,
+          "maxTokens": 65536
+        }
+      ]
+    }
+  }
+}
+```
+
+The `compat` block tells Pi which OpenAI-style features the endpoint does not support; copy it verbatim for a Dari router.
+
+3. Run `relaymux setup`, then edit `~/.relaymux/config.json` so the orchestrator uses the Dari provider:
+
+```json
+"orchestrator": {
+  "command": [
+    "pi", "--print", "--no-context-files",
+    "--model", "relaymux/dari/routing",
+    "--session-dir", "~/.relaymux/state/orchestrator-sessions",
+    "--session-id", "orchestrator",
+    "{prompt}"
+  ]
+}
+```
+
+relaymux automatically splits the orchestrator's system prompt into a real `--system-prompt` file. By default the system prompt is relaymux's built-in orchestrator instructions plus runtime context; any orchestrator system prompt file under `~/.relaymux/` is included too. The `{prompt}` placeholder becomes just the new request text.
+
+4. Restart the daemon and ask:
+
+```bash
+relaymux restart-launch-agent
+relaymux ask "Open an agent in ~/code/my-app to inspect the failing tests."
+```
+
+The orchestrator routes through your Dari endpoint and decides whether to answer inline or `relaymux launch` a tmux agent. Without a message adapter configured, the reply comes back to your terminal; add Telegram or iMessage later to get replies on your phone.
+
 ## Why tmux?
 
 A relaymux run is an ordinary agent process in its own tmux **window**—the tab-like unit shown by tmux and many terminal apps. That gives you a workspace you can inspect and control with familiar terminal tools:
@@ -55,7 +116,7 @@ A relaymux run is an ordinary agent process in its own tmux **window**—the tab
 - keep multiple agents visible in one shared session;
 - reconnect after closing a terminal or losing an SSH connection.
 
-relaymux creates the `agents` session by default. If you reuse a name within a session, relaymux closes the previous window with that name before creating the new one. It never launches agents in hidden panes or a remote cloud worker.
+relaymux creates the `agents` session by default. If you reuse a name within a session, relaymux closes the previous window with that name (terminating any process still running in it) before creating the new one. It never launches agents in hidden panes or a remote cloud worker.
 
 ## Add a local orchestrator
 
@@ -109,7 +170,7 @@ Now send the bot a request such as:
 Open an agent in ~/code/my-app and inspect the failing tests.
 ```
 
-The local orchestrator decides whether to answer inline or launch a tmux worker. A delegated worker reports progress with `relaymux notify`; the orchestrator turns that update into the user-visible Telegram reply.
+The local orchestrator decides whether to answer inline or launch a tmux agent. A delegated agent reports progress with `relaymux notify`; the orchestrator turns that update into the user-visible Telegram reply.
 
 For iMessage/SMS setup on macOS, see [Message integrations](docs/integrations.md#imessagesms). It requires a separately installed and configured `imsg` command.
 
@@ -125,7 +186,7 @@ relaymux launch \
   --prompt-file ./fix-api-prompt.md
 ```
 
-A worker can send one idempotent completion update and close only its own disposable tmux window:
+A delegated agent can send one idempotent completion update and close only its own tmux window with `--suicide`:
 
 ```bash
 relaymux notify \
