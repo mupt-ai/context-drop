@@ -9,7 +9,13 @@ import { defaultRelaymuxHome, expandPath, ensureDirectory, pathExists, readTextF
 import { runCommandAsync } from "./async-process.js";
 
 export function buildIncomingOrchestratorPrompt({ config, configPath, incomingText }) {
-  return buildFullPrompt({
+  return joinPromptParts(
+    buildIncomingOrchestratorParts({ config, configPath, incomingText }),
+  );
+}
+
+export function buildIncomingOrchestratorParts({ config, configPath, incomingText }) {
+  return buildPromptParts({
     config,
     configPath,
     title: "Incoming iMessage/SMS adapter turn",
@@ -18,6 +24,10 @@ export function buildIncomingOrchestratorPrompt({ config, configPath, incomingTe
 }
 
 export function buildWebhookOrchestratorPrompt({ config, configPath, job }) {
+  return joinPromptParts(buildWebhookOrchestratorParts({ config, configPath, job }));
+}
+
+export function buildWebhookOrchestratorParts({ config, configPath, job }) {
   const metadataText = Object.keys(job.metadata || {}).length
     ? `\nMetadata JSON:\n${JSON.stringify(job.metadata, null, 2)}`
     : "";
@@ -26,7 +36,7 @@ export function buildWebhookOrchestratorPrompt({ config, configPath, job }) {
     ? "Reply mode is none: process this local update as context only. The daemon will not send a user-visible adapter message, so return a short internal acknowledgement."
     : `Reply mode is ${job.replyMode}: produce one concise user-visible adapter update. Avoid spam and mention only meaningful completion, failure, or blockers.`;
 
-  return buildFullPrompt({
+  return buildPromptParts({
     config,
     configPath,
     title: "Local subagent completion/update",
@@ -35,6 +45,10 @@ export function buildWebhookOrchestratorPrompt({ config, configPath, job }) {
 }
 
 export function buildTerminalOrchestratorPrompt({ config, configPath, job }) {
+  return joinPromptParts(buildTerminalOrchestratorParts({ config, configPath, job }));
+}
+
+export function buildTerminalOrchestratorParts({ config, configPath, job }) {
   const metadataText = Object.keys(job.metadata || {}).length
     ? `\nMetadata JSON:\n${JSON.stringify(job.metadata, null, 2)}`
     : "";
@@ -42,7 +56,7 @@ export function buildTerminalOrchestratorPrompt({ config, configPath, job }) {
     ? "Reply mode is none: do the requested work and return one concise terminal-visible status. The daemon will not send an adapter message."
     : `Reply mode is ${job.replyMode}: do the requested work, then produce one concise user-visible adapter status. The daemon will also return the same text to the terminal command.`;
 
-  return buildFullPrompt({
+  return buildPromptParts({
     config,
     configPath,
     title: "Terminal request",
@@ -50,7 +64,7 @@ export function buildTerminalOrchestratorPrompt({ config, configPath, job }) {
   });
 }
 
-export function buildFullPrompt({ config, configPath, title, body }) {
+export function buildPromptParts({ config, configPath, title, body }) {
   const daemon = config.daemon || {};
   const homeDir = resolveRelaymuxHome(config);
   const system = [
@@ -71,20 +85,36 @@ export function buildFullPrompt({ config, configPath, title, body }) {
     webhookUrl,
   });
 
-  return [
-    system,
-    runtime,
-    `# ${title}\n\n${body}`,
-  ].filter((part) => String(part || "").trim()).join("\n\n");
+  const systemPrompt = [system, runtime].filter((part) => String(part || "").trim()).join("\n\n");
+  const userPrompt = `# ${title}\n\n${body}`;
+  return { systemPrompt, userPrompt, full: [systemPrompt, userPrompt].filter((part) => String(part || "").trim()).join("\n\n") };
 }
 
-export async function runOrchestrator(config, { prompt, stateDir, configPath, requestId }) {
+export function buildFullPrompt({ config, configPath, title, body }) {
+  return joinPromptParts(buildPromptParts({ config, configPath, title, body }));
+}
+
+export function joinPromptParts({ full }) {
+  return full;
+}
+
+export async function runOrchestrator(config, { prompt, promptParts, stateDir, configPath, requestId }) {
   const orchestrator = config.orchestrator || {};
-  const promptFile = writeOrchestratorPrompt(stateDir, requestId || makeRequestId(), prompt);
+  const parts = promptParts
+    ? { systemPrompt: promptParts.systemPrompt || "", userPrompt: promptParts.userPrompt || prompt }
+    : { systemPrompt: "", userPrompt: prompt };
+  const id = requestId || makeRequestId();
+  const promptFile = writeOrchestratorPrompt(stateDir, id, parts.userPrompt, "");
+  const systemPromptFile = parts.systemPrompt
+    ? writeOrchestratorPrompt(stateDir, id, parts.systemPrompt, ".system")
+    : "";
+  const command = injectSystemPromptIntoCommand(orchestrator.command, systemPromptFile);
   const cwd = expandPath(orchestrator.cwd || "~");
-  const invocation = buildAgentInvocation("orchestrator", orchestrator, {
-    prompt,
+  const invocation = buildAgentInvocation("orchestrator", { ...orchestrator, command }, {
+    prompt: parts.userPrompt,
     promptFile,
+    systemPrompt: parts.systemPrompt,
+    systemPromptFile,
     configPath,
     session: config.session || "agents",
     tokenFile: resolveTokenFile(config),
@@ -93,7 +123,7 @@ export async function runOrchestrator(config, { prompt, stateDir, configPath, re
     repo: cwd,
     workdir: cwd,
     name: "orchestrator",
-    runId: requestId || "orchestrator",
+    runId: id,
   });
 
   const input = invocation.stdinFile ? fs.readFileSync(invocation.stdinFile, "utf8") : undefined;
@@ -122,10 +152,23 @@ export async function runOrchestrator(config, { prompt, stateDir, configPath, re
   return result.stdout.trim() || result.stderr.trim() || "Done.";
 }
 
-function writeOrchestratorPrompt(stateDir, requestId, prompt) {
+function injectSystemPromptIntoCommand(command, systemPromptFile) {
+  if (!systemPromptFile || !Array.isArray(command)) return command;
+  const alreadyHasSystemPrompt = command.some(
+    (part) => String(part).includes("{systemPrompt}") || String(part).includes("{systemPromptFile}"),
+  );
+  if (alreadyHasSystemPrompt) return command;
+  const promptIndex = command.findIndex((part) => String(part).includes("{prompt}"));
+  if (promptIndex === -1) return command;
+  const modified = [...command];
+  modified.splice(promptIndex, 0, "--system-prompt", "{systemPromptFile}");
+  return modified;
+}
+
+function writeOrchestratorPrompt(stateDir, requestId, prompt, suffix) {
   const dir = path.join(stateDir, "prompts");
   ensureDirectory(dir);
-  const file = path.join(dir, `${sanitizeFilePart(requestId)}.orchestrator.txt`);
+  const file = path.join(dir, `${sanitizeFilePart(requestId)}.orchestrator${suffix}.txt`);
   fs.writeFileSync(file, prompt);
   return file;
 }
