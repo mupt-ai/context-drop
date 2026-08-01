@@ -55,7 +55,7 @@ A relaymux run is an ordinary agent process in its own tmux **window**—the tab
 - keep multiple agents visible in one shared session;
 - reconnect after closing a terminal or losing an SSH connection.
 
-relaymux creates the `agents` session by default. If you reuse a name within a session, relaymux closes the previous window with that name before creating the new one. It never launches agents in hidden panes or a remote cloud worker.
+relaymux creates the `agents` session by default. A directly launched agent gets its own tmux window. Scheduled (recurring) launches reuse one persistent window per schedule: each tick replaces the previous run in the same schedule-named tab instead of accumulating a new tab, and superseded runs are marked reaped. Pass `--no-reuse-window` to opt out for a scheduled launch. relaymux never launches agents in hidden panes or a remote cloud worker.
 
 ## Add a local orchestrator
 
@@ -154,6 +154,8 @@ relaymux schedule remove --name weekday-status
 ```
 
 The expression uses five cron fields (minute, hour, day-of-month, month, day-of-week) in the system timezone. Pass `--scheduler launchd` or `--scheduler cron` to choose the backend explicitly; `auto` uses launchd on macOS and cron on Linux. Missed runs, overlapping runs, and machine-sleep gaps are not replayed.
+
+When a scheduled prompt delegates work via `relaymux launch`, that launch reuses one persistent tmux window per schedule (named after the schedule) instead of opening a new tab every tick. The previous tick's window is replaced and its run record is marked reaped, so `relaymux status` shows one current run per schedule. One-off `relaymux launch` calls keep unique-tab behavior. Pass `--no-reuse-window` to opt out for a single scheduled launch, or `--schedule-name <name>` to force persistent-reuse on an ad-hoc launch.
 
 ## Configuration and operations
 

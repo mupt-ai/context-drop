@@ -75,6 +75,15 @@ relaymux schedule remove --name weekday-checkin
 
 `--reply-mode none` keeps the request local and quiet. `--reply-mode imessage` or `--reply-mode telegram` sends the orchestrator's final reply through that configured adapter. Cron expressions use five fields: minute, hour, day of month, month, and day of week. When a schedule uses launchd, avoid expressions that constrain both day of month and day of week because launchd matches those fields differently from cron.
 
+### Persistent scheduled windows
+
+When a scheduled prompt delegates work via `relaymux launch`, the launch reuses one persistent tmux window per schedule (named after the schedule) instead of opening a new tab every tick. The daemon exposes the schedule name to the orchestrator through the `RELAYMUX_SCHEDULE_NAME` environment variable, which propagates to `relaymux launch` calls made while handling that tick. The previous tick's window is replaced and its run record is marked reaped, so `relaymux status` shows one current run per schedule rather than a growing pile of tabs.
+
+One-off `relaymux launch` calls keep unique-tab behavior. Control persistent reuse with:
+
+- `--schedule-name <name>` — force persistent-reuse on an ad-hoc launch keyed to this schedule name
+- `--reuse-window` / `--no-reuse-window` — explicitly enable or disable reuse for a launch (reuse is on by default when a schedule name is present)
+
 ## Direct HTTP
 
 For foreground debugging instead of the installed background service, run `relaymux daemon`. If you cannot use the CLI helper, you can call the local API directly:

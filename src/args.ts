@@ -18,6 +18,7 @@ const BOOLEAN_FLAGS = new Set([
   "once",
   "print-command",
   "restart",
+  "reuse-window",
   "suicide",
   "symlink",
   "telegram",

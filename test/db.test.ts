@@ -81,13 +81,14 @@ test("SQLite migrations are idempotent through the sqlite runner boundary", () =
   const first = initRelaymuxDb({ dbPath, sqlitePath: "/fake/sqlite3", runCommand: runner, env: { PATH: "" } });
   const second = initRelaymuxDb({ dbPath, sqlitePath: "/fake/sqlite3", runCommand: runner, env: { PATH: "" } });
 
-  assert.deepEqual(first.applied.map((migration) => migration.name), ["core_metadata", "runs_events"]);
+  assert.deepEqual(first.applied.map((migration) => migration.name), ["core_metadata", "runs_events", "runs_schedule"]);
   assert.deepEqual(second.applied, []);
-  assert.equal(first.currentVersion, 2);
-  assert.equal(second.currentVersion, 2);
+  assert.equal(first.currentVersion, 3);
+  assert.equal(second.currentVersion, 3);
   assert.ok(calls.some((sql) => sql.includes("CREATE TABLE IF NOT EXISTS relaymux_metadata")));
   assert.ok(calls.some((sql) => sql.includes("CREATE TABLE IF NOT EXISTS relaymux_runs")));
   assert.ok(calls.some((sql) => sql.includes("CREATE TABLE IF NOT EXISTS relaymux_events")));
+  assert.ok(calls.some((sql) => sql.includes("ALTER TABLE relaymux_runs ADD COLUMN schedule_name")));
   assert.ok(stdios.every((stdio) => Array.isArray(stdio) && stdio[0] === "pipe"));
 });
 
@@ -101,7 +102,7 @@ test("DB status reports pending migrations for an existing uninitialized DB", ()
 
   assert.equal(status.exists, true);
   assert.equal(status.initialized, false);
-  assert.deepEqual(status.pending.map((migration) => migration.name), ["core_metadata", "runs_events"]);
+  assert.deepEqual(status.pending.map((migration) => migration.name), ["core_metadata", "runs_events", "runs_schedule"]);
 });
 
 test("expected schema includes first-party relaymux tables", () => {

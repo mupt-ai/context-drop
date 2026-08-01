@@ -8,6 +8,13 @@ import { resolveStateDir, resolveTokenFile } from "./config.js";
 import { defaultRelaymuxHome, expandPath, ensureDirectory, pathExists, readTextFile } from "./paths.js";
 import { runCommandAsync } from "./async-process.js";
 
+export function scheduleNameFromSource(source) {
+  const value = String(source || "").trim();
+  if (!value.startsWith("schedule:")) return "";
+  const name = value.slice("schedule:".length).trim();
+  return /^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(name) ? name : "";
+}
+
 export function buildIncomingOrchestratorPrompt({ config, configPath, incomingText }) {
   return buildFullPrompt({
     config,
@@ -78,7 +85,7 @@ export function buildFullPrompt({ config, configPath, title, body }) {
   ].filter((part) => String(part || "").trim()).join("\n\n");
 }
 
-export async function runOrchestrator(config, { prompt, stateDir, configPath, requestId }) {
+export async function runOrchestrator(config, { prompt, stateDir, configPath, requestId, scheduleName = "" }) {
   const orchestrator = config.orchestrator || {};
   const promptFile = writeOrchestratorPrompt(stateDir, requestId || makeRequestId(), prompt);
   const cwd = expandPath(orchestrator.cwd || "~");
@@ -105,6 +112,13 @@ export async function runOrchestrator(config, { prompt, stateDir, configPath, re
   };
   if (config.tmux?.sessionMode === "shared") {
     env.RELAYMUX_SESSION = config.session || "agents";
+  }
+  // When a scheduled prompt triggers this orchestrator run, expose the stable
+  // schedule name so any `relaymux launch` invoked by the orchestrator can reuse
+  // one persistent tmux window per schedule instead of piling up a new tab per
+  // tick. The env inherits into the orchestrator's child processes.
+  if (scheduleName) {
+    env.RELAYMUX_SCHEDULE_NAME = scheduleName;
   }
 
   const result = await runCommandAsync(invocation.argv[0], invocation.argv.slice(1), {

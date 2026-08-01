@@ -52,6 +52,15 @@ export const RELAYMUX_DB_MIGRATIONS = [
       "CREATE INDEX IF NOT EXISTS relaymux_events_time_idx ON relaymux_events(time)",
     ],
   },
+  {
+    version: 3,
+    name: "runs_schedule",
+    statements: [
+      "ALTER TABLE relaymux_runs ADD COLUMN schedule_name TEXT",
+      "CREATE INDEX IF NOT EXISTS relaymux_runs_schedule_name_idx ON relaymux_runs(schedule_name)",
+      "ALTER TABLE relaymux_events ADD COLUMN schedule_name TEXT",
+    ],
+  },
 ];
 
 export function relaymuxDbPath(env = process.env) {
@@ -249,6 +258,133 @@ function expectedVersion() {
 
 function escapeSql(value) {
   return String(value).replace(/'/g, "''");
+}
+
+function sqlValue(value) {
+  return value === undefined || value === null ? "NULL" : `'${escapeSql(String(value))}'`;
+}
+
+function sqlJson(value) {
+  return sqlValue(JSON.stringify(value ?? {}));
+}
+
+// Resolve a usable sqlite runner + path for state mirroring. Returns null when
+// sqlite3 is missing or the DB has not been initialized, so callers can no-op
+// gracefully without failing launch/status.
+export function resolveStateDb({ dbPath, env = process.env, sqlitePath, runCommand: runner }: { dbPath?: string; env?: any; sqlitePath?: string; runCommand?: any } = {}) {
+  const resolvedDb = dbPath || relaymuxDbPath(env);
+  const resolvedSqlite = sqlitePath || findSqliteCli(env);
+  if (!resolvedSqlite || !fs.existsSync(resolvedDb)) return null;
+  const status = relaymuxDbStatus({ dbPath: resolvedDb, sqlitePath: resolvedSqlite, runCommand: runner, env });
+  if (!status.initialized || status.pending.length > 0) return null;
+  return { dbPath: resolvedDb, sqlitePath: resolvedSqlite, runner: runner || runCommand };
+}
+
+export function upsertRunInDb(handle, run) {
+  if (!handle) return false;
+  const payload = { ...run };
+  delete payload.runId;
+  const sql = [
+    ".bail on",
+    "BEGIN IMMEDIATE;",
+    `INSERT INTO relaymux_runs (
+  run_id, started_at, agent, name, session, session_mode, session_source,
+  target, window_target, repo, workdir, prompt_file, script_file, command,
+  schedule_name, payload_json
+) VALUES (
+  ${sqlValue(run.runId)},
+  ${sqlValue(run.time)},
+  ${sqlValue(run.agent)},
+  ${sqlValue(run.name)},
+  ${sqlValue(run.session)},
+  ${sqlValue(run.sessionMode)},
+  ${sqlValue(run.sessionSource)},
+  ${sqlValue(run.target)},
+  ${sqlValue(run.windowTarget)},
+  ${sqlValue(run.repo)},
+  ${sqlValue(run.workdir)},
+  ${sqlValue(run.promptFile)},
+  ${sqlValue(run.scriptFile)},
+  ${sqlValue(run.command)},
+  ${sqlValue(run.scheduleName)},
+  ${sqlJson(payload)}
+)
+ON CONFLICT(run_id) DO UPDATE SET
+  started_at = excluded.started_at,
+  agent = excluded.agent,
+  name = excluded.name,
+  session = excluded.session,
+  session_mode = excluded.session_mode,
+  session_source = excluded.session_source,
+  target = excluded.target,
+  window_target = excluded.window_target,
+  repo = excluded.repo,
+  workdir = excluded.workdir,
+  prompt_file = excluded.prompt_file,
+  script_file = excluded.script_file,
+  command = excluded.command,
+  schedule_name = excluded.schedule_name,
+  payload_json = excluded.payload_json;`,
+    "COMMIT;",
+  ].join("\n");
+  runSqlite(handle.sqlitePath, handle.dbPath, sql, { runner: handle.runner, env: process.env });
+  return true;
+}
+
+export function insertEventInDb(handle, event) {
+  if (!handle) return false;
+  const payload = { ...event };
+  delete payload.runId;
+  delete payload.event;
+  delete payload.time;
+  delete payload.message;
+  delete payload.exitCode;
+  delete payload.scheduleName;
+  const sql = [
+    ".bail on",
+    "BEGIN IMMEDIATE;",
+    `INSERT INTO relaymux_events (
+  run_id, time, event, message, exit_code, schedule_name, payload_json
+) VALUES (
+  ${sqlValue(event.runId)},
+  ${sqlValue(event.time)},
+  ${sqlValue(event.event)},
+  ${sqlValue(event.message)},
+  ${event.exitCode === undefined ? "NULL" : Number(event.exitCode)},
+  ${sqlValue(event.scheduleName)},
+  ${sqlJson(payload)}
+);`,
+    "COMMIT;",
+  ].join("\n");
+  runSqlite(handle.sqlitePath, handle.dbPath, sql, { runner: handle.runner, env: process.env });
+  return true;
+}
+
+// Reap prior schedule runs directly in SQLite when the DB is available. Returns
+// the reaped run ids so the caller can also mirror them into JSONL.
+export function reapScheduleRunsInDb(handle, scheduleName, { exceptRunId, time = new Date().toISOString() }: { exceptRunId?: string; time?: string } = {}) {
+  if (!handle || !scheduleName) return [];
+  const prior = query(handle.sqlitePath, handle.dbPath, [
+    ".mode tabs",
+    `SELECT run_id FROM relaymux_runs WHERE schedule_name = '${escapeSql(scheduleName)}'`,
+    exceptRunId ? ` AND run_id <> '${escapeSql(exceptRunId)}'` : "",
+    ";",
+  ].join(""), { runner: handle.runner, env: process.env });
+  const runIds = prior.split("\n").map((line) => line.trim()).filter(Boolean);
+  const reaped = [];
+  for (const runId of runIds) {
+    const event = {
+      time,
+      runId,
+      event: "reaped",
+      message: "superseded by schedule relaunch",
+      reason: "schedule-reuse",
+      scheduleName,
+    };
+    insertEventInDb(handle, event);
+    reaped.push(event);
+  }
+  return reaped;
 }
 
 function findExecutable(command, env) {

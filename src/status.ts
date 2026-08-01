@@ -110,11 +110,14 @@ function daemonStatus(config, configPath, env = process.env, platform = process.
 
 function statusRow(run: StatusRun, window: StatusRun | undefined, latestEvent: StatusEvent | undefined) {
   const completed = latestEvent?.event === "completed";
+  const reaped = latestEvent?.event === "reaped";
   const state = completed
     ? `completed:${latestEvent.exitCode ?? ""}`
-    : window
-      ? "running"
-      : "window-missing";
+    : reaped
+      ? "reaped"
+      : window
+        ? "running"
+        : "window-missing";
   const target = window?.target || run.windowTarget || run.target || "";
 
   return {

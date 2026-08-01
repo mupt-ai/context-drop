@@ -15,7 +15,7 @@ import {
   timedStage,
 } from "./daemon-jobs.js";
 import { createCompletionWebhookServer } from "./webhook.js";
-import { buildIncomingOrchestratorPrompt, buildTerminalOrchestratorPrompt, buildWebhookOrchestratorPrompt, runOrchestrator } from "./orchestrator.js";
+import { buildIncomingOrchestratorPrompt, buildTerminalOrchestratorPrompt, buildWebhookOrchestratorPrompt, runOrchestrator, scheduleNameFromSource } from "./orchestrator.js";
 import { formatIncomingForPrompt, isImessageReceiveEnabled, isIncomingUserMessage, receiveMessages, sendMessage } from "./message-io.js";
 import { isTelegramReceiveEnabled, receiveTelegramMessages, sendTelegramMessage } from "./telegram.js";
 import { ensureDirectory } from "./paths.js";
@@ -165,7 +165,8 @@ export async function runDaemon({ flags, configInfo, stateDir, io = defaultIo() 
     let status = "ok";
     try {
       const prompt = buildTerminalOrchestratorPrompt({ config, configPath: configInfo.path, job });
-      const reply = await timedStage(metrics, "orchestratorMs", () => runOrchestrator(config, { prompt, stateDir, configPath: configInfo.path, requestId: job.requestId }));
+      const scheduleName = scheduleNameFromSource(job.source);
+      const reply = await timedStage(metrics, "orchestratorMs", () => runOrchestrator(config, { prompt, stateDir, configPath: configInfo.path, requestId: job.requestId, scheduleName }));
       if (job.replyMode === "none") {
         log(`processed terminal request ${job.requestId}: ${oneLine(reply).slice(0, 240)}`);
       } else {

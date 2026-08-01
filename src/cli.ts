@@ -22,7 +22,7 @@ import { createCommandWindow, killWindowByName, listAgentWindows, setWindowMetad
 import { createWorktree, resolveRepoAndWorkdir } from "./worktree.js";
 import { isReplyMode, replyModesText } from "./reply-modes.js";
 import { resolveAgentConfig } from "./launch/agents.js";
-import { makeRunId, sanitizeLaunchName } from "./launch/names.js";
+import { makeRunId, sanitizeLaunchName, sanitizeScheduleName } from "./launch/names.js";
 import { resolveLaunchNotification } from "./launch/notifications.js";
 import { launchTmuxAgent } from "./launch/tmux.js";
 import { handleStatus } from "./status.js";
@@ -458,6 +458,9 @@ function handleLaunch(flags, configInfo, stateDir, io) {
   const holdOnExit = flags.hold ?? config.holdOnExit ?? false;
   const launchNotification = resolveLaunchNotification(flags, config);
 
+  const scheduleName = resolveScheduleName(flags, io.env);
+  const reuseWindow = flags.reuseWindow;
+
   if (!flags.dryRun && worktreeAddArgs) {
     createWorktree(worktreeAddArgs);
   }
@@ -478,6 +481,8 @@ function handleLaunch(flags, configInfo, stateDir, io) {
     quoteArgv,
     repo,
     runId,
+    scheduleName,
+    reuseWindow,
     session: sessionInfo.session,
     sessionInfo,
     stateDir,
@@ -813,6 +818,21 @@ function resolveRequestText(flags, positionals) {
   throw new Error("Missing request text. Use `relaymux ask <text>` or --message <text>.");
 }
 
+function resolveScheduleName(flags, env = process.env) {
+  if (flags.scheduleName !== undefined) {
+    return sanitizeScheduleName(flags.scheduleName);
+  }
+  const fromEnv = String(env.RELAYMUX_SCHEDULE_NAME || "").trim();
+  if (fromEnv) {
+    try {
+      return sanitizeScheduleName(fromEnv);
+    } catch {
+      return "";
+    }
+  }
+  return "";
+}
+
 function parseMetadataJson(raw) {
   try {
     const parsed = JSON.parse(String(raw));
@@ -951,6 +971,9 @@ Launch options:
   --notify-reply-mode <mode> imessage/telegram sends adapter updates; none records quiet completion context
   --notify-tail-lines <n>    Recent tmux output lines to include for nonzero auto notifications
   --notify-tail-bytes <n>    Max bytes of recent tmux output in nonzero auto notifications
+  --schedule-name <name>     Reuse one persistent tmux window for this schedule (scheduled launches default to reuse via RELAYMUX_SCHEDULE_NAME)
+  --reuse-window             Force persistent-window reuse for this launch (default on when --schedule-name/RELAYMUX_SCHEDULE_NAME is set)
+  --no-reuse-window          Opt out of persistent-window reuse for a scheduled launch
 
 Background service options:
   --no-load                  Write the service file without loading/starting it

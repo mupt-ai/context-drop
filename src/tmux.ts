@@ -14,6 +14,7 @@ const WINDOW_FORMAT = [
   "#{@relaymux_repo}",
   "#{@relaymux_name}",
   "#{@relaymux_started}",
+  "#{@relaymux_schedule}",
 ].join(WINDOW_FIELD_SEPARATOR);
 
 export function validateSessionName(session) {
@@ -69,7 +70,11 @@ function createWindow({ session, name, cwd, shellCommand = undefined }) {
 
 export function killWindowByName({ session, name }) {
   validateSessionName(session);
-  const result = runCommand("tmux", ["kill-window", "-t", `${session}:${name}`], { allowFailure: true });
+  return killWindowByTarget(`${session}:${name}`);
+}
+
+export function killWindowByTarget(target) {
+  const result = runCommand("tmux", ["kill-window", "-t", String(target)], { allowFailure: true });
   return result.status === 0;
 }
 
@@ -169,6 +174,7 @@ function parseWindowLine(line) {
     repo,
     name,
     started,
+    scheduleName,
   ] = line.split(WINDOW_FIELD_SEPARATOR);
 
   return {
@@ -184,6 +190,7 @@ function parseWindowLine(line) {
     repo,
     name,
     started,
+    scheduleName,
     target: `${session}:${windowIndex}`,
   };
 }
