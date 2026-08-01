@@ -15,7 +15,7 @@ import {
   timedStage,
 } from "./daemon-jobs.js";
 import { createCompletionWebhookServer } from "./webhook.js";
-import { buildIncomingOrchestratorPrompt, buildTerminalOrchestratorPrompt, buildWebhookOrchestratorPrompt, runOrchestrator } from "./orchestrator.js";
+import { buildIncomingOrchestratorParts, buildIncomingOrchestratorPrompt, buildTerminalOrchestratorParts, buildTerminalOrchestratorPrompt, buildWebhookOrchestratorParts, buildWebhookOrchestratorPrompt, joinPromptParts, runOrchestrator } from "./orchestrator.js";
 import { formatIncomingForPrompt, isImessageReceiveEnabled, isIncomingUserMessage, receiveMessages, sendMessage } from "./message-io.js";
 import { isTelegramReceiveEnabled, receiveTelegramMessages, sendTelegramMessage } from "./telegram.js";
 import { ensureDirectory } from "./paths.js";
@@ -105,12 +105,13 @@ export async function runDaemon({ flags, configInfo, stateDir, io = defaultIo() 
     };
 
     try {
-      const prompt = buildIncomingOrchestratorPrompt({
+      const parts = buildIncomingOrchestratorParts({
         config,
         configPath: configInfo.path,
         incomingText: formatIncomingForPrompt(job.messages, job.adapter),
       });
-      const reply = await timedStage(metrics, "orchestratorMs", () => runOrchestrator(config, { prompt, stateDir, configPath: configInfo.path, requestId: job.requestId }));
+      const prompt = joinPromptParts(parts);
+      const reply = await timedStage(metrics, "orchestratorMs", () => runOrchestrator(config, { prompt, promptParts: parts, stateDir, configPath: configInfo.path, requestId: job.requestId }));
       await timedStage(metrics, "adapterSendMs", () => sendReply(config, job.replyMode || "imessage", reply, io));
       markSeen();
       log(`replied to ${job.ids.join(",")} via ${job.replyMode || "imessage"}`);
@@ -135,8 +136,9 @@ export async function runDaemon({ flags, configInfo, stateDir, io = defaultIo() 
     log(formatLatencyLogLine("job_start", startLatencyFields(metrics)));
     let status = "ok";
     try {
-      const prompt = buildWebhookOrchestratorPrompt({ config, configPath: configInfo.path, job });
-      const reply = await timedStage(metrics, "orchestratorMs", () => runOrchestrator(config, { prompt, stateDir, configPath: configInfo.path, requestId: job.requestId }));
+      const parts = buildWebhookOrchestratorParts({ config, configPath: configInfo.path, job });
+      const prompt = joinPromptParts(parts);
+      const reply = await timedStage(metrics, "orchestratorMs", () => runOrchestrator(config, { prompt, promptParts: parts, stateDir, configPath: configInfo.path, requestId: job.requestId }));
       if (job.replyMode === "none") {
         log(`processed quiet completion ${job.requestId}: ${oneLine(reply).slice(0, 240)}`);
       } else {
@@ -164,8 +166,9 @@ export async function runDaemon({ flags, configInfo, stateDir, io = defaultIo() 
     log(formatLatencyLogLine("job_start", startLatencyFields(metrics)));
     let status = "ok";
     try {
-      const prompt = buildTerminalOrchestratorPrompt({ config, configPath: configInfo.path, job });
-      const reply = await timedStage(metrics, "orchestratorMs", () => runOrchestrator(config, { prompt, stateDir, configPath: configInfo.path, requestId: job.requestId }));
+      const parts = buildTerminalOrchestratorParts({ config, configPath: configInfo.path, job });
+      const prompt = joinPromptParts(parts);
+      const reply = await timedStage(metrics, "orchestratorMs", () => runOrchestrator(config, { prompt, promptParts: parts, stateDir, configPath: configInfo.path, requestId: job.requestId }));
       if (job.replyMode === "none") {
         log(`processed terminal request ${job.requestId}: ${oneLine(reply).slice(0, 240)}`);
       } else {

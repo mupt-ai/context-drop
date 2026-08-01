@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { defaultConfig } from "../src/config.js";
-import { buildIncomingOrchestratorPrompt, buildTerminalOrchestratorPrompt } from "../src/orchestrator.js";
+import { buildIncomingOrchestratorPrompt, buildTerminalOrchestratorParts, buildTerminalOrchestratorPrompt, joinPromptParts, runOrchestrator } from "../src/orchestrator.js";
 
 function terminalJob(overrides: Record<string, any> = {}) {
   return {
@@ -163,4 +163,91 @@ test("orchestrator default system prompt can be disabled", () => {
   assert.match(prompt, /Only this local prompt/);
   assert.match(prompt, /Runtime context:/);
   assert.match(prompt, /# Terminal request/);
+});
+
+test("buildPromptParts splits system prompt from user turn", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "relaymux-orchestrator-parts-"));
+  const config = defaultConfig({ RELAYMUX_HOME: path.join(dir, "home") });
+  const parts = buildTerminalOrchestratorParts({
+    config,
+    configPath: path.join(dir, "config.json"),
+    job: terminalJob(),
+  });
+
+  assert.match(parts.systemPrompt, /You are a local relaymux orchestrator/);
+  assert.match(parts.systemPrompt, /Runtime context:/);
+  assert.doesNotMatch(parts.systemPrompt, /# Terminal request/);
+  assert.match(parts.userPrompt, /# Terminal request/);
+  assert.doesNotMatch(parts.userPrompt, /You are a local relaymux orchestrator/);
+  assert.equal(
+    joinPromptParts(parts),
+    buildTerminalOrchestratorPrompt({ config, configPath: path.join(dir, "config.json"), job: terminalJob() }),
+  );
+});
+
+test("runOrchestrator writes a separate system prompt file when command uses {systemPromptFile}", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "relaymux-orchestrator-run-"));
+  const stateDir = path.join(dir, "state");
+  fs.mkdirSync(stateDir, { recursive: true });
+  const config = defaultConfig({ RELAYMUX_HOME: path.join(dir, "home") });
+  config.orchestrator = {
+    ...config.orchestrator,
+    cwd: dir,
+    command: ["/bin/echo", "--system-prompt", "{systemPromptFile}", "{prompt}"],
+    promptMode: "arg",
+  };
+  const parts = buildTerminalOrchestratorParts({
+    config,
+    configPath: path.join(dir, "config.json"),
+    job: terminalJob(),
+  });
+
+  await runOrchestrator(config, {
+    prompt: joinPromptParts(parts),
+    promptParts: parts,
+    stateDir,
+    configPath: path.join(dir, "config.json"),
+    requestId: "req-split",
+  });
+
+  const promptFiles = fs.readdirSync(path.join(stateDir, "prompts"));
+  assert.ok(promptFiles.includes("req-split.orchestrator.txt"), "user prompt file written");
+  assert.ok(promptFiles.includes("req-split.orchestrator.system.txt"), "system prompt file written");
+  const systemFile = fs.readFileSync(path.join(stateDir, "prompts", "req-split.orchestrator.system.txt"), "utf8");
+  const userFile = fs.readFileSync(path.join(stateDir, "prompts", "req-split.orchestrator.txt"), "utf8");
+  assert.match(systemFile, /You are a local relaymux orchestrator/);
+  assert.match(userFile, /# Terminal request/);
+  assert.doesNotMatch(userFile, /You are a local relaymux orchestrator/);
+});
+
+test("runOrchestrator automatically injects system prompt file into any command with {prompt}", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "relaymux-orchestrator-auto-"));
+  const stateDir = path.join(dir, "state");
+  fs.mkdirSync(stateDir, { recursive: true });
+  const config = defaultConfig({ RELAYMUX_HOME: path.join(dir, "home") });
+  config.orchestrator = {
+    ...config.orchestrator,
+    cwd: dir,
+    command: ["/bin/echo", "{prompt}"],
+    promptMode: "arg",
+  };
+  const parts = buildTerminalOrchestratorParts({
+    config,
+    configPath: path.join(dir, "config.json"),
+    job: terminalJob(),
+  });
+
+  await runOrchestrator(config, {
+    prompt: joinPromptParts(parts),
+    promptParts: parts,
+    stateDir,
+    configPath: path.join(dir, "config.json"),
+    requestId: "req-auto",
+  });
+
+  const promptFiles = fs.readdirSync(path.join(stateDir, "prompts"));
+  assert.ok(promptFiles.some((f) => f.includes(".system")), "system prompt file written automatically");
+  const userFile = fs.readFileSync(path.join(stateDir, "prompts", "req-auto.orchestrator.txt"), "utf8");
+  assert.doesNotMatch(userFile, /You are a local relaymux orchestrator/);
+  assert.match(userFile, /# Terminal request/);
 });

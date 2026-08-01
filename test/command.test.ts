@@ -55,6 +55,21 @@ test("buildAgentInvocation supports stdin prompt mode", () => {
   assert.equal(invocation.stdinFile, "/tmp/prompt");
 });
 
+test("buildAgentInvocation renders systemPrompt/systemPromptFile placeholders", () => {
+  const invocation = buildAgentInvocation("orchestrator", {
+    command: ["pi", "--print", "--system-prompt", "{systemPromptFile}", "{prompt}"],
+    promptMode: "arg",
+  }, {
+    prompt: "user turn body",
+    promptFile: "/tmp/prompt",
+    systemPrompt: "system text",
+    systemPromptFile: "/tmp/system",
+  });
+
+  assert.deepEqual(invocation.argv, ["pi", "--print", "--system-prompt", "/tmp/system", "user turn body"]);
+  assert.equal(invocation.stdinFile, null);
+});
+
 test("shellExportBlock rejects invalid env keys", () => {
   assert.throws(() => shellExportBlock({ "BAD-KEY": "value" }), /Invalid environment/);
 });
