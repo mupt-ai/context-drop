@@ -164,6 +164,16 @@ Existing messages are marked seen during setup. Only later messages are passed t
 
 Pairing authorizes access to a machine chain; it does not make received content trusted. Artifact URLs are bearer links until they expire. Do not send secrets. Local agents run with the local user’s permissions, and inbound handoffs are never automatically accepted or executed.
 
+## Inspect a legacy Relaymux installation
+
+Before any cutover, create a redacted, read-only inventory:
+
+```sh
+context-drop migrate relaymux inspect --home "$HOME/.relaymux" --json
+```
+
+Inspection reports schedules, launchd presence/load state, legacy run/event counts, major data-path sizes, and unsupported parity blockers. It never applies changes or prints configured commands, tokens, chat recipients, or API keys. Context Drop does not yet claim full Relaymux `ask`/`notify`, worktree, steering, or historical-run import parity.
+
 ## Documentation
 
 - [Getting started](docs/getting-started.md)

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 type AgentConfig struct {
@@ -136,6 +137,72 @@ func Initialize() ([]string, error) {
 		return nil, err
 	}
 	return detected, nil
+}
+
+func ConfigureAgent(name string, agent AgentConfig, replace bool) error {
+	if strings.TrimSpace(name) == "" || strings.ContainsAny(name, " \t\r\n/") {
+		return fmt.Errorf("agent name must be a non-empty identifier without whitespace or slashes")
+	}
+	if agent.PromptMode != "arg" {
+		return fmt.Errorf("promptMode must be arg")
+	}
+	if len(agent.Command) == 0 {
+		return fmt.Errorf("agent command must be a non-empty argv array")
+	}
+	placeholders := 0
+	for _, arg := range agent.Command {
+		if arg == "" {
+			return fmt.Errorf("agent command arguments must not be empty")
+		}
+		placeholders += strings.Count(arg, "{prompt_file}")
+	}
+	if placeholders != 1 {
+		return fmt.Errorf("agent command must contain exactly one {prompt_file} placeholder")
+	}
+	_, configPath, _, err := Paths()
+	if err != nil {
+		return err
+	}
+	lock, err := lockConfig(configPath + ".lock")
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	cfg, err := LoadConfig()
+	if err != nil {
+		return err
+	}
+	if cfg.Agents == nil {
+		cfg.Agents = map[string]AgentConfig{}
+	}
+	if _, exists := cfg.Agents[name]; exists && !replace {
+		return fmt.Errorf("agent %q is already configured; pass --replace to overwrite it", name)
+	}
+	cfg.Agents[name] = agent
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	tmp, err := os.CreateTemp(filepath.Dir(configPath), ".config-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err = tmp.Chmod(0o600); err == nil {
+		_, err = tmp.Write(data)
+	}
+	if err == nil {
+		err = tmp.Sync()
+	}
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, configPath)
 }
 
 func LoadConfig() (RuntimeConfig, error) {
