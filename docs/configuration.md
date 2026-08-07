@@ -71,7 +71,7 @@ Environment variables override values loaded from the config file for the curren
 | `CONTEXT_DROP_TTL` | Runtime default upload TTL. |
 | `CONTEXT_DROP_HOME` | Isolated private root for CLI config, runtime, daemon, schedules, logs, and tokens. |
 | `CONTEXT_DROP_RUNTIME_PORT` | Runtime initialization port (default `47762`; must be 1–65535). |
-| `CONTEXT_DROP_BACKEND` | Default session backend for launches (tmux or herdr; default `tmux`). |
+| `CONTEXT_DROP_BACKEND` | Default session backend for launches (tmux or herdr; default `herdr`). |
 | `CONTEXT_DROP_HERDR_SESSION` | Named Herdr session used for launches (default `default`). |
 | `CONTEXT_DROP_RUNTIME_ADDRESS` | Advanced client override for the loopback runtime URL. |
 | `CONTEXT_DROP_RUNTIME_ENTRY` | Advanced path override for the built Node runtime entry. |

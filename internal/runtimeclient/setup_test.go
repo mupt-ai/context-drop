@@ -18,7 +18,7 @@ func TestInitializeHonorsPortAndPrivateModes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Port != 49123 || cfg.Host != "127.0.0.1" || cfg.DefaultBackend != "tmux" || cfg.HerdrSession != "default" {
+	if cfg.Port != 49123 || cfg.Host != "127.0.0.1" || cfg.DefaultBackend != "herdr" || cfg.HerdrSession != "default" {
 		t.Fatalf("config = %#v", cfg)
 	}
 	if cfg.NodePath == "" || !filepath.IsAbs(cfg.NodePath) {
