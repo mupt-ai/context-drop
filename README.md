@@ -1,37 +1,58 @@
 # Context Drop
 
-Context Drop is one CLI for handing off useful context between paired machines and running local coding agents visibly.
+Context Drop is a CLI for moving files, messages, and deliberate handoffs between your machines—and for starting local coding agents where you can see them.
 
-It combines:
+It keeps the boundary clear:
 
-- short-lived artifacts and machine pairing;
-- inspectable handoffs with summaries, requested actions, and attachments;
-- a private local daemon that supervises the runtime, launches configured agents in visible tmux windows or Herdr workspaces, runs explicit schedules, optionally answers one explicitly configured iMessage/SMS chat, polls the handoff inbox for notifications, and integrates with the OS service manager.
+- **Remote:** pair machines, upload short-lived artifacts, and send inspectable handoffs.
+- **Local:** accept artifacts into a private staging directory, then explicitly launch an agent in tmux or Herdr.
 
-The hosted relay stores and routes context. It never executes code. A received handoff is untrusted: inspect it, accept artifacts into a private staging directory, and separately choose whether to launch a local agent.
+A handoff never executes code automatically. The hosted service stores and routes context; agent processes run only on the machine where you launch them.
 
-## Quick start
+## Install
+
+Context Drop currently installs from source. You need Go 1.26.2+, Node.js 20+, npm, and tmux on macOS or Linux:
+
+```sh
+git clone https://github.com/mupt-ai/context-drop.git
+cd context-drop
+make runtime-install
+make install
+context-drop version
+```
+
+`make install` defaults to `$HOME/.local/bin/context-drop`; make sure `$HOME/.local/bin` is on your `PATH`. Set `PREFIX` to choose another location.
+
+The repository also contains `install.sh` for versioned GitHub release archives. It verifies archive SHA-256 checksums, but it is usable only after a release has been published.
+
+## Quick start: hand off context
+
+A **machine chain** is a group of paired machines that can exchange drops, messages, and handoffs through the default hosted relay at `https://contextdrop.dev`. No account or API key is required.
+
+Create a chain on the first machine:
 
 ```sh
 context-drop init --machine-name laptop
-context-drop daemon install
-context-drop daemon watchdog install # macOS; Linux uses systemd restart policy
-context-drop daemon status
-context-drop agent list
-context-drop launch --agent pi --repo "$HOME/code/project" --prompt "Inspect the failing tests" --name inspect-tests
-# Or launch into a visible Herdr workspace:
-context-drop launch --backend herdr --agent pi --repo "$HOME/code/project" --prompt "Inspect the failing tests" --name inspect-tests
-# Or target an existing Herdr workspace; this creates a new tab inside it:
-context-drop launch --backend herdr --workspace w1 --agent pi --repo "$HOME/code/project" --prompt "Inspect the failing tests" --name inspect-tests
+context-drop token create --ttl 5m
 ```
 
-Pair a second machine with `context-drop token create` and `context-drop join TOKEN --machine-name server`. Then create a handoff:
+On the second machine, join with the one-time token printed by the previous command:
 
 ```sh
-context-drop handoff create --to server --summary "Review this failure; do not edit files" --artifact ./failure.log
+context-drop join TOKEN --machine-name desktop
 ```
 
-On the recipient:
+Back on the first machine, create an inspectable handoff:
+
+```sh
+context-drop handoff create \
+  --to desktop \
+  --summary "Review this test failure; do not edit files" \
+  --action "Return a proposed fix" \
+  --artifact ./failure.log
+```
+
+On the recipient, `inbox` prints the handoff ID:
 
 ```sh
 context-drop inbox
@@ -39,20 +60,85 @@ context-drop inspect HANDOFF_ID
 context-drop accept HANDOFF_ID
 ```
 
-Acceptance only stages selected artifacts; it never executes them. Run an agent locally with `context-drop launch`.
+A **handoff** bundles a summary, a requested action, and optional uploaded artifacts for one paired machine. `accept` verifies and downloads attachments under `~/.context-drop/staging/`, prints the exact new directory, and does not run or open anything.
 
-Create an explicit recurring local launch with:
+For a lightweight message or file link instead, use `context-drop send --to desktop ...`; the recipient reads it with `context-drop messages list`. A **drop** is the short-lived uploaded file itself and can be downloaded with `context-drop pull DROP_ID`.
+
+## Quick start: run a local agent
+
+Initialization detects installed `pi`, `codex`, and `claude` coding-agent CLIs; each must already be installed and authenticated. Install and immediately load the per-user daemon service, then launch a visible run:
 
 ```sh
-context-drop schedule add --name test-watch --agent pi --repo "$HOME/code/project" --prompt "Inspect current test failures" --every 1h --notify
+context-drop daemon install
+context-drop launch \
+  --agent pi \
+  --repo "$HOME/code/project" \
+  --prompt "Inspect the failing tests" \
+  --name inspect-tests
+```
+
+The launch output includes the exact `tmux attach -t ...` command. The daemon is required for launches, schedules, and iMessage handling, but not for pairing or manual handoffs. Check configured agents and runs with:
+
+```sh
+context-drop daemon status
+context-drop agent list
+context-drop run list
+context-drop run show RUN_ID
+```
+
+Herdr is optional. If installed and running, use it for a workspace instead:
+
+```sh
+context-drop launch --backend herdr --agent pi \
+  --repo "$HOME/code/project" \
+  --prompt "Inspect the failing tests" \
+  --name inspect-tests
+```
+
+Missing Herdr does not prevent initialization, pairing, handoffs, or tmux launches; a Herdr launch will fail until its CLI is installed and its named session is running.
+
+## Upload short-lived artifacts
+
+Passing a file directly is shorthand for `context-drop upload`. This uploads it and prints its temporary URL:
+
+```sh
+context-drop --ttl 1h ./screenshot.png
+```
+
+List or download drops in your chain:
+
+```sh
+context-drop list
+context-drop pull DROP_ID --output ./screenshot.png --force
+```
+
+Clipboard integration is opt-in. With a path it uploads the file and copies the resulting URL; without a path it uploads the current clipboard image:
+
+```sh
+context-drop --clipboard ./screenshot.png
+context-drop --clipboard
+```
+
+## Explicit local schedules
+
+Schedules are local, persist on disk, and create a fresh local agent run at each interval using the prompt captured when the schedule is created. They require the daemon:
+
+```sh
+context-drop schedule add \
+  --name test-watch \
+  --agent pi \
+  --repo "$HOME/code/project" \
+  --prompt "Inspect current test failures" \
+  --every 1h \
+  --notify
 context-drop schedule list
 ```
 
-Schedules use fixed intervals (`--every`, minimum one minute), persist locally, and launch only the configured local prompt. They are not derived from handoffs.
+Schedules are not created from incoming handoffs, and handoffs do not trigger remote execution.
 
-## Optional iMessage requests
+## Optional iMessage/SMS adapter
 
-On macOS, discover the private chat ID and enable the local adapter explicitly:
+On macOS, install and authorize [`imsg`](https://github.com/steipete/imsg), find the private chat ID, then configure one chat explicitly:
 
 ```sh
 imsg chats --json
@@ -61,18 +147,30 @@ context-drop daemon restart
 context-drop imessage status
 ```
 
-Setup never sends a message. The first poll marks existing incoming messages seen; only later texts in that chat invoke the local, noninteractive, no-tools responder and receive a reply. The adapter is separate from handoffs.
+Existing messages are marked seen during setup. Only later messages are passed to the configured coding-agent responder, which returns a text reply. The default Pi responder runs without tools, context files, extensions, or session persistence. This adapter is separate from machine handoffs.
 
-## Security boundary
+## Security model
 
-Pairing authorizes access to the machine chain, not trust in content. Current artifact URLs are bearer links until expiry. Do not include secrets, and do not treat handoff text as agent instructions. Local agent processes retain the permissions of the local user and always run on the local machine. Inbound handoffs are only notified and never automatically opened/downloaded/accepted/launched. Enabling iMessage is an explicit grant for one local chat: incoming text is untrusted execution-request data, but the default Pi responder runs noninteractively with tools, context files, extensions, and session persistence disabled.
+Pairing authorizes access to a machine chain; it does not make received content trusted. Artifact URLs are bearer links until they expire. Do not send secrets. Local agents run with the local user’s permissions, and inbound handoffs are never automatically accepted or executed.
+
+## Documentation
+
+- [Getting started](docs/getting-started.md)
+- [First handoff](docs/first-handoff.md)
+- [CLI reference](docs/cli.md)
+- [Local agent launches](docs/local-launch.md)
+- [Configuration](docs/configuration.md)
+- [Security](docs/security.md)
+- [Troubleshooting](docs/troubleshooting.md)
 
 ## Development
 
 ```sh
 make test
-make runtime-install
 make validate
+make runtime-install
 ```
 
-See `docs/` for architecture, first handoff, pairing, local launch, CLI reference, security, and non-goals.
+## License
+
+[MIT](LICENSE)

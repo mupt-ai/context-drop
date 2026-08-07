@@ -87,6 +87,18 @@ func TestInitializeRejectsInvalidPort(t *testing.T) {
 
 func TestInitializeHonorsBackendEnvOverrides(t *testing.T) {
 	home := t.TempDir()
+	nodePath, err := ResolveExecutable("node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binDir := filepath.Join(home, "bin")
+	if err := os.Mkdir(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(nodePath, filepath.Join(binDir, "node")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
 	t.Setenv("CONTEXT_DROP_HOME", home)
 	t.Setenv("CONTEXT_DROP_BACKEND", "herdr")
 	t.Setenv("CONTEXT_DROP_HERDR_SESSION", "cdx")
@@ -99,6 +111,12 @@ func TestInitializeHonorsBackendEnvOverrides(t *testing.T) {
 	}
 	if cfg.DefaultBackend != "herdr" || cfg.HerdrSession != "cdx" {
 		t.Fatalf("config = %#v", cfg)
+	}
+	if cfg.HerdrPath != "" {
+		t.Fatalf("HerdrPath should be empty when optional Herdr is unavailable: %q", cfg.HerdrPath)
+	}
+	if _, err := LoadConfig(); err != nil {
+		t.Fatalf("LoadConfig should allow an optional Herdr installation: %v", err)
 	}
 }
 
