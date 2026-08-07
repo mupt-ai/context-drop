@@ -3,6 +3,7 @@ package imessage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -105,6 +106,23 @@ func TestTrustedResponderPromptEnablesOrchestration(t *testing.T) {
 	}
 	if len(fake.promptBodies) != 1 || !strings.Contains(fake.promptBodies[0], "persistent coding orchestrator") {
 		t.Fatalf("trusted prompt = %#v", fake.promptBodies)
+	}
+}
+
+func TestTrustedResponderRetriesTransientProviderFailure(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Trusted = true
+	fake := &fakeCommander{
+		results: []CommandResult{{Stderr: []byte("Provider request failed.")}, {Stdout: []byte("recovered\n")}},
+		errors:  []error{errors.New("exit status 1"), nil},
+	}
+	adapter := Adapter{Config: cfg, Commander: fake}
+	reply, err := adapter.Respond(context.Background(), Message{ID: "m", Text: "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply != "recovered" || len(fake.calls) != 2 {
+		t.Fatalf("reply = %q, calls = %d", reply, len(fake.calls))
 	}
 }
 

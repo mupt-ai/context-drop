@@ -389,9 +389,20 @@ func (a Adapter) Respond(ctx context.Context, message Message) (string, error) {
 	}
 	respondCtx, cancel := context.WithTimeout(ctx, time.Duration(a.Config.ResponderTimeoutSeconds)*time.Second)
 	defer cancel()
-	result, err := commander.Run(respondCtx, argv[0], argv[1:], a.Config.MaxReplyBytes+1)
-	if err != nil {
-		return "", commandError("iMessage responder", err, result.Stderr)
+	var result CommandResult
+	for attempt := 0; ; attempt++ {
+		result, err = commander.Run(respondCtx, argv[0], argv[1:], a.Config.MaxReplyBytes+1)
+		if err == nil {
+			break
+		}
+		if !a.Config.Trusted || attempt >= 2 || !isTransientResponderError(result.Stderr) {
+			return "", commandError("iMessage responder", err, result.Stderr)
+		}
+		select {
+		case <-respondCtx.Done():
+			return "", commandError("iMessage responder", respondCtx.Err(), result.Stderr)
+		case <-time.After(time.Duration(attempt+1) * time.Second):
+		}
 	}
 	reply := strings.TrimSpace(string(result.Stdout))
 	if reply == "" {
@@ -401,6 +412,11 @@ func (a Adapter) Respond(ctx context.Context, message Message) (string, error) {
 		return "", fmt.Errorf("iMessage responder reply exceeds %d bytes", a.Config.MaxReplyBytes)
 	}
 	return reply, nil
+}
+
+func isTransientResponderError(stderr []byte) bool {
+	message := strings.ToLower(string(stderr))
+	return strings.Contains(message, "provider request failed") || strings.Contains(message, "overloaded") || strings.Contains(message, "rate limit") || strings.Contains(message, "temporarily unavailable")
 }
 
 func (a Adapter) Send(ctx context.Context, text string) error {
