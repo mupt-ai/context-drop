@@ -11,19 +11,30 @@ A handoff never executes code automatically. The hosted service stores and route
 
 ## Install
 
-Context Drop currently installs from source. You need Go 1.26.2+, Node.js 20+, npm, and tmux on macOS or Linux:
+Install the latest published release on macOS or Linux:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mupt-ai/context-drop/main/install.sh | bash
+context-drop version
+```
+
+The installer detects your OS and architecture, downloads the matching GitHub release archive, verifies its SHA-256 checksum, and installs `context-drop` under `/usr/local/bin` when writable or `~/.local/bin` otherwise. If `~/.local/bin` is used, add it to your `PATH`.
+
+To choose an installation directory explicitly:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mupt-ai/context-drop/main/install.sh | \
+  CONTEXT_DROP_INSTALL_DIR="$HOME/.local/bin" bash
+```
+
+For development from source, use Go 1.26.2+, Node.js 20+, npm, and tmux:
 
 ```sh
 git clone https://github.com/mupt-ai/context-drop.git
 cd context-drop
 make runtime-install
 make install
-context-drop version
 ```
-
-`make install` defaults to `$HOME/.local/bin/context-drop`; make sure `$HOME/.local/bin` is on your `PATH`. Set `PREFIX` to choose another location.
-
-The repository also contains `install.sh` for versioned GitHub release archives. It verifies archive SHA-256 checksums, but it is usable only after a release has been published.
 
 ## Quick start: hand off context
 
