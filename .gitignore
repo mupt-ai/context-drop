@@ -1,6 +1,33 @@
-node_modules/
-npm-debug.log*
-coverage/
-dist/
+# Binaries
+/bin/
+/context-drop
+/context-drop-server
+
+# Local env/secrets
+.env
+.env.*
+!.env.example
+*.credentials.json
+*gcp-service-account*.json
+
+# Local dev storage
+/.data/
+
+# Go build/test artifacts
+*.test
+*.out
+coverage.out
+
+# Dependency directories
+/vendor/
+/runtime/node_modules/
+/runtime/dist/
+
+# OS/editor files
 .DS_Store
-*.tgz
+.idea/
+.vscode/
+
+/runtime/token
+
+/.pi-subagents/

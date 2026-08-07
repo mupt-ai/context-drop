@@ -1,145 +1,132 @@
 # Configuration
 
-`relaymux init` writes a core config with no message adapters at `~/.relaymux/config.json`. The file is private by default and relaymux refuses to overwrite it unless you pass `--force`.
+Context Drop has two kinds of configuration. The CLI reads a local config file plus `CONTEXT_DROP_*` environment variables. The server reads environment variables only.
 
-relaymux stores private config, the first-party SQLite database, runtime files, logs, and local API token state under `~/.relaymux` by default:
+Durations use Go duration syntax, such as `30s`, `15m`, `1h`, or `24h`. Use `168h` for seven days; `7d` is not a valid duration string.
 
-```text
-~/.relaymux/
-  AGENTS.md       # primary local orchestrator instructions when present
-  config.json     # private config, written mode 0600
-  relaymux.sqlite3 # first-party relaymux SQLite database
-  state/          # runtime files: prompts, scripts, schedules, daemon state, local API token
-  logs/           # background service stdout/stderr logs
+## CLI config file
+
+Print the config file path with:
+
+```sh
+context-drop config path
 ```
 
-## SQLite Store
+By default, the file is named `config.toml` under your operating system's user config directory, usually something like `~/.config/context-drop/config.toml` on Linux or `~/Library/Application Support/context-drop/config.toml` on macOS. Set `CONTEXT_DROP_CONFIG` to use a different path.
 
-relaymux owns one canonical SQLite database at `<relaymux home>/relaymux.sqlite3`; with the default home this is `~/.relaymux/relaymux.sqlite3`. The path comes from `RELAYMUX_HOME` when set, otherwise the normal relaymux home, not the current working directory.
+Print the current config with saved tokens redacted:
 
-The first-party schema is managed by relaymux migrations and uses the `relaymux_` table prefix. Current managed tables are:
+```sh
+context-drop config get
+```
 
-| Table | Purpose |
+The CLI stores the following values in the config file:
+
+| Key | Purpose | Default |
+| --- | --- | --- |
+| `endpoint` | Service endpoint used by CLI commands. | `https://contextdrop.dev` |
+| `chain_id` | Current machine chain ID. | empty |
+| `machine_id` | Current machine ID inside the chain. | empty |
+| `machine_name` | Human-friendly machine name. | empty |
+| `chain_session_token` | Token for chain-scoped commands. | empty |
+| `default_ttl` | Default upload TTL. | `24h` |
+| `clipboard` | Whether clipboard integration is enabled by default. | `false` |
+
+The CLI writes the config file with user-only permissions. Keep it private because it can contain a chain session token.
+
+## Set config values
+
+Use `context-drop config set <key> <value>` for user-facing settings:
+
+```sh
+context-drop config set endpoint https://contextdrop.dev
+context-drop config set default_ttl 24h
+context-drop config set clipboard true
+context-drop config set clipboard false
+context-drop config set machine_name laptop
+```
+
+`ttl` is accepted as an alias for `default_ttl`, and `copy` is accepted as an alias for `clipboard`.
+
+Use `--endpoint` or `--ttl` on an individual command when you only want a one-command override:
+
+```sh
+context-drop --endpoint https://drop.example.com --ttl 1h ./file.png
+```
+
+Use `--clipboard` for one command when the default is disabled, or `--no-clipboard` for one command when the default is enabled.
+
+## CLI environment variables
+
+Environment variables override values loaded from the config file for the current process. They are useful in CI, scripts, containers, or one-off commands.
+
+| Variable | Purpose |
 | --- | --- |
-| `relaymux_schema_migrations` | Applied relaymux DB migrations. |
-| `relaymux_metadata` | Small key/value metadata for the relaymux DB. |
-| `relaymux_runs` | Generic run records for first-party local state. |
-| `relaymux_events` | Generic run/event records for first-party local state. |
+| `CONTEXT_DROP_CONFIG` | Path to the CLI config file. |
+| `CONTEXT_DROP_ENDPOINT` | Service endpoint. |
+| `CONTEXT_DROP_CHAIN_ID` | Runtime chain ID. |
+| `CONTEXT_DROP_MACHINE_ID` | Runtime machine ID. |
+| `CONTEXT_DROP_MACHINE_NAME` | Runtime machine name. |
+| `CONTEXT_DROP_CHAIN_SESSION_TOKEN` | Runtime chain session token for chain-scoped commands. |
+| `CONTEXT_DROP_TTL` | Runtime default upload TTL. |
+| `CONTEXT_DROP_HOME` | Isolated private root for CLI config, runtime, daemon, schedules, logs, and tokens. |
+| `CONTEXT_DROP_RUNTIME_PORT` | Runtime initialization port (default `47762`; must be 1–65535). |
+| `CONTEXT_DROP_BACKEND` | Default session backend for launches (tmux or herdr; default `tmux`). |
+| `CONTEXT_DROP_HERDR_SESSION` | Named Herdr session used for launches (default `default`). |
+| `CONTEXT_DROP_RUNTIME_ADDRESS` | Advanced client override for the loopback runtime URL. |
+| `CONTEXT_DROP_RUNTIME_ENTRY` | Advanced path override for the built Node runtime entry. |
+| `CONTEXT_DROP_INBOX_INTERVAL` | Daemon inbox polling interval (default `1m`, minimum `10s`). |
 
-Use `relaymux db path`, `relaymux db init`, `relaymux db status`, and `relaymux db schema` to inspect or initialize the database. These commands use the system `sqlite3` CLI; relaymux does not install a native SQLite npm dependency.
+Runtime credentials from environment variables are not written back to the config file by unrelated commands. Runtime token/config, daemon state, schedules, and logs live under the same private Context Drop root with user-only permissions. The runtime config records a `defaultBackend` (`tmux` or `herdr`) and a named `herdrSession`; `herdrPath` is resolved at initialization so the daemon can run Herdr even with a minimal service-manager PATH. Initialization resolves and persists an absolute `nodePath` in the runtime config so the OS service can start Node even when its environment has a minimal `PATH`; re-run `context-drop init` if Node moves. A schedule snapshots its prompt when added, requires an absolute existing repository path, and accepts prompts up to 64 KiB.
 
-New durable first-party state should be added here with migrations, not as new top-level home directories. Temporary file artifacts belong under `state/`.
+## iMessage adapter config
 
-Local extension or domain-specific tables can live in the same database, but relaymux only owns and migrates the `relaymux_` tables. Use a distinct table prefix for extension data.
+`context-drop imessage setup` writes `imessage/config.json` under `CONTEXT_DROP_HOME` with mode `0600`. It stores the enabled flag, exact chat ID, optional recipient label, absolute `imsg` executable, poll/sync limits, history/responder/send timeouts, maximum message/reply bytes, and responder argv. The responder argv is an array and must contain `{prompt_file}`; it is never interpreted by a shell. The default Pi preset is `pi --print --no-session --no-context-files --no-tools --no-extensions @{prompt_file}`. Changing the configured chat causes a fresh initial sync, so old messages in the new chat are not answered.
 
-## Core Config
+The daemon records the latest local runtime failure (for example an occupied loopback port owned by a different process) in its state and surfaces it in `context-drop daemon status` as `Runtime error`. Port conflicts are reported clearly and retried with capped backoff rather than silently selecting another port.
 
-Command arrays are argv templates. `{prompt}` and `{promptFile}` are substituted at launch time. The Pi commands below are examples, not requirements; edit them to match the agent CLIs you actually use.
+## Credential modes
 
-```json
-{
-  "version": 1,
-  "session": "agents",
-  "stateDir": "~/.relaymux/state",
-  "tmux": {
-    "sessionMode": "shared"
-  },
-  "daemon": {
-    "enabled": true,
-    "host": "127.0.0.1",
-    "port": 47761,
-    "tokenFile": "~/.relaymux/state/webhook-token",
-    "launchAgentLabel": "com.relaymux.daemon",
-    "watchdog": {
-      "enabled": true,
-      "intervalSeconds": 60
-    },
-    "logDir": "~/.relaymux/logs"
-  },
-  "integrations": {},
-  "orchestrator": {
-    "cwd": "~",
-    "command": ["pi", "--print", "--continue", "--session-dir", "~/.relaymux/state/sessions", "{prompt}"],
-    "promptMode": "arg",
-    "defaultSystemPrompt": true,
-    "systemPromptFile": "",
-    "extraSystemPrompt": ""
-  },
-  "agents": {
-    "pi": { "command": ["pi", "{prompt}"], "promptMode": "arg" },
-    "codex": { "command": ["codex", "{prompt}"], "promptMode": "arg" },
-    "custom": { "command": ["sh", "-lc", "printf '%s\\n' \"$RELAYMUX_PROMPT\""], "promptMode": "env" }
-  }
-}
-```
+In normal human mode, run `context-drop init` once on the first machine, then use `context-drop token create` and `context-drop join <token>` for additional machines.
 
-`daemon.launchAgentLabel` names the macOS LaunchAgent. On Linux the same value is reused as the systemd user service name with a `.service` suffix unless you set `daemon.systemdServiceName`.
+In token-only mode, provide `CONTEXT_DROP_CHAIN_SESSION_TOKEN` at runtime. This is useful for short-lived scripts or machines where you already have a valid chain token and do not want to write credentials to disk.
 
-## Agents And Orchestrator
+In uninitialized URL passthrough mode, an unauthenticated CLI can print or copy an existing `http` or `https` URL. This mode does not upload files and does not allow list or pull.
 
-An agent is a command template in `~/.relaymux/config.json`. If you configure `pi`, relaymux runs `pi ...`; if you configure `codex`, it runs `codex ...`; if you configure `custom`, it can be any shell command.
+## Installer environment variables
 
-The orchestrator is also a command, but it has a different job from an agent. The orchestrator handles inbound requests from `relaymux ask` or optional message adapters. Agents do delegated work launched with `relaymux launch`. The orchestrator receives incoming text plus relaymux instructions and prints a reply on stdout.
+The install script also reads a few environment variables:
 
-relaymux includes a small built-in orchestration baseline by default: stay local-first, be concise, delegate work that may take more than about 10 seconds with `relaymux launch`, use the configured shared tmux session, prefer prompt files for longer delegated tasks, ask subagents to call `relaymux notify` with idempotency keys, keep quiet updates on `--reply-mode none`, use `relaymux schedule` for recurring prompts, keep durable relaymux records in SQLite and unavoidable file artifacts under `state/`, inspect real tmux/repo/test state before claiming completion, and never put secrets in prompts, logs, PRs, or replies.
-
-Inline handling is meant only for truly tiny replies, lightweight read-only inspection, or explicit user requests to stay inline. Repo code changes, PR fixes, debugging/deploy work, deep research, CI loops, docs rewrites, long validation, and multi-file edits should normally become visible relaymux subagent runs.
-
-Your relaymux home owns local orchestrator instructions. By default, relaymux appends `<relaymux home>/AGENTS.md` when that file exists; set `orchestrator.systemPromptFile` only when you want an explicit configured instructions file instead of the home `AGENTS.md`. relaymux never reads Pi's global `AGENTS.md` under `~/.pi/agent` for orchestrator instructions.
-
-Your config owns local details: adapter tokens and chat IDs, exact agent CLI commands, local working directories, session names, private preferences, and repo-specific overrides. `orchestrator.extraSystemPrompt` remains an additive escape hatch for short local preferences. Set `orchestrator.defaultSystemPrompt` to `false` only if you want to remove relaymux's built-in orchestration baseline.
-
-Example local override:
-
-```json
-{
-  "orchestrator": {
-    "defaultSystemPrompt": true,
-    "systemPromptFile": "~/.relaymux/AGENTS.md",
-    "extraSystemPrompt": "Use the custom agent first for documentation-only requests."
-  }
-}
-```
-
-## Prompt Passing
-
-If a command contains `{prompt}` or `{promptFile}`, relaymux substitutes those values. Agent command templates can also use run context such as `{agent}`, `{name}`, `{repo}`, `{workdir}`, `{runId}`, and `{session}`. If the command does not contain a prompt placeholder, `promptMode` decides what to do with the prompt:
-
-| `promptMode` | Behavior |
+| Variable | Purpose |
 | --- | --- |
-| `arg` | Append the prompt as a command-line argument unless `{prompt}` is already present. |
-| `env` | Put the prompt in `RELAYMUX_PROMPT`. |
-| `stdin` | Write the prompt under `~/.relaymux/state/prompts` and pipe that file to stdin. |
-| `none` | Do not pass the prompt automatically. |
+| `CONTEXT_DROP_VERSION` | Install a specific release tag or version instead of the latest release. |
+| `CONTEXT_DROP_INSTALL_DIR` | Install directory for the `context-drop` binary. |
+| `INSTALL_DIR` | Backward-compatible install directory variable used when `CONTEXT_DROP_INSTALL_DIR` is not set. |
 
-Use `--prompt @prompt.txt` or `--prompt-file prompt.txt` for longer prompts.
+Use them on the `bash` side of the pipe so the installer process can read them:
 
-## Tmux Sessions
-
-A run is one `relaymux launch`. By default, relaymux creates a new tmux window in one shared session named `agents`. tmux calls these windows; many terminal apps display them like tabs. relaymux does not create panes or splits for agent runs.
-
-Launch a named agent in the default shared session:
-
-```bash
-relaymux launch --repo ~/code/my-app --agent pi --name fix-api --prompt @prompt.txt
+```sh
+curl -fsSL https://raw.githubusercontent.com/mupt-ai/context-drop/main/install.sh | \
+  CONTEXT_DROP_VERSION=v0.0.9 CONTEXT_DROP_INSTALL_DIR="$HOME/.local/bin" bash
 ```
 
-Launch into a separate tmux session when you want an isolated group of windows:
+## Server environment variables
 
-```bash
-relaymux launch --session release-fix --repo ~/code/my-app --agent codex --prompt @prompt.txt
-```
+The `context-drop-server` binary is configured with environment variables. Run `context-drop-server --help` for a short built-in summary.
 
-Use per-worktree sessions when each Git worktree should get a stable session name. In this mode, relaymux derives the session from the repo/worktree/branch plus a short hash:
+| Variable | Required? | Default | Description |
+| --- | --- | --- | --- |
+| `CONTEXT_DROP_ADDR` | No | `:8080` | Address the HTTP server listens on. |
+| `CONTEXT_DROP_BASE_URL` | No | `http://localhost:8080` | Public base URL used when generating drop links. |
+| `CONTEXT_DROP_STORAGE` | No | `local` | Storage backend: `local` or `gcs`. |
+| `CONTEXT_DROP_DATA_DIR` | Local only | `.data` | Directory for local storage. |
+| `CONTEXT_DROP_GCS_BUCKET` | GCS only | empty | Google Cloud Storage bucket name. |
+| `CONTEXT_DROP_GCS_PREFIX` | No | empty | Optional object prefix in the GCS bucket. |
+| `CONTEXT_DROP_DEFAULT_TTL` | No | `24h` | Default TTL when an upload does not specify one. |
+| `CONTEXT_DROP_JOIN_TOKEN_TTL` | No | `10m` | Default pairing join-token TTL. Must not exceed 15 minutes. |
+| `CONTEXT_DROP_MAX_TTL` | No | `168h` | Maximum accepted drop TTL. |
+| `CONTEXT_DROP_MAX_BYTES` | No | `26214400` | Maximum upload size in bytes. |
 
-```bash
-relaymux launch --session-mode per-worktree --repo ~/code/my-app --agent pi --prompt @prompt.txt
-```
+For GCS, the server also needs Google Cloud credentials through the normal Google authentication mechanisms, such as `GOOGLE_APPLICATION_CREDENTIALS` for a local service account file or workload identity on Cloud Run.
 
-Inspect local state. `--history` includes old run records whose tmux windows have already exited:
-
-```bash
-relaymux status
-relaymux status --history
-relaymux status --session agents
-```
+See [Server and self-hosting](server.md) for complete server examples.

@@ -1,0 +1,79 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-cloud-run
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - run: make coverage
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker auth
+        run: gcloud auth configure-docker "${{ vars.GCP_REGION }}-docker.pkg.dev" --quiet
+
+      - name: Build and push image
+        env:
+          IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/context-drop-server:${{ github.sha }}
+        run: |
+          docker build -t "$IMAGE" .
+          docker push "$IMAGE"
+
+      - name: Deploy Cloud Run
+        env:
+          IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/context-drop-server:${{ github.sha }}
+          CONTEXT_DROP_STORAGE: ${{ secrets.CONTEXT_DROP_STORAGE }}
+          CONTEXT_DROP_GCS_BUCKET: ${{ secrets.CONTEXT_DROP_GCS_BUCKET }}
+          CONTEXT_DROP_BASE_URL: ${{ secrets.CONTEXT_DROP_BASE_URL }}
+          CONTEXT_DROP_ADDR: ${{ secrets.CONTEXT_DROP_ADDR }}
+          CONTEXT_DROP_DEFAULT_TTL: ${{ secrets.CONTEXT_DROP_DEFAULT_TTL }}
+          CONTEXT_DROP_MAX_TTL: ${{ secrets.CONTEXT_DROP_MAX_TTL }}
+          CONTEXT_DROP_MAX_BYTES: ${{ secrets.CONTEXT_DROP_MAX_BYTES }}
+          CONTEXT_DROP_SUPABASE_URL: ${{ secrets.CONTEXT_DROP_SUPABASE_URL }}
+          CONTEXT_DROP_SUPABASE_ANON_KEY: ${{ secrets.CONTEXT_DROP_SUPABASE_ANON_KEY }}
+        run: |
+          cat > cloud-run-env.yaml <<EOF
+          CONTEXT_DROP_STORAGE: "${CONTEXT_DROP_STORAGE}"
+          CONTEXT_DROP_GCS_BUCKET: "${CONTEXT_DROP_GCS_BUCKET}"
+          CONTEXT_DROP_BASE_URL: "${CONTEXT_DROP_BASE_URL}"
+          CONTEXT_DROP_ADDR: "${CONTEXT_DROP_ADDR}"
+          CONTEXT_DROP_DEFAULT_TTL: "${CONTEXT_DROP_DEFAULT_TTL}"
+          CONTEXT_DROP_MAX_TTL: "${CONTEXT_DROP_MAX_TTL}"
+          CONTEXT_DROP_MAX_BYTES: "${CONTEXT_DROP_MAX_BYTES}"
+          CONTEXT_DROP_SUPABASE_URL: "${CONTEXT_DROP_SUPABASE_URL}"
+          CONTEXT_DROP_SUPABASE_ANON_KEY: "${CONTEXT_DROP_SUPABASE_ANON_KEY}"
+          EOF
+
+          gcloud run deploy "${{ vars.CLOUD_RUN_SERVICE }}" \
+            --project "${{ vars.GCP_PROJECT_ID }}" \
+            --region "${{ vars.GCP_REGION }}" \
+            --image "$IMAGE" \
+            --service-account "${{ vars.CLOUD_RUN_RUNTIME_SERVICE_ACCOUNT }}" \
+            --allow-unauthenticated \
+            --env-vars-file cloud-run-env.yaml \
+            --quiet
