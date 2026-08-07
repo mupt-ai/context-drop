@@ -29,7 +29,9 @@ type Schedule struct {
 	Backend          string        `json:"backend,omitempty"`
 	Repo             string        `json:"repo"`
 	Prompt           string        `json:"prompt"`
-	Every            time.Duration `json:"every"`
+	Every            time.Duration `json:"every,omitempty"`
+	Cron             string        `json:"cron,omitempty"`
+	Timezone         string        `json:"timezone,omitempty"`
 	Enabled          bool          `json:"enabled"`
 	NotifyOnInitiate bool          `json:"notify_on_initiate"`
 	CreatedAt        time.Time     `json:"created_at"`
@@ -242,8 +244,24 @@ func ValidateSchedule(in Schedule) error {
 	if len(in.Prompt) > MaxPromptBytes {
 		return fmt.Errorf("prompt must be at most %d bytes", MaxPromptBytes)
 	}
-	if in.Every < time.Minute {
+	if (in.Every > 0) == (strings.TrimSpace(in.Cron) != "") {
+		return fmt.Errorf("exactly one of --every or --cron is required")
+	}
+	if in.Every > 0 && in.Every < time.Minute {
 		return fmt.Errorf("--every must be at least 1m")
+	}
+	if in.Cron != "" {
+		if _, err := parseCron(in.Cron); err != nil {
+			return err
+		}
+		if in.Timezone == "" {
+			return fmt.Errorf("--timezone is required with --cron")
+		}
+		if _, err := time.LoadLocation(in.Timezone); err != nil {
+			return fmt.Errorf("invalid IANA timezone %q", in.Timezone)
+		}
+	} else if in.Timezone != "" {
+		return fmt.Errorf("--timezone requires --cron")
 	}
 	info, err := os.Stat(in.Repo)
 	if err != nil || !info.IsDir() {
@@ -259,17 +277,21 @@ func Upsert(st *State, schedule Schedule, now time.Time) error {
 	if err := ValidateSchedule(schedule); err != nil {
 		return err
 	}
+	next, err := nextScheduleOccurrence(schedule, now)
+	if err != nil {
+		return err
+	}
 	for i := range st.Schedules {
 		if st.Schedules[i].Name == schedule.Name {
 			schedule.CreatedAt = st.Schedules[i].CreatedAt
 			schedule.LastFiredAt = st.Schedules[i].LastFiredAt
-			schedule.NextRunAt = now.Add(schedule.Every)
+			schedule.NextRunAt = next
 			st.Schedules[i] = schedule
 			return nil
 		}
 	}
 	schedule.CreatedAt = now
-	schedule.NextRunAt = now.Add(schedule.Every)
+	schedule.NextRunAt = next
 	st.Schedules = append(st.Schedules, schedule)
 	sort.Slice(st.Schedules, func(i, j int) bool { return st.Schedules[i].Name < st.Schedules[j].Name })
 	return nil
@@ -295,9 +317,21 @@ func Due(st *State, now time.Time) []Schedule {
 		due = append(due, *s)
 		fired := now
 		s.LastFiredAt = &fired
-		s.NextRunAt = now.Add(s.Every)
+		next, err := nextScheduleOccurrence(*s, now)
+		if err != nil {
+			s.Enabled = false
+			continue
+		}
+		s.NextRunAt = next
 	}
 	return due
+}
+
+func nextScheduleOccurrence(schedule Schedule, after time.Time) (time.Time, error) {
+	if schedule.Cron != "" {
+		return nextCronOccurrence(schedule.Cron, schedule.Timezone, after)
+	}
+	return after.Add(schedule.Every), nil
 }
 
 func ClaimManual(st *State, name string, now time.Time) (Schedule, Job, error) {

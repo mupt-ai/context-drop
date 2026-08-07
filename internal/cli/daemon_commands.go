@@ -135,10 +135,10 @@ func newWatchdogCommand() *cobra.Command {
 
 func newScheduleCommand() *cobra.Command {
 	root := &cobra.Command{Use: "schedule", Short: "Manage durable local agent schedules"}
-	var name, agent, backend, repo, prompt, promptFile string
+	var name, agent, backend, repo, prompt, promptFile, cron, timezone string
 	var every time.Duration
 	var notify, disabled bool
-	add := &cobra.Command{Use: "add", Short: "Add or update an interval schedule", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+	add := &cobra.Command{Use: "add", Short: "Add or update an interval or calendar schedule", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		if prompt != "" && promptFile != "" {
 			return fmt.Errorf("use either --prompt or --prompt-file")
 		}
@@ -164,13 +164,17 @@ func newScheduleCommand() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		s := orchestrator.Schedule{Name: name, Agent: agent, Backend: backend, Repo: repo, Prompt: prompt, Every: every, Enabled: !disabled, NotifyOnInitiate: notify}
+		s := orchestrator.Schedule{Name: name, Agent: agent, Backend: backend, Repo: repo, Prompt: prompt, Every: every, Cron: cron, Timezone: timezone, Enabled: !disabled, NotifyOnInitiate: notify}
 		if err := store.Update(func(st *orchestrator.State) error {
 			return orchestrator.Upsert(st, s, time.Now().UTC())
 		}); err != nil {
 			return err
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "saved local schedule %s (every %s)\n", name, every)
+		cadence := every.String()
+		if cron != "" {
+			cadence = fmt.Sprintf("cron %q in %s", cron, timezone)
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "saved local schedule %s (%s)\n", name, cadence)
 		return nil
 	}}
 	add.Flags().StringVar(&name, "name", "", "stable schedule name")
@@ -180,6 +184,9 @@ func newScheduleCommand() *cobra.Command {
 	add.Flags().StringVar(&prompt, "prompt", "", "prompt text snapshot")
 	add.Flags().StringVar(&promptFile, "prompt-file", "", "read and snapshot prompt from file")
 	add.Flags().DurationVar(&every, "every", 0, "interval such as 15m or 2h (minimum 1m)")
+	add.Flags().StringVar(&cron, "cron", "", "exact five-field calendar schedule")
+	add.Flags().StringVar(&timezone, "timezone", "", "IANA timezone for --cron, such as America/Los_Angeles")
+	add.MarkFlagsMutuallyExclusive("every", "cron")
 	add.Flags().BoolVar(&notify, "notify", false, "send a local notification when a run is initiated")
 	add.Flags().BoolVar(&disabled, "disabled", false, "save disabled")
 	var jsonOut bool
@@ -196,7 +203,11 @@ func newScheduleCommand() *cobra.Command {
 			return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{"schedules": st.Schedules, "jobs": st.Jobs})
 		}
 		for _, s := range st.Schedules {
-			fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\t%s\tenabled=%t\tnext=%s\n", s.Name, s.Every, s.Backend, s.Agent, s.Repo, s.Enabled, s.NextRunAt.Format(time.RFC3339))
+			cadence := s.Every.String()
+			if s.Cron != "" {
+				cadence = fmt.Sprintf("%s (%s)", s.Cron, s.Timezone)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\t%s\tenabled=%t\tnext=%s\n", s.Name, cadence, s.Backend, s.Agent, s.Repo, s.Enabled, s.NextRunAt.Format(time.RFC3339))
 		}
 		return nil
 	}}

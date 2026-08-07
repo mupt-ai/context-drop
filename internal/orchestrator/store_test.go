@@ -38,6 +38,128 @@ func TestUpsertAndDueClaim(t *testing.T) {
 	}
 }
 
+func TestCronSchedulesAndCatchUp(t *testing.T) {
+	location, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 6, 7, 59, 0, 0, location).UTC()
+	st := State{}
+	daily := testSchedule(t, "digest")
+	daily.Every = 0
+	daily.Cron = "0 8,13,19 * * *"
+	daily.Timezone = "America/Los_Angeles"
+	if err := Upsert(&st, daily, now); err != nil {
+		t.Fatal(err)
+	}
+	want := time.Date(2026, 8, 6, 8, 0, 0, 0, location).UTC()
+	if !st.Schedules[0].NextRunAt.Equal(want) {
+		t.Fatalf("next = %s, want %s", st.Schedules[0].NextRunAt, want)
+	}
+	late := time.Date(2026, 8, 6, 20, 0, 0, 0, location).UTC()
+	if got := len(Due(&st, late)); got != 1 {
+		t.Fatalf("catch-up count = %d", got)
+	}
+	wantNext := time.Date(2026, 8, 7, 8, 0, 0, 0, location).UTC()
+	if !st.Schedules[0].NextRunAt.Equal(wantNext) {
+		t.Fatalf("next after catch-up = %s, want %s", st.Schedules[0].NextRunAt, wantNext)
+	}
+	if got := len(Due(&st, late)); got != 0 {
+		t.Fatalf("duplicate catch-up count = %d", got)
+	}
+}
+
+func TestCronScheduleRestartClaimsOnlyLatestCatchUp(t *testing.T) {
+	location, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := Store{Path: filepath.Join(t.TempDir(), "state.json")}
+	st := State{}
+	s := testSchedule(t, "restart")
+	s.Every, s.Cron, s.Timezone = 0, "0 8,13,19 * * *", "America/Los_Angeles"
+	created := time.Date(2026, 8, 1, 7, 0, 0, 0, location).UTC()
+	if err := Upsert(&st, s, created); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Save(st); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 3, 20, 0, 0, 0, location).UTC()
+	if got := len(Due(&restarted, now)); got != 1 {
+		t.Fatalf("restart catch-up count = %d", got)
+	}
+	if got := len(Due(&restarted, now)); got != 0 {
+		t.Fatalf("restart duplicate count = %d", got)
+	}
+	want := time.Date(2026, 8, 4, 8, 0, 0, 0, location).UTC()
+	if !restarted.Schedules[0].NextRunAt.Equal(want) {
+		t.Fatalf("next = %s, want %s", restarted.Schedules[0].NextRunAt, want)
+	}
+}
+
+func TestCronFridayAndDST(t *testing.T) {
+	location, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := nextCronOccurrence("0 21 * * 5", "America/Los_Angeles", time.Date(2026, 8, 6, 22, 0, 0, 0, location).UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := time.Date(2026, 8, 7, 21, 0, 0, 0, location).UTC()
+	if !next.Equal(want) {
+		t.Fatalf("Friday next = %s, want %s", next, want)
+	}
+	beforeDST := time.Date(2026, 3, 7, 8, 0, 0, 0, location).UTC()
+	next, err = nextCronOccurrence("0 8 * * *", "America/Los_Angeles", beforeDST)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = time.Date(2026, 3, 8, 8, 0, 0, 0, location).UTC()
+	if !next.Equal(want) {
+		t.Fatalf("DST next = %s (%s), want %s", next, next.In(location), want)
+	}
+}
+
+func TestCronWildcardStepAndFallBackRunOnce(t *testing.T) {
+	location, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// */1 covers the whole day-of-month field and must retain standard cron
+	// wildcard semantics, so this expression matches Mondays only.
+	spec, err := parseCron("0 8 */1 * 1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.matches(time.Date(2026, 8, 4, 8, 0, 0, 0, location)) { // Tuesday
+		t.Fatal("full-range stepped day-of-month made Monday cron match Tuesday")
+	}
+
+	firstFold := time.Date(2026, 11, 1, 8, 30, 0, 0, time.UTC) // 01:30 PDT
+	next, err := nextCronOccurrence("30 1 * * *", "America/Los_Angeles", firstFold)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := time.Date(2026, 11, 2, 1, 30, 0, 0, location).UTC()
+	if !next.Equal(want) {
+		t.Fatalf("fall-back duplicate was not skipped: next=%s (%s), want=%s", next, next.In(location), want)
+	}
+}
+
+func TestCronParserRejectsFaultyExpressions(t *testing.T) {
+	for _, expression := range []string{"0 8 * *", "60 8 * * *", "0 25 * * *", "0 8 * 13 *", "0 8 * * 8", "0 8 * * * *", "0 8/0 * * *", "* * * x *"} {
+		if _, err := parseCron(expression); err == nil {
+			t.Fatalf("expected error for %q", expression)
+		}
+	}
+}
+
 func TestValidateSchedule(t *testing.T) {
 	s := testSchedule(t, "ok")
 	s.Prompt = string(make([]byte, MaxPromptBytes+1))
@@ -48,6 +170,12 @@ func TestValidateSchedule(t *testing.T) {
 	s.Every = time.Second
 	if err := ValidateSchedule(s); err == nil {
 		t.Fatal("expected interval error")
+	}
+	s = testSchedule(t, "ok")
+	s.Cron = "0 8 * * *"
+	s.Timezone = "America/Los_Angeles"
+	if err := ValidateSchedule(s); err == nil {
+		t.Fatal("expected mutually exclusive cadence error")
 	}
 	s = testSchedule(t, "ok")
 	s.Repo = "."

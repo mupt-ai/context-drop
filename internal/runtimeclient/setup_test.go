@@ -120,6 +120,66 @@ func TestInitializeHonorsBackendEnvOverrides(t *testing.T) {
 	}
 }
 
+func TestConfigureAgentPreservesArgvAndRequiresReplace(t *testing.T) {
+	t.Setenv("CONTEXT_DROP_HOME", t.TempDir())
+	if _, err := Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	agent := AgentConfig{Command: []string{"/bin/echo", "--model", "a b", "@{prompt_file}"}, PromptMode: "arg"}
+	if err := ConfigureAgent("custom", agent, false); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Agents["custom"].Command; len(got) != 4 || got[2] != "a b" || got[3] != "@{prompt_file}" {
+		t.Fatalf("argv = %#v", got)
+	}
+	if err := ConfigureAgent("custom", agent, false); err == nil {
+		t.Fatal("expected overwrite refusal")
+	}
+	if err := ConfigureAgent("custom", agent, true); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestConfigureAgentValidatesPromptPlaceholder(t *testing.T) {
+	t.Setenv("CONTEXT_DROP_HOME", t.TempDir())
+	if _, err := Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range [][]string{{"/bin/echo"}, {"/bin/echo", "{prompt_file}", "{prompt_file}"}} {
+		if err := ConfigureAgent("bad", AgentConfig{Command: command, PromptMode: "arg"}, false); err == nil {
+			t.Fatalf("expected placeholder error for %#v", command)
+		}
+	}
+}
+
+func TestConfigureAgentHandlesNilAgentsMap(t *testing.T) {
+	_, configPath, _, err := Paths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A previously valid config with no agents property must not panic.
+	if err := os.WriteFile(configPath, []byte(`{"host":"127.0.0.1","port":47762,"nodePath":"/opt/homebrew/bin/node"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ConfigureAgent("cmd", AgentConfig{Command: []string{"/bin/echo", "{prompt_file}"}, PromptMode: "arg"}, false); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cfg.Agents["cmd"]; !ok {
+		t.Fatalf("agent not persisted: %#v", cfg.Agents)
+	}
+}
+
 func TestInitializeRejectsInvalidBackendEnv(t *testing.T) {
 	t.Setenv("CONTEXT_DROP_HOME", t.TempDir())
 	t.Setenv("CONTEXT_DROP_BACKEND", "screen")

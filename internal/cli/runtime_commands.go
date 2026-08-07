@@ -32,7 +32,31 @@ func newAgentCommand() *cobra.Command {
 		return nil
 	}}
 	list.Flags().BoolVar(&jsonOut, "json", false, "print JSON")
-	root.AddCommand(list)
+	var name, commandJSON string
+	var commandArgs []string
+	var replace bool
+	configure := &cobra.Command{Use: "configure", Short: "Register a complete agent argv without shell interpolation", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+		if (commandJSON != "") == (len(commandArgs) > 0) {
+			return fmt.Errorf("use exactly one of --command-json or repeated --arg")
+		}
+		argv := commandArgs
+		if commandJSON != "" {
+			if err := json.Unmarshal([]byte(commandJSON), &argv); err != nil {
+				return fmt.Errorf("parse --command-json: %w", err)
+			}
+		}
+		if err := runtimeclient.ConfigureAgent(name, runtimeclient.AgentConfig{Command: argv, PromptMode: "arg"}, replace); err != nil {
+			return err
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "configured local agent %s\n", name)
+		return nil
+	}}
+	configure.Flags().StringVar(&name, "name", "", "agent name")
+	configure.Flags().StringVar(&commandJSON, "command-json", "", "complete argv as a JSON string array")
+	configure.Flags().StringArrayVar(&commandArgs, "arg", nil, "one argv element; repeat in exact order")
+	configure.Flags().BoolVar(&replace, "replace", false, "replace an existing registration")
+	_ = configure.MarkFlagRequired("name")
+	root.AddCommand(list, configure)
 	return root
 }
 
