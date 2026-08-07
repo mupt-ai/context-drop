@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: runtime/package-lock.json
+
+      - run: npm ci --prefix runtime && npm run build --prefix runtime
+      - run: make coverage
+
+      - name: Build archives
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+
+          build() {
+            local goos="$1"
+            local goarch="$2"
+            local archive_os="$3"
+            local archive_arch="$4"
+            local out="dist/context-drop_${version}_${archive_os}_${archive_arch}.tar.gz"
+
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build \
+              -trimpath \
+              -ldflags "-s -w -X main.version=${GITHUB_REF_NAME} -X main.commit=${GITHUB_SHA::7} -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              -o dist/context-drop ./cmd/context-drop
+            stage="$(mktemp -d)"
+            mkdir -p "$stage/runtime"
+            cp dist/context-drop "$stage/context-drop"
+            cp -R runtime/dist "$stage/runtime/dist"
+            tar -C "$stage" -czf "$out" context-drop runtime
+            rm -rf "$stage"
+            rm dist/context-drop
+          }
+
+          build darwin amd64 macOS x86_64
+          build darwin arm64 macOS arm64
+          build linux amd64 linux x86_64
+          build linux arm64 linux arm64
+
+          (cd dist && sha256sum *.tar.gz > "context-drop_${version}_checksums.txt")
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "$GITHUB_REF_NAME"
+          fi

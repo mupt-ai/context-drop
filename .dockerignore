@@ -1,0 +1,7 @@
+.git
+.data
+bin
+.env
+.env.*
+*.credentials.json
+*gcp-service-account*.json

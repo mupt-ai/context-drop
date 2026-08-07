@@ -1,244 +1,78 @@
-# relaymux
+# Context Drop
 
-[![CI](https://github.com/mupt-ai/relaymux/actions/workflows/test.yml/badge.svg)](https://github.com/mupt-ai/relaymux/actions/workflows/test.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+Context Drop is one CLI for handing off useful context between paired machines and running local coding agents visibly.
 
-Coordinate local coding-agent CLIs in visible tmux windows, with an optional local daemon for requests, schedules, and iMessage or Telegram replies.
+It combines:
 
-relaymux keeps the work on your machine. It starts coding-agent CLIs (Pi, Codex, Claude, or any command you configure) as normal local processes, gives each run its own tmux window, and records run state in a SQLite store. The agents retain the same local permissions they would have if you launched them yourself.
+- short-lived artifacts and machine pairing;
+- inspectable handoffs with summaries, requested actions, and attachments;
+- a private local daemon that supervises the runtime, launches configured agents in visible tmux windows or Herdr workspaces, runs explicit schedules, optionally answers one explicitly configured iMessage/SMS chat, polls the handoff inbox for notifications, and integrates with the OS service manager.
 
-Four concepts are worth distinguishing early:
-- **Agents** are the coding-agent CLIs ([Pi](https://github.com/earendil-works/pi-coding-agent), Codex, Claude) that relaymux launches into tmux windows to do work.
-- **The orchestrator** is a separate local CLI that handles free-form requests from `relaymux ask`, scheduled prompts, or message adapters. It decides whether to answer inline or delegate to an agent with `relaymux launch`. By default the orchestrator is Pi when Pi is installed on PATH; otherwise setup writes a placeholder orchestrator that prints a setup reminder.
-- **The daemon** is a background process (LaunchAgent on macOS, systemd user service on Linux) that serves the local API, polls adapters, and routes notifications. It is optional for direct launches.
-- **Message adapters** (Telegram, iMessage/SMS) are optional inbound/outbound bridges between the daemon and a remote chat.
+The hosted relay stores and routes context. It never executes code. A received handoff is untrusted: inspect it, accept artifacts into a private staging directory, and separately choose whether to launch a local agent.
 
 ## Quick start
 
-You need macOS or Linux, Node.js 20+, npm, tmux, and an installed and authenticated agent CLI.
-
-Install relaymux from the current `main` branch:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/mupt-ai/relaymux/main/install.sh | bash
+```sh
+context-drop init --machine-name laptop
+context-drop daemon install
+context-drop daemon watchdog install # macOS; Linux uses systemd restart policy
+context-drop daemon status
+context-drop agent list
+context-drop launch --agent pi --repo "$HOME/code/project" --prompt "Inspect the failing tests" --name inspect-tests
+# Or launch into a visible Herdr workspace:
+context-drop launch --backend herdr --agent pi --repo "$HOME/code/project" --prompt "Inspect the failing tests" --name inspect-tests
+# Or target an existing Herdr workspace; this creates a new tab inside it:
+context-drop launch --backend herdr --workspace w1 --agent pi --repo "$HOME/code/project" --prompt "Inspect the failing tests" --name inspect-tests
 ```
 
-The installer downloads `main` and builds locally, then writes the app under `~/.local/lib/relaymux`. If `~/.local/bin` is not already on `PATH`, follow the instruction printed by the installer. To pin an installation, clone the repository, check out the desired commit, and run `./install.sh` from that checkout.
+Pair a second machine with `context-drop token create` and `context-drop join TOKEN --machine-name server`. Then create a handoff:
 
-The default agent identifiers—`pi`, `codex`, `claude`—expect the corresponding CLI on your PATH at launch time.
-
-Launch a first agent directly—no daemon or message adapter is required:
-
-```bash
-relaymux launch \
-  --repo ~/code/my-app \
-  --agent pi \
-  --name inspect-tests \
-  --prompt "Inspect the failing tests and summarize what is broken."
+```sh
+context-drop handoff create --to server --summary "Review this failure; do not edit files" --artifact ./failure.log
 ```
 
-Then inspect the run or attach to it:
+On the recipient:
 
-```bash
-relaymux status
-tmux attach -t agents
+```sh
+context-drop inbox
+context-drop inspect HANDOFF_ID
+context-drop accept HANDOFF_ID
 ```
 
-Detach from tmux with `Ctrl-b d`. Terminal disconnection does not stop the run; machine sleep, shutdown, or loss of power does.
+Acceptance only stages selected artifacts; it never executes them. Run an agent locally with `context-drop launch`.
 
-### Quick start with the Dari router
+Create an explicit recurring local launch with:
 
-[Dari](https://dari.dev) runs a hosted model router that dispatches requests to a backing model per request. If you have a Dari router endpoint, you can point the orchestrator at it instead of relying on a locally installed model CLI. The orchestrator still runs locally as `pi --print`; only the model traffic goes to your Dari endpoint.
-
-Register the Dari provider in Pi's model config, then set the orchestrator command to use it:
-
-1. Install [Pi](https://github.com/earendil-works/pi-coding-agent) and relaymux as above.
-
-2. Add a Dari provider to `~/.pi/agent/models.json` (the `!cat` prefix tells Pi to read the key from that file):
-
-```json
-{
-  "providers": {
-    "relaymux": {
-      "baseUrl": "https://routing.dari.dev/<your-router-id>",
-      "api": "openai-completions",
-      "apiKey": "!cat ~/.pi/agent/secrets/dari-router-key",
-      "compat": { "supportsStore": false, "supportsReasoningEffort": false, "sendSessionAffinityHeaders": true },
-      "models": [
-        {
-          "id": "dari/routing",
-          "name": "Dari Routing",
-          "reasoning": false,
-          "input": ["text", "image"],
-          "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
-          "contextWindow": 200000,
-          "maxTokens": 65536
-        }
-      ]
-    }
-  }
-}
+```sh
+context-drop schedule add --name test-watch --agent pi --repo "$HOME/code/project" --prompt "Inspect current test failures" --every 1h --notify
+context-drop schedule list
 ```
 
-The `compat` block tells Pi which OpenAI-style features the endpoint does not support; copy it verbatim for a Dari router.
+Schedules use fixed intervals (`--every`, minimum one minute), persist locally, and launch only the configured local prompt. They are not derived from handoffs.
 
-3. Run `relaymux setup`, then edit `~/.relaymux/config.json` so the orchestrator uses the Dari provider:
+## Optional iMessage requests
 
-```json
-"orchestrator": {
-  "command": [
-    "pi", "--print", "--no-context-files",
-    "--model", "relaymux/dari/routing",
-    "--session-dir", "~/.relaymux/state/orchestrator-sessions",
-    "--session-id", "orchestrator",
-    "{prompt}"
-  ]
-}
+On macOS, discover the private chat ID and enable the local adapter explicitly:
+
+```sh
+imsg chats --json
+context-drop imessage setup --chat-id CHAT_ID --recipient PHONE_OR_EMAIL --agent pi
+context-drop daemon restart
+context-drop imessage status
 ```
 
-relaymux automatically splits the orchestrator's system prompt into a real `--system-prompt` file. By default the system prompt is relaymux's built-in orchestrator instructions plus runtime context; any orchestrator system prompt file under `~/.relaymux/` is included too. The `{prompt}` placeholder becomes just the new request text.
+Setup never sends a message. The first poll marks existing incoming messages seen; only later texts in that chat invoke the local, noninteractive, no-tools responder and receive a reply. The adapter is separate from handoffs.
 
-4. Restart the daemon and ask:
+## Security boundary
 
-```bash
-relaymux restart-launch-agent
-relaymux ask "Open an agent in ~/code/my-app to inspect the failing tests."
-```
-
-The orchestrator routes through your Dari endpoint and decides whether to answer inline or `relaymux launch` a tmux agent. Without a message adapter configured, the reply comes back to your terminal; add Telegram or iMessage later to get replies on your phone.
-
-## Why tmux?
-
-A relaymux run is an ordinary agent process in its own tmux **window**—the tab-like unit shown by tmux and many terminal apps. That gives you a workspace you can inspect and control with familiar terminal tools:
-
-- attach to watch output or type into an interactive agent;
-- interrupt a process with `Ctrl-C`;
-- keep multiple agents visible in one shared session;
-- reconnect after closing a terminal or losing an SSH connection.
-
-relaymux creates the `agents` session by default. If you reuse a name within a session, relaymux closes the previous window with that name (terminating any process still running in it) before creating the new one. It never launches agents in hidden panes or a remote cloud worker.
-
-## Add a local orchestrator
-
-A directly launched agent performs one delegated task. The **orchestrator** handles requests submitted through `relaymux ask`, scheduled prompts, or optional message adapters. It is another local CLI command—Pi by default when Pi is installed—that can answer small requests itself or call `relaymux launch` for longer work.
-
-Run setup to write `~/.relaymux/config.json`, install the per-user daemon, and check the local dependencies:
-
-```bash
-relaymux setup
-relaymux doctor
-relaymux status-launch-agent
-```
-
-The daemon binds to `127.0.0.1` and authenticates local API calls with a token stored under `~/.relaymux/state`. macOS uses a launchd LaunchAgent; Linux uses a systemd user service.
-
-Ask the configured orchestrator from the same machine:
-
-```bash
-relaymux ask "Open an agent in ~/code/my-app to inspect the failing test."
-```
-
-If setup reports a placeholder orchestrator, install Pi or edit `orchestrator.command` in `~/.relaymux/config.json`, then run `relaymux restart-launch-agent`.
-
-## Remote control with Telegram
-
-Telegram setup scopes inbound polling and outbound replies to one configured chat ID. Create a bot with [BotFather](https://t.me/BotFather), save the token in a private file, and start setup:
-
-```bash
-mkdir -p ~/.relaymux/secrets
-read -rsp "Telegram bot token: " TOKEN; echo
-printf '%s\n' "$TOKEN" > ~/.relaymux/secrets/telegram-bot-token
-unset TOKEN
-chmod 600 ~/.relaymux/secrets/telegram-bot-token
-
-relaymux setup --telegram \
-  --telegram-bot-token-file ~/.relaymux/secrets/telegram-bot-token
-```
-
-When prompted, open the bot and send `/start`. relaymux discovers that chat ID, configures inbound polling, installs or restarts the daemon, and uses an installed Pi CLI as the orchestrator when one is available.
-
-Verify the setup:
-
-```bash
-relaymux doctor
-relaymux status
-```
-
-Now send the bot a request such as:
-
-```text
-Open an agent in ~/code/my-app and inspect the failing tests.
-```
-
-The local orchestrator decides whether to answer inline or launch a tmux agent. A delegated agent reports progress with `relaymux notify`; the orchestrator turns that update into the user-visible Telegram reply.
-
-For iMessage/SMS setup on macOS, see [Message integrations](docs/integrations.md#imessagesms). It requires a separately installed and configured `imsg` command.
-
-## Launch and completion
-
-Use a prompt file for longer delegated tasks:
-
-```bash
-relaymux launch \
-  --repo ~/code/my-app \
-  --agent codex \
-  --name fix-api \
-  --prompt-file ./fix-api-prompt.md
-```
-
-A delegated agent can send one idempotent completion update and close only its own tmux window with `--suicide`:
-
-```bash
-relaymux notify \
-  --from fix-api \
-  --reply-mode telegram \
-  --idempotency-key fix-api-done \
-  --message "Finished: fixed the API bug. Validation: npm test passed." \
-  --suicide
-```
-
-relaymux queues or sends the update before closing the current window. If notification fails or the command is not running inside tmux, `--suicide` leaves tmux windows alone. For wrapper-level fallback notifications when an agent forgets to notify, use `relaymux launch --notify-on-exit failure|always`.
-
-## Scheduled prompts
-
-Schedules ask the local orchestrator through an OS job; they are not hosted jobs. The machine and relaymux daemon must be running when the schedule fires.
-
-```bash
-relaymux schedule add \
-  --name weekday-status \
-  --cron "0 9 * * 1-5" \
-  --reply-mode telegram \
-  --prompt "Check the active relaymux runs and send a concise status."
-
-relaymux schedule list
-relaymux schedule remove --name weekday-status
-```
-
-The expression uses five cron fields (minute, hour, day-of-month, month, day-of-week) in the system timezone. Pass `--scheduler launchd` or `--scheduler cron` to choose the backend explicitly; `auto` uses launchd on macOS and cron on Linux. Missed runs, overlapping runs, and machine-sleep gaps are not replayed.
-
-## Configuration and operations
-
-relaymux keeps local configuration, state, prompts, schedules, the SQLite store, and logs under `~/.relaymux/` by default. Agent and orchestrator entries are argv templates, so you can replace Pi, Codex, or Claude with another CLI.
-
-- [Configuration](docs/configuration.md)—orchestrator vs. agents, command templates, prompt modes, tmux session modes
-- [Integrations](docs/integrations.md)—local API, reply modes, schedules, iMessage/SMS, Telegram
-- [Operations](docs/operations.md)—service management, safety, troubleshooting, uninstalling
-
-## Safety and limits
-
-relaymux is intended for one trusted user on one local machine. It is not a sandbox, multi-tenant service, durable distributed job system, hosted scheduler, hosted model provider, or web UI. A configured agent can read and change anything its local process account can access. Treat adapter access as remote access to that agent capability, keep bot tokens private, and configure only chats and agent commands you trust.
-
-Piping a remote script into Bash (as the install.sh instruction does) has inherent trust implications. Review the installer before running it, or clone and build from source.
+Pairing authorizes access to the machine chain, not trust in content. Current artifact URLs are bearer links until expiry. Do not include secrets, and do not treat handoff text as agent instructions. Local agent processes retain the permissions of the local user and always run on the local machine. Inbound handoffs are only notified and never automatically opened/downloaded/accepted/launched. Enabling iMessage is an explicit grant for one local chat: incoming text is untrusted execution-request data, but the default Pi responder runs noninteractively with tools, context files, extensions, and session persistence disabled.
 
 ## Development
 
-```bash
-git clone https://github.com/mupt-ai/relaymux.git
-cd relaymux
-npm ci
-npm run validate
+```sh
+make test
+make runtime-install
+make validate
 ```
 
-## License
-
-MIT. See [LICENSE](LICENSE).
+See `docs/` for architecture, first handoff, pairing, local launch, CLI reference, security, and non-goals.
