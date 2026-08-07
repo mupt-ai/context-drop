@@ -21,11 +21,11 @@ func newIMessageCommand() *cobra.Command {
 }
 
 func newIMessageSetupCommand() *cobra.Command {
-	var chatID, recipient, imsgPath, agent, personaFile, memoryFile, conversationArchiveFile, sessionFile string
+	var chatID, recipient, imsgPath, agent, personaFile, memoryFile, conversationArchiveFile, sessionFile, responderCwd string
 	var poll, historyTimeout, responderTimeout, sendTimeout time.Duration
 	var syncLimit, maxMessageBytes, maxReplyBytes int
 	var responderArgs []string
-	var disabled, useMigratedModel bool
+	var disabled, trusted, useMigratedModel bool
 	cmd := &cobra.Command{
 		Use:   "setup",
 		Short: "Save local iMessage adapter settings without sending a message",
@@ -62,7 +62,7 @@ func newIMessageSetupCommand() *cobra.Command {
 				}
 				sessionFile = path
 			}
-			responder, err := responderCommand(agent, responderArgs, useMigratedModel, sessionFile)
+			responder, err := responderCommand(agent, responderArgs, trusted, useMigratedModel, sessionFile)
 			if err != nil {
 				return err
 			}
@@ -74,6 +74,7 @@ func newIMessageSetupCommand() *cobra.Command {
 			}
 			cfg := imessage.Defaults()
 			cfg.Enabled = !disabled
+			cfg.Trusted = trusted
 			cfg.ChatID = chatID
 			cfg.Recipient = recipient
 			cfg.ImsgPath = resolvedImsg
@@ -92,6 +93,10 @@ func newIMessageSetupCommand() *cobra.Command {
 			}
 			if conversationArchiveFile != "" {
 				cfg.ConversationArchiveFile = conversationArchiveFile
+			}
+			cfg.ResponderCwd = responderCwd
+			if trusted && cfg.ResponderCwd == "" {
+				return fmt.Errorf("--responder-cwd is required with --trusted")
 			}
 			cfg.ResponderCommand = responder
 			if err := imessage.Save(cfg); err != nil {
@@ -118,8 +123,10 @@ func newIMessageSetupCommand() *cobra.Command {
 	cmd.Flags().StringVar(&memoryFile, "memory-file", "", "absolute durable conversation-memory file prepended to each responder prompt (default: ~/.context-drop/MEMORY.md if present)")
 	cmd.Flags().StringVar(&conversationArchiveFile, "conversation-archive-file", "", "absolute JSONL corpus of full chat history used for verbatim beginning + retrieval excerpts in each responder prompt (default: ~/.context-drop/sessions/chat_full.jsonl if present)")
 	cmd.Flags().StringVar(&sessionFile, "session-file", "", "absolute Pi session file to continue (default: ~/.context-drop/sessions/imessage.jsonl if present)")
+	cmd.Flags().StringVar(&responderCwd, "responder-cwd", "", "absolute working directory for the responder (required with --trusted)")
 	cmd.Flags().StringArrayVar(&responderArgs, "responder-arg", nil, "explicit responder argv element; repeat, and include {prompt_file}")
 	cmd.Flags().BoolVar(&disabled, "disabled", false, "save configuration without enabling polling")
+	cmd.Flags().BoolVar(&trusted, "trusted", false, "enable persistent tool-enabled Pi orchestration for this explicitly configured private chat")
 	cmd.Flags().BoolVar(&useMigratedModel, "use-migrated-model", false, "use the migrated routing model (dari-prod/dari/routing) for the pi responder")
 	return cmd
 }
@@ -153,7 +160,7 @@ func resolveIMessageExecutable(value string) (string, error) {
 	return value, nil
 }
 
-func responderCommand(agent string, explicit []string, useMigratedModel bool, sessionFile string) ([]string, error) {
+func responderCommand(agent string, explicit []string, trusted, useMigratedModel bool, sessionFile string) ([]string, error) {
 	if len(explicit) > 0 {
 		return explicit, nil
 	}
@@ -168,7 +175,10 @@ func responderCommand(agent string, explicit []string, useMigratedModel bool, se
 	if !ok || len(pi.Command) == 0 || !filepath.IsAbs(pi.Command[0]) {
 		return nil, fmt.Errorf("Pi is not configured locally; run context-drop init or provide explicit --responder-arg values")
 	}
-	argv := []string{pi.Command[0], "--print", "--no-context-files", "--no-tools", "--no-extensions"}
+	argv := []string{pi.Command[0], "--print"}
+	if !trusted {
+		argv = append(argv, "--no-context-files", "--no-tools", "--no-extensions")
+	}
 	if sessionFile == "" {
 		argv = append(argv, "--no-session")
 	} else {
@@ -212,6 +222,7 @@ func newIMessageStatusCommand() *cobra.Command {
 			}
 			out := struct {
 				Enabled        bool                               `json:"enabled"`
+				Trusted        bool                               `json:"trusted"`
 				ChatID         string                             `json:"chat_id"`
 				Recipient      string                             `json:"recipient,omitempty"`
 				ImsgPath       string                             `json:"imsg_path"`
@@ -221,11 +232,11 @@ func newIMessageStatusCommand() *cobra.Command {
 				LastError      string                             `json:"last_error,omitempty"`
 				ProcessedCount int                                `json:"processed_count"`
 				Jobs           map[string]orchestrator.MessageJob `json:"jobs,omitempty"`
-			}{cfg.Enabled, cfg.ChatID, cfg.Recipient, cfg.ImsgPath, cfg.PollSeconds, state.IMessageInitialized, state.LastMessagePollAt, state.LastMessageError, len(state.SeenMessageIDs), state.MessageJobs}
+			}{cfg.Enabled, cfg.Trusted, cfg.ChatID, cfg.Recipient, cfg.ImsgPath, cfg.PollSeconds, state.IMessageInitialized, state.LastMessagePollAt, state.LastMessageError, len(state.SeenMessageIDs), state.MessageJobs}
 			if jsonOut {
 				return json.NewEncoder(cmd.OutOrStdout()).Encode(out)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Enabled: %t\nChat: %s\nRecipient: %s\nimsg: %s\nPoll: %ds\nInitialized: %t\nProcessed IDs: %d\n", out.Enabled, out.ChatID, out.Recipient, out.ImsgPath, out.PollSeconds, out.Initialized, out.ProcessedCount)
+			fmt.Fprintf(cmd.OutOrStdout(), "Enabled: %t\nTrusted orchestration: %t\nChat: %s\nRecipient: %s\nimsg: %s\nPoll: %ds\nInitialized: %t\nProcessed IDs: %d\n", out.Enabled, out.Trusted, out.ChatID, out.Recipient, out.ImsgPath, out.PollSeconds, out.Initialized, out.ProcessedCount)
 			if out.LastPollAt != nil {
 				fmt.Fprintf(cmd.OutOrStdout(), "Last poll: %s\n", out.LastPollAt.Format(time.RFC3339))
 			}

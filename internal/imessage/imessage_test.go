@@ -94,6 +94,28 @@ func TestHistoryUsesScopedArgvAndFilters(t *testing.T) {
 	}
 }
 
+func TestTrustedResponderPromptEnablesOrchestration(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Trusted = true
+	cfg.ResponderCwd = t.TempDir()
+	fake := &fakeCommander{results: []CommandResult{{Stdout: []byte("done\n")}}}
+	adapter := Adapter{Config: cfg, Commander: fake}
+	if _, err := adapter.Respond(context.Background(), Message{ID: "m", Text: "launch an agent"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.promptBodies) != 1 || !strings.Contains(fake.promptBodies[0], "persistent coding orchestrator") {
+		t.Fatalf("trusted prompt = %#v", fake.promptBodies)
+	}
+}
+
+func TestConfigRejectsMissingResponderCwd(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.ResponderCwd = "/no/such/directory"
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "responder cwd") {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
 func TestRespondUsesPrivatePromptFileAndSendPreservesOneArg(t *testing.T) {
 	cfg := testConfig(t)
 	fake := &fakeCommander{results: []CommandResult{{Stdout: []byte("safe reply\n")}, {Stdout: []byte(`{"ok":true}`)}}}
