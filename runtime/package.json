@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test dist/test/*.test.js",
+    "test": "npm run build && node --test ../internal/imessage/*.test.mjs dist/test/*.test.js",
     "validate": "npm run typecheck && npm test"
   },
   "devDependencies": {

@@ -3,12 +3,15 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"contextdrop.dev/context-drop/internal/imessage"
+	"contextdrop.dev/context-drop/internal/orchestrator"
 )
 
 func TestIMessageSetupSavesWithoutExecuting(t *testing.T) {
@@ -43,6 +46,36 @@ func TestIMessageSetupSavesWithoutExecuting(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "No message was sent") {
 		t.Fatalf("output = %q", out.String())
+	}
+}
+
+func TestIMessageLatencyReportUsesLatestInstrumentedSentSample(t *testing.T) {
+	jobs := map[string]orchestrator.MessageJob{}
+	base := time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 25; i++ {
+		created := base.Add(time.Duration(i) * time.Minute)
+		sent := created.Add(2 * time.Second)
+		jobs[fmt.Sprintf("message-%02d", i)] = orchestrator.MessageJob{
+			MessageID: fmt.Sprintf("message-%02d", i),
+			Status:    "sent",
+			SentAt:    &sent,
+			Latency: orchestrator.MessageLatency{
+				MessageCreatedAt: &created,
+				EndToEndMS:       int64(1000 + i*100),
+				QueueMS:          100,
+				ServiceMS:        int64(900 + i*100),
+			},
+		}
+	}
+	report, err := buildIMessageLatencyReport(jobs, 20, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.SampleSize != 20 || report.Metrics["end_to_end"].P50MS != 2400 || report.Metrics["end_to_end"].P90MS != 3200 {
+		t.Fatalf("report = %#v", report)
+	}
+	if !report.Target.Met {
+		t.Fatalf("target should be met: %#v", report.Target)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 type call struct {
@@ -22,6 +23,22 @@ type fakeCommander struct {
 	errors       []error
 	promptBodies []string
 }
+
+type fakePersistentResponder struct {
+	state  PersistentResponderState
+	prompt string
+}
+
+func (f *fakePersistentResponder) Prepare(context.Context) (PersistentResponderState, error) {
+	return f.state, nil
+}
+
+func (f *fakePersistentResponder) Respond(_ context.Context, prompt string, _ int) (Response, error) {
+	f.prompt = prompt
+	return Response{Reply: "done"}, nil
+}
+
+func (f *fakePersistentResponder) Close() error { return nil }
 
 func (f *fakeCommander) Run(_ context.Context, name string, args []string, max int) (CommandResult, error) {
 	f.calls = append(f.calls, call{name, append([]string(nil), args...), max})
@@ -109,6 +126,51 @@ func TestTrustedResponderPromptEnablesOrchestration(t *testing.T) {
 	}
 }
 
+func TestWarmPersistentResponderUsesIncrementalPromptAndKeepsMemoryAvailable(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Trusted = true
+	memoryPath := filepath.Join(t.TempDir(), "MEMORY.md")
+	if err := os.WriteFile(memoryPath, []byte("private durable fact that must not be reinjected"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.MemoryFile = memoryPath
+	responder := &fakePersistentResponder{}
+	adapter := Adapter{Config: cfg, PersistentResponder: responder}
+	response, err := adapter.RespondMeasured(context.Background(), Message{ID: "42", Text: "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Reply != "done" {
+		t.Fatalf("reply = %q", response.Reply)
+	}
+	if strings.Contains(responder.prompt, "private durable fact") {
+		t.Fatalf("warm prompt reinjected memory contents: %q", responder.prompt)
+	}
+	for _, want := range []string{memoryPath, "Incoming iMessage ID 42", "hello"} {
+		if !strings.Contains(responder.prompt, want) {
+			t.Fatalf("warm prompt missing %q: %q", want, responder.prompt)
+		}
+	}
+}
+
+func TestEmptyPersistentSessionReceivesFullBootstrapContext(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Trusted = true
+	memoryPath := filepath.Join(t.TempDir(), "MEMORY.md")
+	if err := os.WriteFile(memoryPath, []byte("durable bootstrap fact"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.MemoryFile = memoryPath
+	responder := &fakePersistentResponder{state: PersistentResponderState{NeedsBootstrap: true}}
+	adapter := Adapter{Config: cfg, PersistentResponder: responder}
+	if _, err := adapter.RespondMeasured(context.Background(), Message{ID: "42", Text: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(responder.prompt, "durable bootstrap fact") {
+		t.Fatalf("bootstrap prompt did not include memory: %q", responder.prompt)
+	}
+}
+
 func TestTrustedResponderRetriesTransientProviderFailure(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Trusted = true
@@ -189,5 +251,18 @@ func TestConfigPrivateAndValidated(t *testing.T) {
 	}
 	if !reflect.DeepEqual(loaded, cfg) {
 		t.Fatalf("loaded = %#v", loaded)
+	}
+}
+
+func TestPollIntervalSupportsLegacySecondsAndSubsecondConfig(t *testing.T) {
+	legacy := Defaults()
+	legacy.PollMilliseconds = 0
+	legacy.PollSeconds = 3
+	if got := legacy.PollInterval(); got != 3*time.Second {
+		t.Fatalf("legacy interval = %s", got)
+	}
+	current := Defaults()
+	if got := current.PollInterval(); got != 250*time.Millisecond {
+		t.Fatalf("current interval = %s", got)
 	}
 }

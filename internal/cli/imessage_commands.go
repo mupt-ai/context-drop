@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"contextdrop.dev/context-drop/internal/imessage"
@@ -16,7 +17,7 @@ import (
 
 func newIMessageCommand() *cobra.Command {
 	root := &cobra.Command{Use: "imessage", Short: "Configure the private local iMessage/SMS request adapter"}
-	root.AddCommand(newIMessageSetupCommand(), newIMessageStatusCommand())
+	root.AddCommand(newIMessageSetupCommand(), newIMessageStatusCommand(), newIMessageLatencyCommand())
 	return root
 }
 
@@ -34,8 +35,8 @@ func newIMessageSetupCommand() *cobra.Command {
 			if chatID == "" {
 				return fmt.Errorf("--chat-id is required; discover it with: imsg chats --json")
 			}
-			if poll < time.Second || poll%time.Second != 0 {
-				return fmt.Errorf("--poll must be a whole number of seconds and at least 1s")
+			if poll < 100*time.Millisecond || poll%time.Millisecond != 0 {
+				return fmt.Errorf("--poll must be a whole number of milliseconds and at least 100ms")
 			}
 			resolvedImsg, err := resolveIMessageExecutable(imsgPath)
 			if err != nil {
@@ -78,7 +79,8 @@ func newIMessageSetupCommand() *cobra.Command {
 			cfg.ChatID = chatID
 			cfg.Recipient = recipient
 			cfg.ImsgPath = resolvedImsg
-			cfg.PollSeconds = int(poll / time.Second)
+			cfg.PollMilliseconds = int(poll / time.Millisecond)
+			cfg.PollSeconds = 0
 			cfg.SyncLimit = syncLimit
 			cfg.HistoryTimeoutSeconds = durationSeconds(historyTimeout)
 			cfg.ResponderTimeoutSeconds = durationSeconds(responderTimeout)
@@ -112,7 +114,7 @@ func newIMessageSetupCommand() *cobra.Command {
 	cmd.Flags().StringVar(&recipient, "recipient", "", "optional expected phone/email label (informational)")
 	cmd.Flags().StringVar(&imsgPath, "imsg-path", "", "absolute imsg executable path (default: detected on PATH)")
 	cmd.Flags().StringVar(&agent, "agent", "pi", "local responder preset (currently pi)")
-	cmd.Flags().DurationVar(&poll, "poll", 3*time.Second, "history polling interval")
+	cmd.Flags().DurationVar(&poll, "poll", time.Duration(imessage.DefaultPollMilliseconds)*time.Millisecond, "history polling interval")
 	cmd.Flags().IntVar(&syncLimit, "sync-limit", imessage.DefaultSyncLimit, "recent history items per poll (1..200)")
 	cmd.Flags().DurationVar(&historyTimeout, "history-timeout", imessage.DefaultHistoryTimeoutSeconds*time.Second, "imsg history timeout")
 	cmd.Flags().DurationVar(&responderTimeout, "responder-timeout", imessage.DefaultResponderTimeoutSeconds*time.Second, "local responder timeout")
@@ -226,17 +228,17 @@ func newIMessageStatusCommand() *cobra.Command {
 				ChatID         string                             `json:"chat_id"`
 				Recipient      string                             `json:"recipient,omitempty"`
 				ImsgPath       string                             `json:"imsg_path"`
-				PollSeconds    int                                `json:"poll_seconds"`
+				PollInterval   string                             `json:"poll_interval"`
 				Initialized    bool                               `json:"initialized"`
 				LastPollAt     *time.Time                         `json:"last_poll_at,omitempty"`
 				LastError      string                             `json:"last_error,omitempty"`
 				ProcessedCount int                                `json:"processed_count"`
 				Jobs           map[string]orchestrator.MessageJob `json:"jobs,omitempty"`
-			}{cfg.Enabled, cfg.Trusted, cfg.ChatID, cfg.Recipient, cfg.ImsgPath, cfg.PollSeconds, state.IMessageInitialized, state.LastMessagePollAt, state.LastMessageError, len(state.SeenMessageIDs), state.MessageJobs}
+			}{cfg.Enabled, cfg.Trusted, cfg.ChatID, cfg.Recipient, cfg.ImsgPath, cfg.PollInterval().String(), state.IMessageInitialized, state.LastMessagePollAt, state.LastMessageError, len(state.SeenMessageIDs), state.MessageJobs}
 			if jsonOut {
 				return json.NewEncoder(cmd.OutOrStdout()).Encode(out)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Enabled: %t\nTrusted orchestration: %t\nChat: %s\nRecipient: %s\nimsg: %s\nPoll: %ds\nInitialized: %t\nProcessed IDs: %d\n", out.Enabled, out.Trusted, out.ChatID, out.Recipient, out.ImsgPath, out.PollSeconds, out.Initialized, out.ProcessedCount)
+			fmt.Fprintf(cmd.OutOrStdout(), "Enabled: %t\nTrusted orchestration: %t\nChat: %s\nRecipient: %s\nimsg: %s\nPoll: %s\nInitialized: %t\nProcessed IDs: %d\n", out.Enabled, out.Trusted, out.ChatID, out.Recipient, out.ImsgPath, out.PollInterval, out.Initialized, out.ProcessedCount)
 			if out.LastPollAt != nil {
 				fmt.Fprintf(cmd.OutOrStdout(), "Last poll: %s\n", out.LastPollAt.Format(time.RFC3339))
 			}
@@ -248,4 +250,146 @@ func newIMessageStatusCommand() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "print JSON")
 	return cmd
+}
+
+type latencyDistribution struct {
+	Count  int     `json:"count"`
+	MinMS  int64   `json:"min_ms"`
+	P50MS  int64   `json:"p50_ms"`
+	P90MS  int64   `json:"p90_ms"`
+	P95MS  int64   `json:"p95_ms"`
+	MaxMS  int64   `json:"max_ms"`
+	MeanMS float64 `json:"mean_ms"`
+}
+
+type iMessageLatencyReport struct {
+	Definition string                         `json:"definition"`
+	SampleSize int                            `json:"sample_size"`
+	Minimum    int                            `json:"minimum_sample_size"`
+	Metrics    map[string]latencyDistribution `json:"metrics"`
+	Models     map[string]int                 `json:"selected_models,omitempty"`
+	Target     struct {
+		P50MS int64 `json:"p50_ms"`
+		P90MS int64 `json:"p90_ms"`
+		Met   bool  `json:"met"`
+	} `json:"target"`
+}
+
+func newIMessageLatencyCommand() *cobra.Command {
+	var jsonOut bool
+	var last, minimum int
+	cmd := &cobra.Command{
+		Use:   "latency",
+		Short: "Report reproducible iMessage processing latency distributions",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			store, err := orchestrator.NewStore()
+			if err != nil {
+				return err
+			}
+			state, err := store.Load()
+			if err != nil {
+				return err
+			}
+			report, err := buildIMessageLatencyReport(state.MessageJobs, last, minimum)
+			if err != nil {
+				return err
+			}
+			if jsonOut {
+				return json.NewEncoder(cmd.OutOrStdout()).Encode(report)
+			}
+			endToEnd := report.Metrics["end_to_end"]
+			fmt.Fprintf(cmd.OutOrStdout(), "Sample: %d instrumented sent messages (latest %d requested; minimum %d)\n", report.SampleSize, last, minimum)
+			fmt.Fprintf(cmd.OutOrStdout(), "End-to-end: p50=%s p90=%s p95=%s min=%s max=%s mean=%s\n", durationMillis(endToEnd.P50MS), durationMillis(endToEnd.P90MS), durationMillis(endToEnd.P95MS), durationMillis(endToEnd.MinMS), durationMillis(endToEnd.MaxMS), durationMillis(int64(endToEnd.MeanMS)))
+			fmt.Fprintf(cmd.OutOrStdout(), "Target p50<=3s and p90<=8s: %t\n", report.Target.Met)
+			return nil
+		},
+	}
+	cmd.Flags().IntVar(&last, "last", 50, "number of latest instrumented sent messages to include")
+	cmd.Flags().IntVar(&minimum, "minimum-sample", 20, "minimum sample size required to report the target as met")
+	cmd.Flags().BoolVar(&jsonOut, "json", false, "print JSON")
+	return cmd
+}
+
+func buildIMessageLatencyReport(jobs map[string]orchestrator.MessageJob, last, minimum int) (iMessageLatencyReport, error) {
+	if last < 1 || minimum < 1 {
+		return iMessageLatencyReport{}, fmt.Errorf("--last and --minimum-sample must be positive")
+	}
+	sample := make([]orchestrator.MessageJob, 0, len(jobs))
+	for _, job := range jobs {
+		if job.Status == "sent" && job.SentAt != nil && job.Latency.MessageCreatedAt != nil && job.Latency.EndToEndMS > 0 {
+			sample = append(sample, job)
+		}
+	}
+	sort.Slice(sample, func(i, j int) bool { return sample[i].SentAt.Before(*sample[j].SentAt) })
+	if len(sample) > last {
+		sample = sample[len(sample)-last:]
+	}
+	if len(sample) == 0 {
+		return iMessageLatencyReport{}, fmt.Errorf("no instrumented sent iMessage jobs are available yet")
+	}
+	values := func(read func(orchestrator.MessageLatency) int64) []int64 {
+		out := make([]int64, 0, len(sample))
+		for _, job := range sample {
+			out = append(out, read(job.Latency))
+		}
+		return out
+	}
+	report := iMessageLatencyReport{
+		Definition: "latest successfully sent iMessages with parseable source timestamps; end_to_end is source creation through completed imsg send; nearest-rank percentiles",
+		SampleSize: len(sample),
+		Minimum:    minimum,
+		Metrics: map[string]latencyDistribution{
+			"end_to_end":        distribution(values(func(v orchestrator.MessageLatency) int64 { return v.EndToEndMS })),
+			"queue":             distribution(values(func(v orchestrator.MessageLatency) int64 { return v.QueueMS })),
+			"worker_queue":      distribution(values(func(v orchestrator.MessageLatency) int64 { return v.WorkerQueueMS })),
+			"history":           distribution(values(func(v orchestrator.MessageLatency) int64 { return v.HistoryMS })),
+			"prompt_build":      distribution(values(func(v orchestrator.MessageLatency) int64 { return v.PromptBuildMS })),
+			"responder_startup": distribution(values(func(v orchestrator.MessageLatency) int64 { return v.ResponderStartupMS })),
+			"responder":         distribution(values(func(v orchestrator.MessageLatency) int64 { return v.ResponderMS })),
+			"first_output":      distribution(values(func(v orchestrator.MessageLatency) int64 { return v.FirstOutputMS })),
+			"tool_execution":    distribution(values(func(v orchestrator.MessageLatency) int64 { return v.ToolExecutionMS })),
+			"compaction":        distribution(values(func(v orchestrator.MessageLatency) int64 { return v.CompactionMS })),
+			"send":              distribution(values(func(v orchestrator.MessageLatency) int64 { return v.SendMS })),
+			"service":           distribution(values(func(v orchestrator.MessageLatency) int64 { return v.ServiceMS })),
+		},
+		Models: map[string]int{},
+	}
+	var roundDurations []int64
+	for _, job := range sample {
+		for _, round := range job.Latency.ModelRounds {
+			roundDurations = append(roundDurations, round.DurationMS)
+			if round.Model != "" {
+				report.Models[round.Model]++
+			}
+		}
+	}
+	if len(roundDurations) > 0 {
+		report.Metrics["model_round"] = distribution(roundDurations)
+	}
+	report.Target.P50MS = 3000
+	report.Target.P90MS = 8000
+	endToEnd := report.Metrics["end_to_end"]
+	report.Target.Met = len(sample) >= minimum && endToEnd.P50MS <= report.Target.P50MS && endToEnd.P90MS <= report.Target.P90MS
+	return report, nil
+}
+
+func distribution(values []int64) latencyDistribution {
+	sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
+	var sum int64
+	for _, value := range values {
+		sum += value
+	}
+	nearestRank := func(percent int) int64 {
+		index := (percent*len(values) + 99) / 100
+		if index < 1 {
+			index = 1
+		}
+		return values[index-1]
+	}
+	return latencyDistribution{Count: len(values), MinMS: values[0], P50MS: nearestRank(50), P90MS: nearestRank(90), P95MS: nearestRank(95), MaxMS: values[len(values)-1], MeanMS: float64(sum) / float64(len(values))}
+}
+
+func durationMillis(value int64) time.Duration {
+	return time.Duration(value) * time.Millisecond
 }

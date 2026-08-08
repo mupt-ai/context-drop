@@ -156,6 +156,7 @@ imsg chats --json
 context-drop imessage setup --chat-id CHAT_ID --recipient PHONE_OR_EMAIL --agent pi
 context-drop daemon restart
 context-drop imessage status
+context-drop imessage latency --last 50 --minimum-sample 20
 ```
 
 Existing messages are marked seen during setup. Only later messages are passed to the configured coding-agent responder, which returns a text reply. The default Pi responder runs without tools, context files, extensions, or session persistence. This adapter is separate from machine handoffs.

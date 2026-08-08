@@ -20,6 +20,35 @@ type messageCommander struct {
 	sends    []string
 }
 
+type queueCommander struct {
+	mu           sync.Mutex
+	history      []map[string]any
+	responds     int
+	firstStarted chan struct{}
+	releaseFirst chan struct{}
+}
+
+func (f *queueCommander) Run(_ context.Context, _ string, args []string, _ int) (imessage.CommandResult, error) {
+	if len(args) > 0 && args[0] == "history" {
+		f.mu.Lock()
+		data, _ := json.Marshal(f.history)
+		f.mu.Unlock()
+		return imessage.CommandResult{Stdout: data}, nil
+	}
+	if len(args) > 0 && args[0] == "send" {
+		return imessage.CommandResult{Stdout: []byte(`{"ok":true}`)}, nil
+	}
+	f.mu.Lock()
+	f.responds++
+	count := f.responds
+	f.mu.Unlock()
+	if count == 1 {
+		close(f.firstStarted)
+		<-f.releaseFirst
+	}
+	return imessage.CommandResult{Stdout: []byte("reply")}, nil
+}
+
 func (f *messageCommander) Run(_ context.Context, name string, args []string, _ int) (imessage.CommandResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -87,7 +116,11 @@ func TestMessageInitialSyncThenReplyOnceAcrossRestart(t *testing.T) {
 func TestOutgoingAndOtherChatNeverReachResponder(t *testing.T) {
 	cfg := messageTestConfig(t)
 	store := orchestrator.Store{Path: filepath.Join(t.TempDir(), "state.json")}
-	if err := store.Update(func(st *orchestrator.State) error { st.IMessageInitialized = true; return nil }); err != nil {
+	if err := store.Update(func(st *orchestrator.State) error {
+		st.IMessageInitialized = true
+		st.IMessageChatID = "1"
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 	commander := &messageCommander{history: []map[string]any{
@@ -98,5 +131,111 @@ func TestOutgoingAndOtherChatNeverReachResponder(t *testing.T) {
 	runner.PollMessages(context.Background())
 	if commander.responds != 0 || len(commander.sends) != 0 {
 		t.Fatal("filtered message reached responder")
+	}
+}
+
+func TestMessageJobRecordsEndToEndStageTelemetry(t *testing.T) {
+	cfg := messageTestConfig(t)
+	store := orchestrator.Store{Path: filepath.Join(t.TempDir(), "state.json")}
+	if err := store.Update(func(st *orchestrator.State) error {
+		st.IMessageInitialized = true
+		st.IMessageChatID = "1"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	created := time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC)
+	clock := created.Add(2 * time.Second)
+	now := func() time.Time {
+		current := clock
+		clock = clock.Add(10 * time.Millisecond)
+		return current
+	}
+	commander := &messageCommander{history: []map[string]any{{
+		"id": "measured", "text": "hello", "chat_id": "1", "is_from_me": false, "created_at": created.Format(time.RFC3339Nano),
+	}}}
+	runner := &Runner{Store: store, Now: now, IMessage: &imessage.Adapter{Config: cfg, Commander: commander}}
+	runner.PollMessages(context.Background())
+	state, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := state.MessageJobs["measured"]
+	if job.Status != "sent" || job.Latency.MessageCreatedAt == nil {
+		t.Fatalf("job = %#v", job)
+	}
+	if job.Latency.QueueMS != 2010 || job.Latency.WorkerQueueMS != 10 || job.Latency.ServiceMS != 20 || job.Latency.EndToEndMS != 2030 {
+		t.Fatalf("latency = %#v", job.Latency)
+	}
+	if job.Latency.PromptBytes == 0 {
+		t.Fatalf("prompt bytes were not recorded: %#v", job.Latency)
+	}
+}
+
+func TestPollingClaimsNextMessageWhileSessionWorkerIsBusy(t *testing.T) {
+	cfg := messageTestConfig(t)
+	store := orchestrator.Store{Path: filepath.Join(t.TempDir(), "state.json")}
+	if err := store.Update(func(st *orchestrator.State) error {
+		st.IMessageInitialized = true
+		st.IMessageChatID = "1"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	commander := &queueCommander{
+		history:      []map[string]any{{"id": "first", "text": "one", "chat_id": "1", "is_from_me": false}},
+		firstStarted: make(chan struct{}),
+		releaseFirst: make(chan struct{}),
+	}
+	runner := &Runner{Store: store, Now: func() time.Time { return time.Now().UTC() }, IMessage: &imessage.Adapter{Config: cfg, Commander: commander}}
+	firstDone := make(chan struct{})
+	go func() {
+		runner.PollMessages(context.Background())
+		close(firstDone)
+	}()
+	select {
+	case <-commander.firstStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first responder did not start")
+	}
+
+	commander.mu.Lock()
+	commander.history = append(commander.history, map[string]any{"id": "second", "text": "two", "chat_id": "1", "is_from_me": false})
+	commander.mu.Unlock()
+	secondDone := make(chan struct{})
+	go func() {
+		runner.PollMessages(context.Background())
+		close(secondDone)
+	}()
+
+	deadline := time.After(time.Second)
+	for {
+		state, err := store.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state.MessageJobs["second"].Status == "queued" {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("second message was not claimed while first responder was busy")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	close(commander.releaseFirst)
+	select {
+	case <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("first poll did not finish")
+	}
+	select {
+	case <-secondDone:
+	case <-time.After(time.Second):
+		t.Fatal("second poll did not finish")
+	}
+	state, _ := store.Load()
+	if state.MessageJobs["first"].Status != "sent" || state.MessageJobs["second"].Status != "sent" {
+		t.Fatalf("jobs = %#v", state.MessageJobs)
 	}
 }

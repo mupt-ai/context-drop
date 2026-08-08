@@ -73,7 +73,14 @@ type Runner struct {
 	IMessage            *imessage.Adapter
 	MessagePollInterval time.Duration
 	mu                  sync.Mutex
-	messageMu           sync.Mutex
+	messagePollMu       sync.Mutex
+	messageWorkerOnce   sync.Once
+	messageQueue        chan messageBatch
+}
+
+type messageBatch struct {
+	messages []imessage.Message
+	done     chan struct{}
 }
 
 func Paths() (dir, pid, logPath string, err error) {
@@ -236,8 +243,16 @@ func NewRunner() (*Runner, error) {
 	runner := &Runner{Store: store, Notifier: orchestrator.LocalNotifier{}, Now: func() time.Time { return time.Now().UTC() }, InboxInterval: interval, Runtime: client, CLIConfig: cfg, Inbox: listInbox}
 	messageConfig, messageErr := imessage.Load()
 	if messageErr == nil {
-		runner.IMessage = &imessage.Adapter{Config: messageConfig}
-		runner.MessagePollInterval = time.Duration(messageConfig.PollSeconds) * time.Second
+		adapter := &imessage.Adapter{Config: messageConfig}
+		responder, ok, responderErr := imessage.NewPiRPCResponder(messageConfig)
+		if responderErr != nil {
+			return nil, fmt.Errorf("configure persistent iMessage responder: %w", responderErr)
+		}
+		if ok {
+			adapter.PersistentResponder = responder
+		}
+		runner.IMessage = adapter
+		runner.MessagePollInterval = messageConfig.PollInterval()
 	} else if !errors.Is(messageErr, os.ErrNotExist) {
 		return nil, fmt.Errorf("load iMessage config: %w", messageErr)
 	}
@@ -256,6 +271,9 @@ func Run(ctx context.Context) error {
 	runner, err := NewRunner()
 	if err != nil {
 		return err
+	}
+	if runner.IMessage != nil {
+		defer runner.IMessage.Close()
 	}
 	childDone, stopChild, err := ensureRuntime(ctx)
 	backoff := time.Second
@@ -409,12 +427,19 @@ func startRuntime(ctx context.Context) (<-chan error, func(), error) {
 // before running the responder, giving at-most-once send semantics across daemon
 // restarts. A crash after the claim can lose a reply, but cannot duplicate one.
 func (r *Runner) PollMessages(ctx context.Context) {
-	if r.IMessage == nil || !r.IMessage.Config.Enabled || !r.messageMu.TryLock() {
+	if r.IMessage == nil || !r.IMessage.Config.Enabled || !r.messagePollMu.TryLock() {
 		return
 	}
-	defer r.messageMu.Unlock()
+	pollLocked := true
+	defer func() {
+		if pollLocked {
+			r.messagePollMu.Unlock()
+		}
+	}()
 	now := r.Now()
+	historyStarted := time.Now()
 	messages, err := r.IMessage.History(ctx)
+	historyDuration := time.Since(historyStarted)
 	if err != nil {
 		_ = r.recordMessagePoll(now, err)
 		return
@@ -448,56 +473,163 @@ func (r *Runner) PollMessages(ctx context.Context) {
 		log.Printf("Context Drop iMessage initial sync marked %d existing incoming message(s) seen", len(messages))
 		return
 	}
+	claimedMessages := make([]imessage.Message, 0, len(messages))
 	for _, message := range messages {
 		claimed := false
 		claimTime := r.Now()
+		createdAt := parseMessageCreatedAt(message.CreatedAt)
+		latency := orchestrator.MessageLatency{MessageCreatedAt: createdAt, HistoryMS: historyDuration.Milliseconds()}
+		if createdAt != nil && !claimTime.Before(*createdAt) {
+			latency.QueueMS = claimTime.Sub(*createdAt).Milliseconds()
+		}
 		if err := r.Store.Update(func(st *orchestrator.State) error {
 			if _, seen := st.SeenMessageIDs[message.ID]; seen {
 				return nil
 			}
 			st.SeenMessageIDs[message.ID] = claimTime.Format(time.RFC3339Nano)
-			st.MessageJobs[message.ID] = orchestrator.MessageJob{MessageID: message.ID, Status: "processing", ClaimedAt: claimTime, UpdatedAt: claimTime}
+			st.MessageJobs[message.ID] = orchestrator.MessageJob{MessageID: message.ID, Status: "queued", ClaimedAt: claimTime, UpdatedAt: claimTime, Latency: latency}
 			claimed = true
 			return nil
 		}); err != nil {
 			log.Printf("Context Drop iMessage claim failed: %v", err)
-			return
+			break
 		}
-		if !claimed {
-			continue
-		}
-		reply, responderErr := r.IMessage.Respond(ctx, message)
-		processErr := responderErr
-		if processErr == nil {
-			processErr = r.IMessage.Send(ctx, reply)
-		}
-		completedAt := r.Now()
-		status := "sent"
-		errorText := ""
-		if processErr != nil {
-			status = "failed"
-			errorText = processErr.Error()
-			log.Printf("Context Drop iMessage message %s failed: %v", message.ID, processErr)
-			// Only send a generic error when the responder failed. If `imsg send`
-			// failed after possibly delivering, never send a second reply.
-			if responderErr != nil {
-				_ = r.IMessage.Send(ctx, "Context Drop could not process that message.")
-			}
-		}
-		if err := r.Store.Update(func(st *orchestrator.State) error {
-			job := st.MessageJobs[message.ID]
-			job.Status = status
-			job.UpdatedAt = completedAt
-			job.Error = errorText
-			if status == "sent" {
-				job.SentAt = &completedAt
-			}
-			st.MessageJobs[message.ID] = job
-			return nil
-		}); err != nil {
-			log.Printf("Context Drop iMessage completion state failed: %v", err)
+		if claimed {
+			claimedMessages = append(claimedMessages, message)
 		}
 	}
+	if len(claimedMessages) == 0 {
+		return
+	}
+
+	// Enqueue under the poll lock so batches retain source order, then release
+	// the poller immediately. The single session worker keeps model/tool work
+	// sequential while later history polls continue claiming durable jobs.
+	r.startMessageWorker(ctx)
+	batch := messageBatch{messages: claimedMessages, done: make(chan struct{})}
+	select {
+	case r.messageQueue <- batch:
+	case <-ctx.Done():
+		return
+	}
+	r.messagePollMu.Unlock()
+	pollLocked = false
+	select {
+	case <-batch.done:
+	case <-ctx.Done():
+	}
+}
+
+func (r *Runner) startMessageWorker(ctx context.Context) {
+	r.messageWorkerOnce.Do(func() {
+		r.messageQueue = make(chan messageBatch, 1024)
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case batch := <-r.messageQueue:
+					for _, message := range batch.messages {
+						r.processMessage(ctx, message)
+					}
+					close(batch.done)
+				}
+			}
+		}()
+	})
+}
+
+func (r *Runner) processMessage(ctx context.Context, message imessage.Message) {
+	processingStarted := r.Now()
+	if err := r.Store.Update(func(st *orchestrator.State) error {
+		job := st.MessageJobs[message.ID]
+		job.Status = "processing"
+		job.ProcessingStartedAt = &processingStarted
+		job.UpdatedAt = processingStarted
+		if !processingStarted.Before(job.ClaimedAt) {
+			job.Latency.WorkerQueueMS = processingStarted.Sub(job.ClaimedAt).Milliseconds()
+		}
+		st.MessageJobs[message.ID] = job
+		return nil
+	}); err != nil {
+		log.Printf("Context Drop iMessage processing state failed: %v", err)
+	}
+	response, responderErr := r.IMessage.RespondMeasured(ctx, message)
+	processErr := responderErr
+	var sendDuration time.Duration
+	if processErr == nil {
+		sendStarted := time.Now()
+		processErr = r.IMessage.Send(ctx, response.Reply)
+		sendDuration = time.Since(sendStarted)
+	}
+	completedAt := r.Now()
+	status := "sent"
+	errorText := ""
+	if processErr != nil {
+		status = "failed"
+		errorText = processErr.Error()
+		log.Printf("Context Drop iMessage message %s failed: %v", message.ID, processErr)
+		// Only send a generic error when the responder failed. If `imsg send`
+		// failed after possibly delivering, never send a second reply.
+		if responderErr != nil {
+			_ = r.IMessage.Send(ctx, "Context Drop could not process that message.")
+		}
+	}
+	if err := r.Store.Update(func(st *orchestrator.State) error {
+		job := st.MessageJobs[message.ID]
+		job.Status = status
+		job.UpdatedAt = completedAt
+		job.Error = errorText
+		if status == "sent" {
+			job.SentAt = &completedAt
+		}
+		job.Latency.PromptBuildMS = response.Metrics.PromptBuild.Milliseconds()
+		job.Latency.ResponderStartupMS = response.Metrics.ResponderStartup.Milliseconds()
+		job.Latency.ResponderMS = response.Metrics.Responder.Milliseconds()
+		job.Latency.FirstOutputMS = response.Metrics.TimeToFirstOutput.Milliseconds()
+		job.Latency.ToolExecutionMS = response.Metrics.ToolExecution.Milliseconds()
+		job.Latency.CompactionMS = response.Metrics.Compaction.Milliseconds()
+		job.Latency.SendMS = sendDuration.Milliseconds()
+		job.Latency.ServiceMS = completedAt.Sub(job.ClaimedAt).Milliseconds()
+		if job.Latency.MessageCreatedAt != nil && !completedAt.Before(*job.Latency.MessageCreatedAt) {
+			job.Latency.EndToEndMS = completedAt.Sub(*job.Latency.MessageCreatedAt).Milliseconds()
+		}
+		job.Latency.PromptBytes = response.Metrics.PromptBytes
+		job.Latency.ColdStart = response.Metrics.ColdStart
+		job.Latency.ModelRounds = make([]orchestrator.ModelRoundLatency, 0, len(response.Metrics.ModelRounds))
+		for _, round := range response.Metrics.ModelRounds {
+			job.Latency.ModelRounds = append(job.Latency.ModelRounds, orchestrator.ModelRoundLatency{DurationMS: round.Duration.Milliseconds(), Model: round.Model, ResponseID: round.ResponseID, TotalTokens: round.TotalTokens})
+		}
+		st.MessageJobs[message.ID] = job
+		return nil
+	}); err != nil {
+		log.Printf("Context Drop iMessage completion state failed: %v", err)
+	}
+}
+
+func parseMessageCreatedAt(value string) *time.Time {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			parsed = parsed.UTC()
+			return &parsed
+		}
+	}
+	numeric, err := strconv.ParseFloat(value, 64)
+	if err != nil || numeric <= 0 {
+		return nil
+	}
+	seconds := numeric
+	if numeric >= 1e12 {
+		seconds = numeric / 1000
+	}
+	whole := int64(seconds)
+	nanos := int64((seconds - float64(whole)) * float64(time.Second))
+	parsed := time.Unix(whole, nanos).UTC()
+	return &parsed
 }
 
 func (r *Runner) recordMessagePoll(now time.Time, pollErr error) error {

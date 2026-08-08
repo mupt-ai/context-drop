@@ -35,11 +35,14 @@ Context Drop has one public command: `context-drop`.
 - `context-drop launch --agent NAME --repo PATH --prompt TEXT [--name NAME] [--backend tmux|herdr] [--workspace HERDR_WORKSPACE_ID]`
 - `context-drop run list [--json]`
 - `context-drop run show ID`
-- `context-drop imessage setup --chat-id ID [--recipient PHONE_OR_EMAIL] [--imsg-path ABSOLUTE_PATH] [--agent pi]`
+- `context-drop imessage setup --chat-id ID [--recipient PHONE_OR_EMAIL] [--imsg-path ABSOLUTE_PATH] [--agent pi] [--poll 250ms]`
 - `context-drop imessage status [--json]`
+- `context-drop imessage latency [--last 50] [--minimum-sample 20] [--json]`
 - `context-drop migrate relaymux inspect --home PATH --json`
 
 `imessage setup` is noninteractive and never sends a message. Use `imsg chats --json` to discover the chat ID, then restart the daemon. Advanced repeated `--responder-arg` flags replace the safe Pi preset and must include `{prompt_file}`; message/reply limits and command timeouts have explicit setup flags.
+
+The latency report uses the latest successfully sent messages with parseable source timestamps. It reports nearest-rank distributions for source-to-send end-to-end latency and each recorded local stage, and only marks the built-in p50 <= 3s / p90 <= 8s target met when the requested minimum sample size is present.
 
 `daemon install` writes and loads a per-user launchd service on macOS or systemd user unit on Linux. On macOS the optional watchdog checks service availability every 15 minutes; Linux uses the systemd restart policy and has no separate watchdog. `schedule --every` accepts Go durations and has a one-minute minimum. Alternatively, `--cron` accepts an exact five-field cron expression and requires an IANA `--timezone`; missed occurrences cause at most one launch on restart, followed by the next future wall-clock occurrence. Notifications are local OS notifications (or daemon log messages on non-macOS platforms).
 
