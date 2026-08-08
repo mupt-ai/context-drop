@@ -159,7 +159,7 @@ context-drop imessage status
 context-drop imessage latency --last 50 --minimum-sample 20
 ```
 
-Existing messages are marked seen during setup. The daemon then keeps one `imsg watch` stream open from a durable row cursor; it restarts transient failures from that cursor and retains history polling only for older `imsg` versions. Only later messages are passed to the configured coding-agent responder, which returns a text reply. The default Pi responder runs without tools, context files, extensions, or session persistence. This adapter is separate from machine handoffs.
+Existing messages are marked seen during setup. The daemon then keeps one `imsg watch` stream open from a durable row cursor; it restarts transient failures from that cursor and retains history polling only for older `imsg` versions. Replies use a long-lived `imsg rpc` sender when supported, with the one-shot CLI retained only as an older-version fallback. Only later messages are passed to the configured coding-agent responder, which returns a text reply. The default Pi responder runs without tools, context files, extensions, or session persistence. This adapter is separate from machine handoffs.
 
 ## Security model
 

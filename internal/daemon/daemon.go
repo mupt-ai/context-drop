@@ -248,6 +248,7 @@ func NewRunner() (*Runner, error) {
 	messageConfig, messageErr := imessage.Load()
 	if messageErr == nil {
 		adapter := &imessage.Adapter{Config: messageConfig}
+		adapter.PersistentSender = imessage.NewIMsgRPCSender(messageConfig)
 		responder, ok, responderErr := imessage.NewPiRPCResponder(messageConfig)
 		if responderErr != nil {
 			return nil, fmt.Errorf("configure persistent iMessage responder: %w", responderErr)

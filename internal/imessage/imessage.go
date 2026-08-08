@@ -98,6 +98,11 @@ type PersistentResponder interface {
 	Close() error
 }
 
+type PersistentSender interface {
+	Send(context.Context, string, string) error
+	Close() error
+}
+
 type PersistentResponderState struct {
 	NeedsBootstrap bool
 	Startup        time.Duration
@@ -152,6 +157,7 @@ type Adapter struct {
 	Commander           Commander
 	Watcher             MessageWatcher
 	PersistentResponder PersistentResponder
+	PersistentSender    PersistentSender
 }
 
 func DefaultPersonaFile() (string, error) {
@@ -520,10 +526,14 @@ func (a Adapter) buildPrompt(message Message, includeDurableContext bool) (strin
 }
 
 func (a Adapter) Close() error {
-	if a.PersistentResponder == nil {
-		return nil
+	var errs []error
+	if a.PersistentResponder != nil {
+		errs = append(errs, a.PersistentResponder.Close())
 	}
-	return a.PersistentResponder.Close()
+	if a.PersistentSender != nil {
+		errs = append(errs, a.PersistentSender.Close())
+	}
+	return errors.Join(errs...)
 }
 
 func isTransientResponderError(stderr []byte) bool {
@@ -548,6 +558,15 @@ func (a Adapter) Send(ctx context.Context, text string) error {
 	}
 	sendCtx, cancel := context.WithTimeout(ctx, time.Duration(a.Config.SendTimeoutSeconds)*time.Second)
 	defer cancel()
+	if a.PersistentSender != nil {
+		err := a.PersistentSender.Send(sendCtx, a.Config.ChatID, text)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, ErrRPCUnsupported) {
+			return fmt.Errorf("imsg RPC send: %w", err)
+		}
+	}
 	result, err := commander.Run(sendCtx, a.Config.ImsgPath, []string{"send", "--chat-id", a.Config.ChatID, "--text", text, "--json"}, 1024*1024)
 	if err != nil {
 		return commandError("imsg send", err, result.Stderr)

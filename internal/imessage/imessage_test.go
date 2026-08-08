@@ -29,6 +29,20 @@ type fakePersistentResponder struct {
 	prompt string
 }
 
+type fakePersistentSender struct {
+	chatID string
+	text   string
+	err    error
+}
+
+func (f *fakePersistentSender) Send(_ context.Context, chatID, text string) error {
+	f.chatID = chatID
+	f.text = text
+	return f.err
+}
+
+func (f *fakePersistentSender) Close() error { return nil }
+
 func (f *fakePersistentResponder) Prepare(context.Context) (PersistentResponderState, error) {
 	return f.state, nil
 }
@@ -223,6 +237,44 @@ func TestRespondUsesPrivatePromptFileAndSendPreservesOneArg(t *testing.T) {
 	want := []string{"send", "--chat-id", cfg.ChatID, "--text", "\u200b- safe reply; $(nope)", "--json"}
 	if !reflect.DeepEqual(fake.calls[1].args, want) {
 		t.Fatalf("send args = %#v", fake.calls[1].args)
+	}
+}
+
+func TestSendUsesPersistentRPCAndPreservesOneTextValue(t *testing.T) {
+	cfg := testConfig(t)
+	sender := &fakePersistentSender{}
+	fake := &fakeCommander{}
+	adapter := Adapter{Config: cfg, Commander: fake, PersistentSender: sender}
+	if err := adapter.Send(context.Background(), "- safe reply; $(nope)"); err != nil {
+		t.Fatal(err)
+	}
+	if sender.chatID != cfg.ChatID || sender.text != "\u200b- safe reply; $(nope)" {
+		t.Fatalf("persistent send = chat %q text %q", sender.chatID, sender.text)
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("fallback commander calls = %d, want 0", len(fake.calls))
+	}
+}
+
+func TestSendFallsBackOnlyWhenRPCIsUnsupported(t *testing.T) {
+	cfg := testConfig(t)
+	sender := &fakePersistentSender{err: ErrRPCUnsupported}
+	fake := &fakeCommander{results: []CommandResult{{Stdout: []byte(`{"ok":true}`)}}}
+	adapter := Adapter{Config: cfg, Commander: fake, PersistentSender: sender}
+	if err := adapter.Send(context.Background(), "hello"); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.calls) != 1 {
+		t.Fatalf("fallback commander calls = %d, want 1", len(fake.calls))
+	}
+
+	sender.err = errors.New("ambiguous RPC failure")
+	fake.calls = nil
+	if err := adapter.Send(context.Background(), "hello"); err == nil || !strings.Contains(err.Error(), "ambiguous RPC failure") {
+		t.Fatalf("Send() error = %v", err)
+	}
+	if len(fake.calls) != 0 {
+		t.Fatalf("ambiguous send retried through fallback %d time(s)", len(fake.calls))
 	}
 }
 
