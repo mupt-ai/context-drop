@@ -157,6 +157,11 @@ func TestConfigureAgentValidatesPromptPlaceholder(t *testing.T) {
 }
 
 func TestConfigureAgentHandlesNilAgentsMap(t *testing.T) {
+	t.Setenv("CONTEXT_DROP_HOME", t.TempDir())
+	nodePath, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
 	_, configPath, _, err := Paths()
 	if err != nil {
 		t.Fatal(err)
@@ -165,7 +170,11 @@ func TestConfigureAgentHandlesNilAgentsMap(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A previously valid config with no agents property must not panic.
-	if err := os.WriteFile(configPath, []byte(`{"host":"127.0.0.1","port":47762,"nodePath":"/opt/homebrew/bin/node"}`), 0o600); err != nil {
+	config, err := json.Marshal(map[string]any{"host": "127.0.0.1", "port": 47762, "nodePath": nodePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, config, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := ConfigureAgent("cmd", AgentConfig{Command: []string{"/bin/echo", "{prompt_file}"}, PromptMode: "arg"}, false); err != nil {
