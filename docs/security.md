@@ -9,7 +9,7 @@
 - Inbound handoffs are only notified and never automatically opened/downloaded/accepted/launched.
 - Only schedules explicitly created with `context-drop schedule add` can initiate recurring local launches; handoff data is never converted into a schedule or prompt.
 - iMessage/SMS is a separate, explicit local execution-request capability for one configured chat. Incoming text is untrusted; the safe Pi responder uses `--print --no-session --no-context-files --no-tools --no-extensions` and receives the text through a private prompt file, not shell interpolation.
-- iMessage message IDs are scoped to the configured chat, initial history is marked seen without replies, and IDs are durably claimed before responding to prevent duplicate sends after restart. A crash after a claim may lose one reply rather than replay it.
+- iMessage message IDs are scoped to the configured chat, initial history is marked seen without replies, and watch row cursors plus incoming IDs are committed before responding. A watcher crash replays only rows after the last durable cursor; a daemon crash after an incoming ID is claimed may lose one reply rather than replay it.
 - Trusted persistent Pi mode is opt-in. Its warm RPC child has the same local permissions and tools as the configured Pi command. Context filtering changes only the provider's working view; it does not delete, truncate, or rewrite the append-only session or configured memory/archive files.
 - Daemon, runtime, schedule, prompt, and token files are stored under the private Context Drop state root with user-only permissions.
 - Local agents run with the permissions of the local user.

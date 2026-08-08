@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,6 +28,49 @@ type queueCommander struct {
 	responds     int
 	firstStarted chan struct{}
 	releaseFirst chan struct{}
+}
+
+type restartingMessageWatcher struct {
+	mu    sync.Mutex
+	calls []int64
+}
+
+func (w *restartingMessageWatcher) Watch(ctx context.Context, cursor int64, handle func(imessage.Message) error) error {
+	w.mu.Lock()
+	run := len(w.calls)
+	w.calls = append(w.calls, cursor)
+	w.mu.Unlock()
+	switch run {
+	case 0:
+		for _, message := range []imessage.Message{
+			{ID: "101", ChatID: "1", Text: "outgoing", FromMe: true},
+			{ID: "102", ChatID: "1", Text: "first", CreatedAt: time.Now().Add(-100 * time.Millisecond).UTC().Format(time.RFC3339Nano)},
+		} {
+			if err := handle(message); err != nil {
+				return err
+			}
+		}
+		return errors.New("transient watch failure")
+	case 1:
+		for _, message := range []imessage.Message{
+			{ID: "102", ChatID: "1", Text: "duplicate"},
+			{ID: "103", ChatID: "1", Text: "second", CreatedAt: time.Now().Add(-100 * time.Millisecond).UTC().Format(time.RFC3339Nano)},
+		} {
+			if err := handle(message); err != nil {
+				return err
+			}
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	default:
+		return errors.New("unexpected third watch run")
+	}
+}
+
+type unsupportedMessageWatcher struct{}
+
+func (unsupportedMessageWatcher) Watch(context.Context, int64, func(imessage.Message) error) error {
+	return imessage.ErrWatchUnsupported
 }
 
 func (f *queueCommander) Run(_ context.Context, _ string, args []string, _ int) (imessage.CommandResult, error) {
@@ -101,6 +145,183 @@ func BenchmarkPollMessagesSeenHistory(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		runner.PollMessages(context.Background())
+	}
+}
+
+func waitForMessageSends(t *testing.T, commander *messageCommander, count int) {
+	t.Helper()
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		commander.mu.Lock()
+		sends := len(commander.sends)
+		commander.mu.Unlock()
+		if sends >= count {
+			return
+		}
+		select {
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for %d sends; got %d", count, sends)
+		case <-ticker.C:
+		}
+	}
+}
+
+func waitForMessageJobs(t *testing.T, store orchestrator.Store, ids ...string) {
+	t.Helper()
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		state, err := store.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		complete := true
+		for _, id := range ids {
+			complete = complete && state.MessageJobs[id].Status == "sent"
+		}
+		if complete {
+			return
+		}
+		select {
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for sent jobs %v", ids)
+		case <-ticker.C:
+		}
+	}
+}
+
+func TestMessageWatchRestartsFromDurableCursorAndFiltersOutgoing(t *testing.T) {
+	cfg := messageTestConfig(t)
+	store := orchestrator.Store{Path: filepath.Join(t.TempDir(), "state.json")}
+	if err := store.Update(func(st *orchestrator.State) error {
+		st.IMessageInitialized = true
+		st.IMessageChatID = "1"
+		st.IMessageCursor = 100
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	commander := &messageCommander{}
+	watcher := &restartingMessageWatcher{}
+	runner := &Runner{
+		Store:                store,
+		Now:                  func() time.Time { return time.Now().UTC() },
+		IMessage:             &imessage.Adapter{Config: cfg, Commander: commander, Watcher: watcher},
+		MessageWatchRetryMin: time.Millisecond,
+		MessageWatchRetryMax: time.Millisecond,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- runner.WatchMessages(ctx) }()
+	waitForMessageSends(t, commander, 2)
+	waitForMessageJobs(t, store, "102", "103")
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("WatchMessages() error = %v", err)
+	}
+
+	watcher.mu.Lock()
+	calls := append([]int64(nil), watcher.calls...)
+	watcher.mu.Unlock()
+	if len(calls) != 2 || calls[0] != 100 || calls[1] != 102 {
+		t.Fatalf("watch cursors = %#v", calls)
+	}
+	state, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.IMessageCursor != 103 {
+		t.Fatalf("cursor = %d", state.IMessageCursor)
+	}
+	if state.SeenMessageIDs["101"] != "" || state.MessageJobs["101"].MessageID != "" {
+		t.Fatalf("outgoing message was claimed: %#v", state.MessageJobs["101"])
+	}
+	for _, id := range []string{"102", "103"} {
+		if state.MessageJobs[id].Status != "sent" {
+			t.Fatalf("job %s = %#v", id, state.MessageJobs[id])
+		}
+	}
+	commander.mu.Lock()
+	responds := commander.responds
+	sends := len(commander.sends)
+	commander.mu.Unlock()
+	if responds != 2 || sends != 2 {
+		t.Fatalf("responds=%d sends=%d", responds, sends)
+	}
+}
+
+func TestMessageWatchMigratesCursorFromSeenRowIDs(t *testing.T) {
+	cfg := messageTestConfig(t)
+	store := orchestrator.Store{Path: filepath.Join(t.TempDir(), "state.json")}
+	if err := store.Update(func(st *orchestrator.State) error {
+		st.IMessageInitialized = true
+		st.IMessageChatID = "1"
+		st.SeenMessageIDs["9389"] = "2026-08-08T00:00:00Z"
+		st.SeenMessageIDs["9391"] = "2026-08-08T00:01:00Z"
+		st.SeenMessageIDs["legacy-hash"] = "2026-08-08T00:02:00Z"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runner := &Runner{Store: store, Now: func() time.Time { return time.Now().UTC() }, IMessage: &imessage.Adapter{Config: cfg}}
+	cursor, err := runner.prepareMessageWatch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cursor != 9391 {
+		t.Fatalf("cursor = %d", cursor)
+	}
+	state, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.IMessageCursor != 9391 {
+		t.Fatalf("persisted cursor = %d", state.IMessageCursor)
+	}
+}
+
+func TestUnsupportedMessageWatchFallsBackToPolling(t *testing.T) {
+	cfg := messageTestConfig(t)
+	store := orchestrator.Store{Path: filepath.Join(t.TempDir(), "state.json")}
+	if err := store.Update(func(st *orchestrator.State) error {
+		st.IMessageInitialized = true
+		st.IMessageChatID = "1"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	commander := &messageCommander{history: []map[string]any{{"id": "201", "text": "fallback", "chat_id": "1", "is_from_me": false}}}
+	runner := &Runner{
+		Store:               store,
+		Now:                 func() time.Time { return time.Now().UTC() },
+		IMessage:            &imessage.Adapter{Config: cfg, Commander: commander, Watcher: unsupportedMessageWatcher{}},
+		MessagePollInterval: 10 * time.Millisecond,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		runner.ReceiveMessages(ctx)
+		close(done)
+	}()
+	waitForMessageSends(t, commander, 1)
+	waitForMessageJobs(t, store, "201")
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("ReceiveMessages did not stop")
+	}
+	state, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.MessageJobs["201"].Status != "sent" || state.IMessageCursor != 201 {
+		t.Fatalf("fallback state = %#v", state)
 	}
 }
 

@@ -28,8 +28,10 @@ import (
 )
 
 const (
-	TickInterval         = 10 * time.Second
-	DefaultInboxInterval = time.Minute
+	TickInterval                = 10 * time.Second
+	DefaultInboxInterval        = time.Minute
+	DefaultMessageWatchRetryMin = time.Second
+	DefaultMessageWatchRetryMax = 30 * time.Second
 )
 
 type PIDInfo struct {
@@ -63,19 +65,21 @@ type RuntimeLauncher interface {
 }
 
 type Runner struct {
-	Store               orchestrator.Store
-	Notifier            orchestrator.Notifier
-	Now                 func() time.Time
-	InboxInterval       time.Duration
-	Runtime             RuntimeLauncher
-	CLIConfig           config.CLIConfig
-	Inbox               func(context.Context, config.CLIConfig) ([]handoff.Handoff, error)
-	IMessage            *imessage.Adapter
-	MessagePollInterval time.Duration
-	mu                  sync.Mutex
-	messagePollMu       sync.Mutex
-	messageWorkerOnce   sync.Once
-	messageQueue        chan messageBatch
+	Store                orchestrator.Store
+	Notifier             orchestrator.Notifier
+	Now                  func() time.Time
+	InboxInterval        time.Duration
+	Runtime              RuntimeLauncher
+	CLIConfig            config.CLIConfig
+	Inbox                func(context.Context, config.CLIConfig) ([]handoff.Handoff, error)
+	IMessage             *imessage.Adapter
+	MessagePollInterval  time.Duration
+	MessageWatchRetryMin time.Duration
+	MessageWatchRetryMax time.Duration
+	mu                   sync.Mutex
+	messagePollMu        sync.Mutex
+	messageWorkerOnce    sync.Once
+	messageQueue         chan messageBatch
 }
 
 type messageBatch struct {
@@ -251,8 +255,11 @@ func NewRunner() (*Runner, error) {
 		if ok {
 			adapter.PersistentResponder = responder
 		}
+		adapter.Watcher = imessage.ExecMessageWatcher{Config: messageConfig}
 		runner.IMessage = adapter
 		runner.MessagePollInterval = messageConfig.PollInterval()
+		runner.MessageWatchRetryMin = DefaultMessageWatchRetryMin
+		runner.MessageWatchRetryMax = DefaultMessageWatchRetryMax
 	} else if !errors.Is(messageErr, os.ErrNotExist) {
 		return nil, fmt.Errorf("load iMessage config: %w", messageErr)
 	}
@@ -292,13 +299,8 @@ func Run(ctx context.Context) error {
 	defer ticker.Stop()
 	healthTicker := time.NewTicker(5 * time.Second)
 	defer healthTicker.Stop()
-	var messageTicker *time.Ticker
-	var messageTicks <-chan time.Time
 	if runner.IMessage != nil && runner.IMessage.Config.Enabled {
-		messageTicker = time.NewTicker(runner.MessagePollInterval)
-		messageTicks = messageTicker.C
-		defer messageTicker.Stop()
-		go runner.PollMessages(ctx)
+		go runner.ReceiveMessages(ctx)
 	}
 	if err := runner.Tick(ctx); err != nil {
 		log.Printf("Context Drop daemon tick: %v", err)
@@ -332,8 +334,6 @@ func Run(ctx context.Context) error {
 			} else {
 				_ = recordRuntimeError(nil)
 			}
-		case <-messageTicks:
-			go runner.PollMessages(ctx)
 		case <-healthTicker.C:
 			client, clientErr := runtimeclient.New()
 			if clientErr != nil {
@@ -452,6 +452,7 @@ func (r *Runner) PollMessages(ctx context.Context) {
 		if st.IMessageChatID != r.IMessage.Config.ChatID {
 			st.IMessageInitialized = false
 			st.IMessageChatID = r.IMessage.Config.ChatID
+			st.IMessageCursor = 0
 			st.SeenMessageIDs = map[string]string{}
 			st.MessageJobs = map[string]orchestrator.MessageJob{}
 		}
@@ -461,6 +462,9 @@ func (r *Runner) PollMessages(ctx context.Context) {
 			}
 			for _, message := range messages {
 				st.SeenMessageIDs[message.ID] = now.Format(time.RFC3339Nano)
+				if rowID, rowErr := messageRowID(message); rowErr == nil && rowID > st.IMessageCursor {
+					st.IMessageCursor = rowID
+				}
 			}
 			st.IMessageInitialized = true
 			initialized = true
@@ -470,6 +474,9 @@ func (r *Runner) PollMessages(ctx context.Context) {
 		// transaction. Updating once per history row made an idle poll perform a
 		// full state rewrite for every already-seen message.
 		for _, message := range messages {
+			if rowID, rowErr := messageRowID(message); rowErr == nil && rowID > st.IMessageCursor {
+				st.IMessageCursor = rowID
+			}
 			if _, seen := st.SeenMessageIDs[message.ID]; seen {
 				continue
 			}
@@ -499,18 +506,235 @@ func (r *Runner) PollMessages(ctx context.Context) {
 	// Enqueue under the poll lock so batches retain source order, then release
 	// the poller immediately. The single session worker keeps model/tool work
 	// sequential while later history polls continue claiming durable jobs.
-	r.startMessageWorker(ctx)
-	batch := messageBatch{messages: claimedMessages, done: make(chan struct{})}
-	select {
-	case r.messageQueue <- batch:
-	case <-ctx.Done():
+	done, err := r.enqueueMessages(ctx, claimedMessages, true)
+	if err != nil {
 		return
 	}
 	r.messagePollMu.Unlock()
 	pollLocked = false
 	select {
-	case <-batch.done:
+	case <-done:
 	case <-ctx.Done():
+	}
+}
+
+// ReceiveMessages prefers imsg's long-lived watch stream. Old imsg binaries
+// that do not expose watch retain the history polling path.
+func (r *Runner) ReceiveMessages(ctx context.Context) {
+	err := r.WatchMessages(ctx)
+	if ctx.Err() != nil {
+		return
+	}
+	if errors.Is(err, imessage.ErrWatchUnsupported) {
+		log.Printf("Context Drop iMessage watch unavailable; using history polling: %v", err)
+	} else {
+		log.Printf("Context Drop iMessage watch stopped; using history polling: %v", err)
+	}
+	interval := r.MessagePollInterval
+	if interval <= 0 && r.IMessage != nil {
+		interval = r.IMessage.Config.PollInterval()
+	}
+	if interval <= 0 {
+		interval = time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	var polls sync.WaitGroup
+	launchPoll := func() {
+		polls.Add(1)
+		go func() {
+			defer polls.Done()
+			r.PollMessages(ctx)
+		}()
+	}
+	launchPoll()
+	for {
+		select {
+		case <-ctx.Done():
+			polls.Wait()
+			return
+		case <-ticker.C:
+			launchPoll()
+		}
+	}
+}
+
+func (r *Runner) WatchMessages(ctx context.Context) error {
+	if r.IMessage == nil {
+		return imessage.ErrWatchUnsupported
+	}
+	retryMin := r.MessageWatchRetryMin
+	if retryMin <= 0 {
+		retryMin = DefaultMessageWatchRetryMin
+	}
+	retryMax := r.MessageWatchRetryMax
+	if retryMax < retryMin {
+		retryMax = DefaultMessageWatchRetryMax
+	}
+	backoff := retryMin
+	for {
+		cursor, err := r.prepareMessageWatch(ctx)
+		watchStarted := time.Time{}
+		if err == nil {
+			watchStarted = time.Now()
+			now := r.Now()
+			err = r.Store.Update(func(st *orchestrator.State) error {
+				st.LastMessagePollAt = &now
+				st.LastMessageError = ""
+				return nil
+			})
+			if err == nil {
+				log.Printf("Context Drop iMessage watch started after rowid %d", cursor)
+				err = r.IMessage.Watch(ctx, cursor, func(message imessage.Message) error {
+					return r.claimWatchedMessage(ctx, message)
+				})
+			}
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if errors.Is(err, imessage.ErrWatchUnsupported) {
+			return err
+		}
+		if err == nil {
+			err = errors.New("iMessage watch stopped without an error")
+		}
+		if !watchStarted.IsZero() && time.Since(watchStarted) >= time.Minute {
+			backoff = retryMin
+		}
+		log.Printf("Context Drop iMessage watch failed: %v; restarting in %s", err, backoff)
+		now := r.Now()
+		_ = r.Store.Update(func(st *orchestrator.State) error {
+			st.LastMessagePollAt = &now
+			st.LastMessageError = err.Error()
+			return nil
+		})
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return ctx.Err()
+		case <-timer.C:
+		}
+		if backoff < retryMax {
+			backoff *= 2
+			if backoff > retryMax {
+				backoff = retryMax
+			}
+		}
+	}
+}
+
+func (r *Runner) prepareMessageWatch(ctx context.Context) (int64, error) {
+	state, err := r.Store.Load()
+	if err != nil {
+		return 0, err
+	}
+	if state.IMessageChatID != r.IMessage.Config.ChatID || !state.IMessageInitialized {
+		r.PollMessages(ctx)
+		if ctx.Err() != nil {
+			return 0, ctx.Err()
+		}
+		state, err = r.Store.Load()
+		if err != nil {
+			return 0, err
+		}
+		if state.IMessageChatID != r.IMessage.Config.ChatID || !state.IMessageInitialized {
+			return 0, errors.New("iMessage initial sync did not initialize the configured chat")
+		}
+	}
+	cursor := state.IMessageCursor
+	if cursor == 0 {
+		cursor = maxSeenMessageRowID(state.SeenMessageIDs)
+		if cursor > 0 {
+			if err := r.Store.Update(func(st *orchestrator.State) error {
+				if cursor > st.IMessageCursor {
+					st.IMessageCursor = cursor
+				}
+				return nil
+			}); err != nil {
+				return 0, err
+			}
+		}
+	}
+	return cursor, nil
+}
+
+func (r *Runner) claimWatchedMessage(ctx context.Context, message imessage.Message) error {
+	rowID, err := messageRowID(message)
+	if err != nil {
+		return err
+	}
+	incoming, accepted := r.IMessage.IncomingMessage(message)
+	claimTime := r.Now()
+	claimed := false
+	if err := r.Store.Update(func(st *orchestrator.State) error {
+		if st.IMessageChatID != r.IMessage.Config.ChatID || !st.IMessageInitialized {
+			return errors.New("iMessage watch state no longer matches the configured chat")
+		}
+		st.LastMessagePollAt = &claimTime
+		st.LastMessageError = ""
+		alreadyPassed := rowID <= st.IMessageCursor
+		if !alreadyPassed {
+			st.IMessageCursor = rowID
+		}
+		if alreadyPassed || !accepted {
+			return nil
+		}
+		if _, seen := st.SeenMessageIDs[incoming.ID]; seen {
+			return nil
+		}
+		createdAt := parseMessageCreatedAt(incoming.CreatedAt)
+		latency := orchestrator.MessageLatency{MessageCreatedAt: createdAt}
+		if createdAt != nil && !claimTime.Before(*createdAt) {
+			latency.QueueMS = claimTime.Sub(*createdAt).Milliseconds()
+		}
+		st.SeenMessageIDs[incoming.ID] = claimTime.Format(time.RFC3339Nano)
+		st.MessageJobs[incoming.ID] = orchestrator.MessageJob{MessageID: incoming.ID, Status: "queued", ClaimedAt: claimTime, UpdatedAt: claimTime, Latency: latency}
+		claimed = true
+		return nil
+	}); err != nil {
+		return err
+	}
+	if !claimed {
+		return nil
+	}
+	_, err = r.enqueueMessages(ctx, []imessage.Message{incoming}, false)
+	return err
+}
+
+func messageRowID(message imessage.Message) (int64, error) {
+	rowID, err := strconv.ParseInt(message.ID, 10, 64)
+	if err != nil || rowID <= 0 {
+		return 0, fmt.Errorf("imsg watch message has invalid rowid %q", message.ID)
+	}
+	return rowID, nil
+}
+
+func maxSeenMessageRowID(seen map[string]string) int64 {
+	var cursor int64
+	for id := range seen {
+		rowID, err := strconv.ParseInt(id, 10, 64)
+		if err == nil && rowID > cursor {
+			cursor = rowID
+		}
+	}
+	return cursor
+}
+
+func (r *Runner) enqueueMessages(ctx context.Context, messages []imessage.Message, wait bool) (<-chan struct{}, error) {
+	r.startMessageWorker(ctx)
+	var done chan struct{}
+	if wait {
+		done = make(chan struct{})
+	}
+	select {
+	case r.messageQueue <- messageBatch{messages: messages, done: done}:
+		return done, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 
@@ -526,7 +750,9 @@ func (r *Runner) startMessageWorker(ctx context.Context) {
 					for _, message := range batch.messages {
 						r.processMessage(ctx, message)
 					}
-					close(batch.done)
+					if batch.done != nil {
+						close(batch.done)
+					}
 				}
 			}
 		}()

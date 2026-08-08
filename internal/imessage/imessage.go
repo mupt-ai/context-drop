@@ -150,6 +150,7 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 type Adapter struct {
 	Config              Config
 	Commander           Commander
+	Watcher             MessageWatcher
 	PersistentResponder PersistentResponder
 }
 
@@ -350,19 +351,32 @@ func (a Adapter) History(ctx context.Context) ([]Message, error) {
 	}
 	filtered := messages[:0]
 	for _, message := range messages {
-		if message.FromMe || strings.TrimSpace(message.Text) == "" {
-			continue
+		if incoming, ok := a.IncomingMessage(message); ok {
+			filtered = append(filtered, incoming)
 		}
-		if message.ChatID != "" && message.ChatID != a.Config.ChatID {
-			continue
-		}
-		if len(message.Text) > a.Config.MaxMessageBytes {
-			message.Text = message.Text[:a.Config.MaxMessageBytes]
-		}
-		filtered = append(filtered, message)
 	}
 	sort.SliceStable(filtered, func(i, j int) bool { return filtered[i].CreatedAt < filtered[j].CreatedAt })
 	return filtered, nil
+}
+
+func (a Adapter) IncomingMessage(message Message) (Message, bool) {
+	if message.FromMe || strings.TrimSpace(message.Text) == "" {
+		return Message{}, false
+	}
+	if message.ChatID != "" && message.ChatID != a.Config.ChatID {
+		return Message{}, false
+	}
+	if len(message.Text) > a.Config.MaxMessageBytes {
+		message.Text = message.Text[:a.Config.MaxMessageBytes]
+	}
+	return message, true
+}
+
+func (a Adapter) Watch(ctx context.Context, sinceRowID int64, handle func(Message) error) error {
+	if a.Watcher == nil {
+		return ErrWatchUnsupported
+	}
+	return a.Watcher.Watch(ctx, sinceRowID, handle)
 }
 
 func (a Adapter) Respond(ctx context.Context, message Message) (string, error) {

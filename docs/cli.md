@@ -40,7 +40,7 @@ Context Drop has one public command: `context-drop`.
 - `context-drop imessage latency [--last 50] [--minimum-sample 20] [--json]`
 - `context-drop migrate relaymux inspect --home PATH --json`
 
-`imessage setup` is noninteractive and never sends a message. Use `imsg chats --json` to discover the chat ID, then restart the daemon. Advanced repeated `--responder-arg` flags replace the safe Pi preset and must include `{prompt_file}`; message/reply limits and command timeouts have explicit setup flags.
+`imessage setup` is noninteractive and never sends a message. Use `imsg chats --json` to discover the chat ID, then restart the daemon. `--poll` controls the preferred watch debounce and the legacy history-poll fallback interval. Advanced repeated `--responder-arg` flags replace the safe Pi preset and must include `{prompt_file}`; message/reply limits and command timeouts have explicit setup flags.
 
 The latency report uses the latest successfully sent messages with parseable source timestamps. It reports nearest-rank distributions for source-to-send end-to-end latency and each recorded local stage, and only marks the built-in p50 <= 3s / p90 <= 8s target met when the requested minimum sample size is present.
 

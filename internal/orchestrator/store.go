@@ -96,6 +96,7 @@ type State struct {
 	LastRuntimeError    string                `json:"last_runtime_error,omitempty"`
 	IMessageInitialized bool                  `json:"imessage_initialized,omitempty"`
 	IMessageChatID      string                `json:"imessage_chat_id,omitempty"`
+	IMessageCursor      int64                 `json:"imessage_cursor,omitempty"`
 	SeenMessageIDs      map[string]string     `json:"seen_message_ids,omitempty"`
 	MessageJobs         map[string]MessageJob `json:"message_jobs,omitempty"`
 	LastMessagePollAt   *time.Time            `json:"last_message_poll_at,omitempty"`

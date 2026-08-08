@@ -114,7 +114,7 @@ func newIMessageSetupCommand() *cobra.Command {
 	cmd.Flags().StringVar(&recipient, "recipient", "", "optional expected phone/email label (informational)")
 	cmd.Flags().StringVar(&imsgPath, "imsg-path", "", "absolute imsg executable path (default: detected on PATH)")
 	cmd.Flags().StringVar(&agent, "agent", "pi", "local responder preset (currently pi)")
-	cmd.Flags().DurationVar(&poll, "poll", time.Duration(imessage.DefaultPollMilliseconds)*time.Millisecond, "history polling interval")
+	cmd.Flags().DurationVar(&poll, "poll", time.Duration(imessage.DefaultPollMilliseconds)*time.Millisecond, "watch debounce and legacy polling interval")
 	cmd.Flags().IntVar(&syncLimit, "sync-limit", imessage.DefaultSyncLimit, "recent history items per poll (1..200)")
 	cmd.Flags().DurationVar(&historyTimeout, "history-timeout", imessage.DefaultHistoryTimeoutSeconds*time.Second, "imsg history timeout")
 	cmd.Flags().DurationVar(&responderTimeout, "responder-timeout", imessage.DefaultResponderTimeoutSeconds*time.Second, "local responder timeout")
