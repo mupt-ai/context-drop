@@ -3,6 +3,7 @@ package imessage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -91,6 +92,45 @@ func TestHistoryUsesScopedArgvAndFilters(t *testing.T) {
 	}
 	if fake.calls[0].name != cfg.ImsgPath {
 		t.Fatalf("name = %q", fake.calls[0].name)
+	}
+}
+
+func TestTrustedResponderPromptEnablesOrchestration(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Trusted = true
+	cfg.ResponderCwd = t.TempDir()
+	fake := &fakeCommander{results: []CommandResult{{Stdout: []byte("done\n")}}}
+	adapter := Adapter{Config: cfg, Commander: fake}
+	if _, err := adapter.Respond(context.Background(), Message{ID: "m", Text: "launch an agent"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.promptBodies) != 1 || !strings.Contains(fake.promptBodies[0], "persistent coding orchestrator") {
+		t.Fatalf("trusted prompt = %#v", fake.promptBodies)
+	}
+}
+
+func TestTrustedResponderRetriesTransientProviderFailure(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Trusted = true
+	fake := &fakeCommander{
+		results: []CommandResult{{Stderr: []byte("Provider request failed.")}, {Stdout: []byte("recovered\n")}},
+		errors:  []error{errors.New("exit status 1"), nil},
+	}
+	adapter := Adapter{Config: cfg, Commander: fake}
+	reply, err := adapter.Respond(context.Background(), Message{ID: "m", Text: "hello"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply != "recovered" || len(fake.calls) != 2 {
+		t.Fatalf("reply = %q, calls = %d", reply, len(fake.calls))
+	}
+}
+
+func TestConfigRejectsMissingResponderCwd(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.ResponderCwd = "/no/such/directory"
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "responder cwd") {
+		t.Fatalf("Validate() error = %v", err)
 	}
 }
 

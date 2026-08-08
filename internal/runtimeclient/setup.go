@@ -78,7 +78,7 @@ func Initialize() ([]string, error) {
 		}
 		port = parsed
 	}
-	backend := "tmux"
+	backend := "herdr"
 	if value := os.Getenv("CONTEXT_DROP_BACKEND"); value != "" {
 		if value != "tmux" && value != "herdr" {
 			return nil, fmt.Errorf("CONTEXT_DROP_BACKEND must be tmux or herdr")
