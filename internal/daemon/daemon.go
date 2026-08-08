@@ -445,6 +445,7 @@ func (r *Runner) PollMessages(ctx context.Context) {
 		return
 	}
 	initialized := false
+	claimedMessages := make([]imessage.Message, 0, len(messages))
 	if err := r.Store.Update(func(st *orchestrator.State) error {
 		st.LastMessagePollAt = &now
 		st.LastMessageError = ""
@@ -463,40 +464,33 @@ func (r *Runner) PollMessages(ctx context.Context) {
 			}
 			st.IMessageInitialized = true
 			initialized = true
+			return nil
+		}
+		// History is a snapshot, so claim every unseen message in the same durable
+		// transaction. Updating once per history row made an idle poll perform a
+		// full state rewrite for every already-seen message.
+		for _, message := range messages {
+			if _, seen := st.SeenMessageIDs[message.ID]; seen {
+				continue
+			}
+			claimTime := r.Now()
+			createdAt := parseMessageCreatedAt(message.CreatedAt)
+			latency := orchestrator.MessageLatency{MessageCreatedAt: createdAt, HistoryMS: historyDuration.Milliseconds()}
+			if createdAt != nil && !claimTime.Before(*createdAt) {
+				latency.QueueMS = claimTime.Sub(*createdAt).Milliseconds()
+			}
+			st.SeenMessageIDs[message.ID] = claimTime.Format(time.RFC3339Nano)
+			st.MessageJobs[message.ID] = orchestrator.MessageJob{MessageID: message.ID, Status: "queued", ClaimedAt: claimTime, UpdatedAt: claimTime, Latency: latency}
+			claimedMessages = append(claimedMessages, message)
 		}
 		return nil
 	}); err != nil {
-		log.Printf("Context Drop iMessage state update failed: %v", err)
+		log.Printf("Context Drop iMessage poll state update failed: %v", err)
 		return
 	}
 	if initialized {
 		log.Printf("Context Drop iMessage initial sync marked %d existing incoming message(s) seen", len(messages))
 		return
-	}
-	claimedMessages := make([]imessage.Message, 0, len(messages))
-	for _, message := range messages {
-		claimed := false
-		claimTime := r.Now()
-		createdAt := parseMessageCreatedAt(message.CreatedAt)
-		latency := orchestrator.MessageLatency{MessageCreatedAt: createdAt, HistoryMS: historyDuration.Milliseconds()}
-		if createdAt != nil && !claimTime.Before(*createdAt) {
-			latency.QueueMS = claimTime.Sub(*createdAt).Milliseconds()
-		}
-		if err := r.Store.Update(func(st *orchestrator.State) error {
-			if _, seen := st.SeenMessageIDs[message.ID]; seen {
-				return nil
-			}
-			st.SeenMessageIDs[message.ID] = claimTime.Format(time.RFC3339Nano)
-			st.MessageJobs[message.ID] = orchestrator.MessageJob{MessageID: message.ID, Status: "queued", ClaimedAt: claimTime, UpdatedAt: claimTime, Latency: latency}
-			claimed = true
-			return nil
-		}); err != nil {
-			log.Printf("Context Drop iMessage claim failed: %v", err)
-			break
-		}
-		if claimed {
-			claimedMessages = append(claimedMessages, message)
-		}
 	}
 	if len(claimedMessages) == 0 {
 		return

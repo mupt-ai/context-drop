@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -64,7 +65,7 @@ func (f *messageCommander) Run(_ context.Context, name string, args []string, _ 
 	return imessage.CommandResult{Stdout: []byte("reply")}, nil
 }
 
-func messageTestConfig(t *testing.T) imessage.Config {
+func messageTestConfig(t testing.TB) imessage.Config {
 	t.Helper()
 	t.Setenv("CONTEXT_DROP_HOME", t.TempDir())
 	executable := filepath.Join(t.TempDir(), "fake")
@@ -77,6 +78,30 @@ func messageTestConfig(t *testing.T) imessage.Config {
 	cfg.ImsgPath = executable
 	cfg.ResponderCommand = []string{executable, "{prompt_file}"}
 	return cfg
+}
+
+func BenchmarkPollMessagesSeenHistory(b *testing.B) {
+	cfg := messageTestConfig(b)
+	store := orchestrator.Store{Path: filepath.Join(b.TempDir(), "state.json")}
+	history := make([]map[string]any, 20)
+	if err := store.Update(func(st *orchestrator.State) error {
+		st.IMessageInitialized = true
+		st.IMessageChatID = "1"
+		for i := range history {
+			id := fmt.Sprintf("seen-%d", i)
+			history[i] = map[string]any{"id": id, "text": "old", "chat_id": "1", "is_from_me": false}
+			st.SeenMessageIDs[id] = "2026-08-08T00:00:00Z"
+		}
+		return nil
+	}); err != nil {
+		b.Fatal(err)
+	}
+	commander := &messageCommander{history: history}
+	runner := &Runner{Store: store, Now: func() time.Time { return time.Now().UTC() }, IMessage: &imessage.Adapter{Config: cfg, Commander: commander}}
+	b.ResetTimer()
+	for b.Loop() {
+		runner.PollMessages(context.Background())
+	}
 }
 
 func TestMessageInitialSyncThenReplyOnceAcrossRestart(t *testing.T) {
