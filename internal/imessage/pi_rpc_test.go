@@ -13,6 +13,35 @@ import (
 	"time"
 )
 
+func TestRouterModeStructurallyRestrictsPiAndPreservesPinnedSession(t *testing.T) {
+	t.Setenv("CONTEXT_DROP_HOME", t.TempDir())
+	cfg := Defaults()
+	cfg.Trusted = true
+	cfg.RouterMode = true
+	cfg.ResponderCwd = t.TempDir()
+	cfg.ResponderCommand = []string{"/tmp/pi", "--print", "--session", "/private/original-session.jsonl", "--tools=bash", "--extension", "/tmp/ambient.mjs", "@{prompt_file}"}
+	responder, ok, err := NewPiRPCResponder(cfg)
+	if err != nil || !ok {
+		t.Fatalf("responder ok=%v err=%v", ok, err)
+	}
+	joined := strings.Join(responder.argv, " ")
+	for _, required := range []string{"--session /private/original-session.jsonl", "--no-builtin-tools", "--no-extensions", "--no-skills", "pi-router-extension.mjs"} {
+		if !strings.Contains(joined, required) {
+			t.Fatalf("router argv %q missing %q", joined, required)
+		}
+	}
+	if strings.Contains(joined, "--no-tools") {
+		t.Fatalf("router argv disabled delegate extension: %q", joined)
+	}
+	if strings.Contains(joined, "ambient.mjs") || strings.Contains(joined, "--tools=bash") {
+		t.Fatalf("router retained ambient execution tools: %q", joined)
+	}
+	responder.SetDelegationEnv("http://127.0.0.1:1/v1/delegate", "scoped-cap", "chat")
+	if strings.Contains(strings.Join(responder.argv, " "), "scoped-cap") {
+		t.Fatal("capability leaked into model-visible argv")
+	}
+}
+
 func TestPiRPCArgvPreservesPersistentSessionAndRemovesPrintPrompt(t *testing.T) {
 	got, ok := piRPCArgv([]string{
 		"/opt/homebrew/bin/pi", "--print", "--session-dir", "/tmp/sessions", "--session-id", "orchestrator", "--model", "router/model", "@{prompt_file}",

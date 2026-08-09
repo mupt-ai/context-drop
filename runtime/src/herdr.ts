@@ -30,7 +30,7 @@ function parseWorkspace(output: string | undefined): { workspace?: string; tab: 
 }
 
 export function launchInHerdr(config: RuntimeConfig, request: LaunchRequest, id: string, runner: CommandRunner = systemRunner): RunRecord {
-  const { name, runDir, argv } = prepareLaunch(config, request, id);
+  const { name, runDir, argv, environment } = prepareLaunch(config, request, id);
   const herdr = config.herdrPath || "herdr";
   const session = config.herdrSession || "default";
   const create = request.workspaceId
@@ -42,7 +42,8 @@ export function launchInHerdr(config: RuntimeConfig, request: LaunchRequest, id:
   if (!workspace) throw new Error("herdr workspace response omitted workspace ID");
 
   const launcher = join(runDir, "launch.sh");
-  writeFileSync(launcher, `#!/bin/sh\nexec ${argv.map(shellQuote).join(" ")}\n`, { mode: 0o700 });
+  const env = Object.entries(environment).map(([key, value]) => `${key}=${shellQuote(value)}`).join(" ");
+  writeFileSync(launcher, `#!/bin/sh\nexec ${env ? `env ${env} ` : ""}${argv.map(shellQuote).join(" ")}\n`, { mode: 0o700 });
   chmodSync(launcher, 0o700);
   const start = runner.run(herdr, ["--session", session, "pane", "run", location.pane, shellQuote(launcher)]);
   if (start.status !== 0) {

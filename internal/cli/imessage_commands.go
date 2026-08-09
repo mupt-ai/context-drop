@@ -26,12 +26,15 @@ func newIMessageSetupCommand() *cobra.Command {
 	var poll, historyTimeout, responderTimeout, sendTimeout time.Duration
 	var syncLimit, maxMessageBytes, maxReplyBytes int
 	var responderArgs []string
-	var disabled, trusted, useMigratedModel bool
+	var disabled, trusted, routerMode, useMigratedModel bool
 	cmd := &cobra.Command{
 		Use:   "setup",
 		Short: "Save local iMessage adapter settings without sending a message",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if routerMode && !trusted {
+				return fmt.Errorf("--router-mode requires --trusted")
+			}
 			if chatID == "" {
 				return fmt.Errorf("--chat-id is required; discover it with: imsg chats --json")
 			}
@@ -76,6 +79,7 @@ func newIMessageSetupCommand() *cobra.Command {
 			cfg := imessage.Defaults()
 			cfg.Enabled = !disabled
 			cfg.Trusted = trusted
+			cfg.RouterMode = routerMode
 			cfg.ChatID = chatID
 			cfg.Recipient = recipient
 			cfg.ImsgPath = resolvedImsg
@@ -131,7 +135,8 @@ func newIMessageSetupCommand() *cobra.Command {
 	cmd.Flags().StringVar(&responderCwd, "responder-cwd", "", "absolute working directory for the responder (trusted default: ~/.context-drop/orchestrator)")
 	cmd.Flags().StringArrayVar(&responderArgs, "responder-arg", nil, "explicit responder argv element; repeat, and include {prompt_file}")
 	cmd.Flags().BoolVar(&disabled, "disabled", false, "save configuration without enabling polling")
-	cmd.Flags().BoolVar(&trusted, "trusted", false, "enable persistent tool-enabled Pi orchestration for this explicitly configured private chat")
+	cmd.Flags().BoolVar(&trusted, "trusted", false, "enable persistent Pi orchestration for this explicitly configured private chat")
+	cmd.Flags().BoolVar(&routerMode, "router-mode", false, "structurally restrict trusted Pi to the private delegate tool; requires --trusted")
 	cmd.Flags().BoolVar(&useMigratedModel, "use-migrated-model", false, "use the migrated routing model (dari-prod/dari/routing) for the pi responder")
 	return cmd
 }

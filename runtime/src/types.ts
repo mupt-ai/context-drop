@@ -15,6 +15,7 @@ export interface RuntimeConfig {
   herdrPath?: string;
   herdrSession?: string;
   agents: Record<string, AgentConfig>;
+  delegateAgent?: string;
 }
 
 export interface RunRecord {
@@ -40,4 +41,16 @@ export interface LaunchRequest {
   name?: string;
   backend?: SessionBackend;
   workspaceId?: string;
+  environment?: Record<string, string>;
+  extension?: string;
+}
+
+export type ParentReportKind = "started" | "progress" | "needs_user" | "completed" | "failed";
+export interface ParentReport {
+  id: string;
+  runId: string;
+  kind: ParentReportKind;
+  message: string;
+  createdAt: string;
+  claimedAt?: string;
 }

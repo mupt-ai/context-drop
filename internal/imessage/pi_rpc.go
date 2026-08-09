@@ -22,11 +22,15 @@ import (
 //go:embed pi_context_filter.mjs
 var piContextFilter []byte
 
+//go:embed pi_router_extension.mjs
+var piRouterExtension []byte
+
 type PiRPCResponder struct {
-	dir               string
-	argv              []string
-	env               []string
-	contextFilterPath string
+	dir                 string
+	argv                []string
+	env                 []string
+	contextFilterPath   string
+	routerExtensionPath string
 
 	mu             sync.Mutex
 	cmd            *exec.Cmd
@@ -85,6 +89,9 @@ func (b *lockedBuffer) String() string {
 func NewPiRPCResponder(cfg Config) (*PiRPCResponder, bool, error) {
 	argv, ok := piRPCArgv(cfg.ResponderCommand)
 	if !cfg.Trusted || !ok {
+		if cfg.RouterMode {
+			return nil, false, fmt.Errorf("router mode requires a trusted persistent Pi session")
+		}
 		return nil, false, nil
 	}
 	dir, _, err := Paths()
@@ -92,8 +99,32 @@ func NewPiRPCResponder(cfg Config) (*PiRPCResponder, bool, error) {
 		return nil, false, err
 	}
 	contextFilterPath := filepath.Join(dir, "pi-context-filter.mjs")
+	routerExtensionPath := ""
+	if cfg.RouterMode {
+		argv = restrictedRouterArgv(argv)
+		routerExtensionPath = filepath.Join(dir, "pi-router-extension.mjs")
+		argv = append(argv, "--no-builtin-tools", "--no-extensions", "--no-skills", "--extension", routerExtensionPath)
+	}
 	argv = append(argv, "--extension", contextFilterPath)
-	return &PiRPCResponder{dir: cfg.ResponderCwd, argv: argv, contextFilterPath: contextFilterPath}, true, nil
+	return &PiRPCResponder{dir: cfg.ResponderCwd, argv: argv, contextFilterPath: contextFilterPath, routerExtensionPath: routerExtensionPath}, true, nil
+}
+
+func restrictedRouterArgv(argv []string) []string {
+	out := make([]string, 0, len(argv))
+	for i := 0; i < len(argv); i++ {
+		arg := argv[i]
+		switch arg {
+		case "--tools", "-t", "--exclude-tools", "-xt", "--extension", "-e":
+			i++
+		case "--no-tools", "-nt", "--no-builtin-tools", "-nbt", "--no-extensions", "-ne", "--no-skills", "-ns":
+		default:
+			if strings.HasPrefix(arg, "--tools=") || strings.HasPrefix(arg, "--exclude-tools=") || strings.HasPrefix(arg, "--extension=") {
+				continue
+			}
+			out = append(out, arg)
+		}
+	}
+	return out
 }
 
 func piRPCArgv(command []string) ([]string, bool) {
@@ -129,6 +160,12 @@ func piRPCArgv(command []string) ([]string, bool) {
 	return args, hasSession
 }
 
+func (r *PiRPCResponder) SetDelegationEnv(url, capability, chatID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.env = append(os.Environ(), "CONTEXT_DROP_DELEGATE_URL="+url, "CONTEXT_DROP_DELEGATE_CAPABILITY="+capability, "CONTEXT_DROP_CHAT_ID="+chatID)
+}
+
 func (r *PiRPCResponder) Prepare(ctx context.Context) (PersistentResponderState, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -151,6 +188,11 @@ func (r *PiRPCResponder) start(ctx context.Context) error {
 	if r.contextFilterPath != "" {
 		if err := writePrivateAsset(r.contextFilterPath, piContextFilter); err != nil {
 			return fmt.Errorf("install Pi RPC context filter: %w", err)
+		}
+	}
+	if r.routerExtensionPath != "" {
+		if err := writePrivateAsset(r.routerExtensionPath, piRouterExtension); err != nil {
+			return fmt.Errorf("install Pi router extension: %w", err)
 		}
 	}
 	cmd := exec.Command(r.argv[0], r.argv[1:]...)

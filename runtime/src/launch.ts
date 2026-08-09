@@ -33,7 +33,16 @@ export function buildAgentArgv(agent: AgentConfig, promptFile: string): string[]
   return argv;
 }
 
-export function prepareLaunch(config: RuntimeConfig, request: LaunchRequest, id: string): { name: string; runDir: string; argv: string[] } {
+function validateEnvironment(environment: Record<string, string> | undefined): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(environment ?? {})) {
+    if (!/^[A-Z_][A-Z0-9_]*$/.test(key) || typeof value !== "string" || value.includes("\0")) throw new Error("invalid launch environment");
+    result[key] = value;
+  }
+  return result;
+}
+
+export function prepareLaunch(config: RuntimeConfig, request: LaunchRequest, id: string): { name: string; runDir: string; argv: string[]; environment: Record<string, string> } {
   const agent = config.agents[request.agent];
   if (!agent) throw new Error(`unknown agent: ${request.agent}`);
   if (!request.repo || !request.prompt) throw new Error("repo and prompt are required");
@@ -43,5 +52,7 @@ export function prepareLaunch(config: RuntimeConfig, request: LaunchRequest, id:
   const promptFile = join(runDir, "prompt.txt");
   writeFileSync(promptFile, request.prompt, { mode: 0o600 });
   chmodSync(promptFile, 0o600);
-  return { name, runDir, argv: buildAgentArgv(agent, promptFile) };
+  const argv = buildAgentArgv(agent, promptFile);
+  if (request.extension) argv.push("--extension", request.extension);
+  return { name, runDir, argv, environment: validateEnvironment(request.environment) };
 }

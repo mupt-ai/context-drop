@@ -27,6 +27,7 @@ type RuntimeConfig struct {
 	HerdrPath      string                 `json:"herdrPath,omitempty"`
 	HerdrSession   string                 `json:"herdrSession"`
 	Agents         map[string]AgentConfig `json:"agents"`
+	DelegateAgent  string                 `json:"delegateAgent,omitempty"`
 }
 
 func Initialize() ([]string, error) {

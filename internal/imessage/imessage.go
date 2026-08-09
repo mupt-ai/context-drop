@@ -38,6 +38,7 @@ const (
 type Config struct {
 	Enabled                 bool     `json:"enabled"`
 	Trusted                 bool     `json:"trusted,omitempty"`
+	RouterMode              bool     `json:"router_mode,omitempty"`
 	ChatID                  string   `json:"chat_id"`
 	Recipient               string   `json:"recipient,omitempty"`
 	ImsgPath                string   `json:"imsg_path"`
@@ -286,6 +287,9 @@ func (cfg Config) PollInterval() time.Duration {
 }
 
 func Validate(cfg Config) error {
+	if cfg.RouterMode && !cfg.Trusted {
+		return fmt.Errorf("router mode requires a trusted private chat")
+	}
 	if strings.TrimSpace(cfg.ChatID) == "" {
 		return fmt.Errorf("iMessage chat ID is required")
 	}
@@ -508,8 +512,14 @@ func (a Adapter) buildPrompt(message Message, includeDurableContext bool) (strin
 	if a.Config.Trusted {
 		prompt = "This is a request from the explicitly configured trusted private iMessage/SMS chat. Act as the user's persistent coding orchestrator: use your available tools when needed, create and launch delegated sessions when appropriate, and return a concise status.\n"
 	}
+	if a.Config.RouterMode {
+		prompt = "This is a request from the explicitly configured trusted private iMessage/SMS chat. You are a tiny router: answer casual/simple conversation directly, but call delegate(task) promptly for actionable or non-trivial work. Include relevant context and preserve explicit confirmation gates for payments, password/MFA recovery, and materially changed terms. Do not claim work completed merely because a worker launched.\n"
+	}
 	if !includeDurableContext {
 		prompt = "This is the next request from the trusted private iMessage/SMS chat. Preserve continuity with the current persistent session, use tools only when needed, and reply directly and concisely.\n"
+		if a.Config.RouterMode {
+			prompt = "This is the next request from the trusted private iMessage/SMS chat. Preserve continuity. Answer casual/simple conversation directly; for actionable or non-trivial work call delegate(task) promptly with relevant context and explicit safety gates, then report only the verified launch status.\n"
+		}
 		for _, contextFile := range []struct {
 			label string
 			path  string

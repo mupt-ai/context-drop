@@ -64,12 +64,21 @@ type RuntimeLauncher interface {
 	Launch(context.Context, string, string, string, string, string, string) (runtimeclient.Run, error)
 }
 
+type DelegationRuntime interface {
+	Delegate(context.Context, string, string) (runtimeclient.Run, error)
+	DelegateCapability(context.Context) (string, error)
+	PendingReports(context.Context) ([]runtimeclient.ParentReport, error)
+	DeliverReport(context.Context, string) (runtimeclient.ParentReport, bool, error)
+	Delegations(context.Context) ([]runtimeclient.Delegation, error)
+}
+
 type Runner struct {
 	Store                orchestrator.Store
 	Notifier             orchestrator.Notifier
 	Now                  func() time.Time
 	InboxInterval        time.Duration
 	Runtime              RuntimeLauncher
+	Delegation           DelegationRuntime
 	CLIConfig            config.CLIConfig
 	Inbox                func(context.Context, config.CLIConfig) ([]handoff.Handoff, error)
 	IMessage             *imessage.Adapter
@@ -244,7 +253,7 @@ func NewRunner() (*Runner, error) {
 		}
 		interval = parsed
 	}
-	runner := &Runner{Store: store, Notifier: orchestrator.LocalNotifier{}, Now: func() time.Time { return time.Now().UTC() }, InboxInterval: interval, Runtime: client, CLIConfig: cfg, Inbox: listInbox}
+	runner := &Runner{Store: store, Notifier: orchestrator.LocalNotifier{}, Now: func() time.Time { return time.Now().UTC() }, InboxInterval: interval, Runtime: client, Delegation: client, CLIConfig: cfg, Inbox: listInbox}
 	messageConfig, messageErr := imessage.Load()
 	if messageErr == nil {
 		adapter := &imessage.Adapter{Config: messageConfig}
@@ -295,6 +304,11 @@ func Run(ctx context.Context) error {
 	} else {
 		_ = recordRuntimeError(nil)
 	}
+	if runner.IMessage != nil && runner.IMessage.Config.RouterMode {
+		if configureErr := runner.configureRouter(ctx); configureErr != nil {
+			return fmt.Errorf("configure iMessage router: %w", configureErr)
+		}
+	}
 	defer func() { stopChild() }()
 	ticker := time.NewTicker(TickInterval)
 	defer ticker.Stop()
@@ -302,6 +316,7 @@ func Run(ctx context.Context) error {
 	defer healthTicker.Stop()
 	if runner.IMessage != nil && runner.IMessage.Config.Enabled {
 		go runner.ReceiveMessages(ctx)
+		go runner.DeliverReports(ctx)
 	}
 	if err := runner.Tick(ctx); err != nil {
 		log.Printf("Context Drop daemon tick: %v", err)
@@ -782,7 +797,17 @@ func (r *Runner) processMessage(ctx context.Context, message imessage.Message) {
 	}); err != nil {
 		log.Printf("Context Drop iMessage processing state failed: %v", err)
 	}
-	response, responderErr := r.IMessage.RespondMeasured(ctx, message)
+	var response imessage.Response
+	var responderErr error
+	if r.IMessage.Config.RouterMode {
+		if continuationReply, handled := r.continueActiveTask(ctx, message.Text); handled {
+			response.Reply = continuationReply
+		} else {
+			response, responderErr = r.IMessage.RespondMeasured(ctx, message)
+		}
+	} else {
+		response, responderErr = r.IMessage.RespondMeasured(ctx, message)
+	}
 	processErr := responderErr
 	var sendDuration time.Duration
 	if processErr == nil {
