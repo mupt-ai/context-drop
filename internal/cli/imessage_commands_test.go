@@ -12,6 +12,7 @@ import (
 
 	"contextdrop.dev/context-drop/internal/imessage"
 	"contextdrop.dev/context-drop/internal/orchestrator"
+	"contextdrop.dev/context-drop/internal/runtimeclient"
 )
 
 func TestIMessageSetupSavesWithoutExecuting(t *testing.T) {
@@ -56,6 +57,90 @@ func TestIMessageRouterModeRequiresConfiguredDelegateAgent(t *testing.T) {
 	err := cmd.Execute()
 	if err == nil || !strings.Contains(err.Error(), "configured delegateAgent") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func writeRouterSetupFixture(t *testing.T, home string) (string, string) {
+	t.Helper()
+	fake := func(name string) string {
+		path := filepath.Join(home, name)
+		if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	imsgPath, piPath := fake("imsg"), fake("pi")
+	nodePath, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeDir := filepath.Join(home, "runtime")
+	if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := runtimeclient.RuntimeConfig{
+		Host: "127.0.0.1", Port: 47762, StateDir: runtimeDir,
+		TokenFile: filepath.Join(runtimeDir, "token"), NodePath: nodePath,
+		DefaultBackend: "tmux", TmuxSession: "context-drop", HerdrSession: "default",
+		Agents:        map[string]runtimeclient.AgentConfig{"pi": {Command: []string{piPath, "@{prompt_file}"}, PromptMode: "arg"}},
+		DelegateAgent: "pi",
+	}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runtimeDir, "config.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return imsgPath, piPath
+}
+
+func TestIMessageRouterModeCreatesAndPinsDurableSession(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CONTEXT_DROP_HOME", home)
+	imsgPath, _ := writeRouterSetupFixture(t, home)
+	cmd := newIMessageCommand()
+	cmd.SetArgs([]string{"setup", "--router-mode", "--trusted", "--chat-id", "chat", "--imsg-path", imsgPath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := imessage.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionPath := filepath.Join(home, "sessions", "imessage.jsonl")
+	joined := strings.Join(cfg.ResponderCommand, "\x00")
+	if !strings.Contains(joined, "--session\x00"+sessionPath) || strings.Contains(joined, "--no-session") {
+		t.Fatalf("responder command does not pin durable session: %#v", cfg.ResponderCommand)
+	}
+	info, err := os.Stat(sessionPath)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+		t.Fatalf("session info=%v err=%v", info, err)
+	}
+}
+
+func TestIMessageRouterModePreservesExplicitPinnedSession(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CONTEXT_DROP_HOME", home)
+	imsgPath, piPath := writeRouterSetupFixture(t, home)
+	sessionPath := filepath.Join(home, "original-session.jsonl")
+	if err := os.WriteFile(sessionPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := newIMessageCommand()
+	cmd.SetArgs([]string{"setup", "--router-mode", "--trusted", "--chat-id", "chat", "--imsg-path", imsgPath, "--responder-arg", piPath, "--responder-arg=--session", "--responder-arg", sessionPath, "--responder-arg=@{prompt_file}"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := imessage.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(cfg.ResponderCommand, "\x00"); got != strings.Join([]string{piPath, "--session", sessionPath, "@{prompt_file}"}, "\x00") {
+		t.Fatalf("explicit pinned session changed: %#v", cfg.ResponderCommand)
+	}
+	if err := validatePinnedRouterSession([]string{piPath, "@{prompt_file}"}); err == nil || !strings.Contains(err.Error(), "--session-file") {
+		t.Fatalf("missing-session error = %v", err)
 	}
 }
 

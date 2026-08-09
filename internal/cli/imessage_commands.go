@@ -7,9 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"contextdrop.dev/context-drop/internal/imessage"
+	"contextdrop.dev/context-drop/internal/localhome"
 	"contextdrop.dev/context-drop/internal/orchestrator"
 	"contextdrop.dev/context-drop/internal/runtimeclient"
 	"github.com/spf13/cobra"
@@ -81,9 +83,21 @@ func newIMessageSetupCommand() *cobra.Command {
 				}
 				sessionFile = path
 			}
+			if routerMode && sessionFile == "" {
+				var sessionErr error
+				sessionFile, sessionErr = createDefaultRouterSessionFile()
+				if sessionErr != nil {
+					return sessionErr
+				}
+			}
 			responder, err := responderCommand(agent, responderArgs, trusted, useMigratedModel, sessionFile)
 			if err != nil {
 				return err
+			}
+			if routerMode {
+				if err := validatePinnedRouterSession(responder); err != nil {
+					return err
+				}
 			}
 			if personaFile == "" {
 				home, homeErr := imessage.DefaultPersonaFile()
@@ -183,6 +197,54 @@ func resolveIMessageExecutable(value string) (string, error) {
 		return "", fmt.Errorf("--imsg-path must point to an executable file")
 	}
 	return value, nil
+}
+
+func createDefaultRouterSessionFile() (string, error) {
+	root, err := localhome.Root()
+	if err != nil {
+		return "", fmt.Errorf("resolve Context Drop home for router session: %w", err)
+	}
+	path := filepath.Join(root, "sessions", "imessage.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", fmt.Errorf("create router session directory: %w", err)
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil && !errors.Is(err, os.ErrExist) {
+		return "", fmt.Errorf("create durable router session %s: %w", path, err)
+	}
+	if err == nil {
+		if closeErr := file.Close(); closeErr != nil {
+			return "", fmt.Errorf("close durable router session %s: %w", path, closeErr)
+		}
+	}
+	info, statErr := os.Stat(path)
+	if statErr != nil || !info.Mode().IsRegular() {
+		return "", fmt.Errorf("router mode requires a durable Pi session file; create a regular file and pass --session-file PATH")
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return "", fmt.Errorf("secure durable router session %s: %w", path, err)
+	}
+	return path, nil
+}
+
+func validatePinnedRouterSession(argv []string) error {
+	for i, arg := range argv {
+		if arg == "--session" && i+1 < len(argv) {
+			path := argv[i+1]
+			info, err := os.Stat(path)
+			if filepath.IsAbs(path) && err == nil && info.Mode().IsRegular() {
+				return nil
+			}
+		}
+		if strings.HasPrefix(arg, "--session=") {
+			path := strings.TrimPrefix(arg, "--session=")
+			info, err := os.Stat(path)
+			if filepath.IsAbs(path) && err == nil && info.Mode().IsRegular() {
+				return nil
+			}
+		}
+	}
+	return fmt.Errorf("--router-mode requires an explicit persistent Pi session; pass --session-file /absolute/path or include --session /absolute/path in --responder-arg")
 }
 
 func responderCommand(agent string, explicit []string, trusted, useMigratedModel bool, sessionFile string) ([]string, error) {

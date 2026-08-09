@@ -83,16 +83,30 @@ test("task injection cannot mint authorization and cross-chat lease is denied", 
   } finally { await close(server); }
 });
 
-test("terminal reports reject later reports and writer lock prevents overlap", async () => {
+test("terminal reports revoke capability across compaction and writer lock prevents overlap", async () => {
   const { c, server, base, headers } = await fixture();
+  let launched: any, reportHeaders: Record<string,string>;
   try {
     assert.throws(() => createRuntimeServer(c, "secret", runner), /another writer/);
-    const cap = await issue(base, headers); const launched = await delegate(base, cap, "work");
+    const cap = await issue(base, headers); launched = await delegate(base, cap, "work");
     const script = readFileSync(join(c.stateDir, "runs", launched.run.id, "launch.sh"), "utf8"); const reportCap = script.match(/CONTEXT_DROP_REPORT_CAPABILITY='([^']+)'/)![1];
-    const reportHeaders = { authorization: `Bearer ${reportCap}`, "content-type": "application/json" };
+    reportHeaders = { authorization: `Bearer ${reportCap}`, "content-type": "application/json" };
     assert.equal((await fetch(base + "/v1/reports", { method: "POST", headers: reportHeaders, body: JSON.stringify({ runId: launched.run.id, kind: "completed", message: "done" }) })).status, 201);
-    assert.equal((await fetch(base + "/v1/reports", { method: "POST", headers: reportHeaders, body: JSON.stringify({ runId: launched.run.id, kind: "progress", message: "late" }) })).status, 409);
+    const terminalTask=readFileSync(join(c.stateDir,"parent-tasks.jsonl"),"utf8").trim().split("\n").map(line=>JSON.parse(line)).find(t=>t.runId===launched.run.id); assert.equal(terminalTask.status,"completed");assert.equal(terminalTask.reportCapability,"");
+    assert.equal((await fetch(base + "/v1/reports", { method: "POST", headers: reportHeaders, body: JSON.stringify({ runId: launched.run.id, kind: "progress", message: "late" }) })).status, 401);
   } finally { await close(server); }
+  const restarted=createRuntimeServer(c,"secret",runner); await new Promise<void>(resolve=>restarted.listen(0,"127.0.0.1",resolve)); const address=restarted.address();assert.ok(address&&typeof address==="object");
+  try { const compactedBase=`http://127.0.0.1:${address.port}`; assert.equal((await fetch(compactedBase+"/v1/reports",{method:"POST",headers:reportHeaders!,body:JSON.stringify({runId:launched.run.id,kind:"progress",message:"after compaction"})})).status,401); }
+  finally { await close(restarted); }
+});
+
+test("terminal report recovery preserves revocation when interrupted after commit", async () => {
+  const c={...config(),defaultBackend:"herdr" as const}; const server=createRuntimeServer(c,"secret",runner,{afterTerminalCommitted:()=>{throw new Error("injected terminal commit crash");}}); await new Promise<void>(resolve=>server.listen(0,"127.0.0.1",resolve)); const address=server.address();assert.ok(address&&typeof address==="object");const base=`http://127.0.0.1:${address.port}`,headers={authorization:"Bearer secret","content-type":"application/json"}; let launched:any,reportHeaders:Record<string,string>;
+  try { const cap=await issue(base,headers);launched=await delegate(base,cap,"work");const script=readFileSync(join(c.stateDir,"runs",launched.run.id,"launch.sh"),"utf8");const reportCap=script.match(/CONTEXT_DROP_REPORT_CAPABILITY='([^']+)'/)![1];reportHeaders={authorization:`Bearer ${reportCap}`,"content-type":"application/json"};const response=await fetch(base+"/v1/reports",{method:"POST",headers:reportHeaders,body:JSON.stringify({runId:launched.run.id,kind:"completed",message:"done"})});assert.equal(response.status,400);const task=JSON.parse(readFileSync(join(c.stateDir,"parent-tasks.jsonl"),"utf8"));assert.equal(task.status,"completed");assert.equal(task.reportCapability,"");assert.equal(task.pendingTerminalReport.kind,"completed"); }
+  finally { await close(server); }
+  const restarted=createRuntimeServer(c,"secret",runner);await new Promise<void>(resolve=>restarted.listen(0,"127.0.0.1",resolve));const restartedAddress=restarted.address();assert.ok(restartedAddress&&typeof restartedAddress==="object");
+  try { const task=JSON.parse(readFileSync(join(c.stateDir,"parent-tasks.jsonl"),"utf8"));assert.equal(task.reportCapability,"");assert.equal(task.pendingTerminalReport,undefined);const reports=readFileSync(join(c.stateDir,"parent-reports.jsonl"),"utf8");assert.match(reports,/"kind":"completed"/);const result=await fetch(`http://127.0.0.1:${restartedAddress.port}/v1/reports`,{method:"POST",headers:reportHeaders!,body:JSON.stringify({runId:launched.run.id,kind:"progress",message:"late"})});assert.equal(result.status,401); }
+  finally { await close(restarted); }
 });
 
 test("per-run report rate limit retains all accepted pending reports", async () => {
@@ -121,6 +135,13 @@ test("task capability exists before launcher can report", async () => {
   try{capability=await issue(base,headers);await delegate(base,capability,"instant report");assert.equal(reported,1);}finally{await close(server);}
 });
 
+test("same-process concurrent delegates and reports do not lose records", async () => {
+  const { c,server,base,headers }=await fixture();
+  try { const cap=await issue(base,headers); const launched=await Promise.all([delegate(base,cap,"first"),delegate(base,cap,"second")]); const tasks=readFileSync(join(c.stateDir,"parent-tasks.jsonl"),"utf8").trim().split("\n").map(line=>JSON.parse(line)); assert.equal(tasks.length,2); assert.deepEqual(new Set(tasks.map(t=>t.runId)),new Set(launched.map(v=>v.run.id)));
+    const responses=await Promise.all(launched.map(async (item,index)=>{const script=readFileSync(join(c.stateDir,"runs",item.run.id,"launch.sh"),"utf8");const reportCap=script.match(/CONTEXT_DROP_REPORT_CAPABILITY='([^']+)'/)![1];return fetch(base+"/v1/reports",{method:"POST",headers:{authorization:`Bearer ${reportCap}`,"content-type":"application/json"},body:JSON.stringify({runId:item.run.id,kind:"progress",message:`step ${index}`})});})); assert.deepEqual(responses.map(r=>r.status),[201,201]); const reports=readFileSync(join(c.stateDir,"parent-reports.jsonl"),"utf8").trim().split("\n").map(line=>JSON.parse(line)); assert.equal(reports.length,2); assert.deepEqual(new Set(reports.map(r=>r.runId)),new Set(launched.map(v=>v.run.id)));
+  } finally { await close(server); }
+});
+
 test("invalid terminal-sensitive report leaves task and capability unchanged", async () => {
   const { c,server,base,headers }=await fixture();
   try{const cap=await issue(base,headers);const launched=await delegate(base,cap,"work");const script=readFileSync(join(c.stateDir,"runs",launched.run.id,"launch.sh"),"utf8");const reportCap=script.match(/CONTEXT_DROP_REPORT_CAPABILITY='([^']+)'/)![1];const reportHeaders={authorization:`Bearer ${reportCap}`,"content-type":"application/json"};
@@ -137,6 +158,15 @@ test("failed authorized launch releases challenge for exactly one successful ret
     const first=await fetch(base+"/v1/confirm",{method:"POST",headers,body:JSON.stringify({routerId:"router-a",chatId:"chat-a",token:report.challengeToken})});assert.equal(first.status,400);const afterFailure=JSON.parse(readFileSync(join(c.stateDir,"parent-reports.jsonl"),"utf8"));assert.equal(afterFailure.challengeConsumedAt,undefined);assert.equal(afterFailure.challengeReservationId,undefined);
     const retry=await fetch(base+"/v1/confirm",{method:"POST",headers,body:JSON.stringify({routerId:"router-a",chatId:"chat-a",token:report.challengeToken})});assert.equal(retry.status,201);const replay=await fetch(base+"/v1/confirm",{method:"POST",headers,body:JSON.stringify({routerId:"router-a",chatId:"chat-a",token:report.challengeToken})});assert.equal(replay.status,404);
   }finally{await close(server);}
+});
+
+test("post-launch sensitive crash becomes launch_unknown without confirmation reuse", async () => {
+  let instant=new Date("2026-01-01T00:00:00.000Z"); const c={...config(),defaultBackend:"herdr" as const}; const server=createRuntimeServer(c,"secret",runner,{now:()=>instant,afterExternalLaunch:()=>{throw new Error("injected post-launch crash");},recovery:{launchTimeoutMs:100}}); await new Promise<void>(r=>server.listen(0,"127.0.0.1",r)); const address=server.address();assert.ok(address&&typeof address==="object"); const base=`http://127.0.0.1:${address.port}`,headers={authorization:"Bearer secret","content-type":"application/json"}; let token="",authorizedRun="",authorizedCap="";
+  try { const cap=await issue(base,headers); const launched=await delegate(base,cap,"purchase A"); const script=readFileSync(join(c.stateDir,"runs",launched.run.id,"launch.sh"),"utf8"); const reportCap=script.match(/CONTEXT_DROP_REPORT_CAPABILITY='([^']+)'/)![1]; const created=await fetch(base+"/v1/reports",{method:"POST",headers:{authorization:`Bearer ${reportCap}`,"content-type":"application/json"},body:JSON.stringify({runId:launched.run.id,kind:"needs_user",message:"confirm A",sensitiveAction:"payment_or_purchase",challengedAction:"purchase A for $10"})}); const report=(await created.json() as any).report;token=report.challengeToken; const lease=(await(await fetch(base+"/v1/reports/lease",{method:"POST",headers,body:JSON.stringify({routerId:"router-a",chatId:"chat-a"})})).json() as any).report; await fetch(base+`/v1/reports/${lease.id}/ack`,{method:"POST",headers,body:JSON.stringify({routerId:"router-a",chatId:"chat-a",leaseId:lease.leaseId})}); const confirmed=await fetch(base+"/v1/confirm",{method:"POST",headers,body:JSON.stringify({routerId:"router-a",chatId:"chat-a",token})}); assert.equal(confirmed.status,400); const tasks=readFileSync(join(c.stateDir,"parent-tasks.jsonl"),"utf8").trim().split("\n").map(line=>JSON.parse(line)); const committed=tasks.find(t=>t.status==="launch_committed");assert.ok(committed);authorizedRun=committed.runId;authorizedCap=committed.reportCapability; const challenge=readFileSync(join(c.stateDir,"parent-reports.jsonl"),"utf8").trim().split("\n").map(line=>JSON.parse(line)).find(r=>r.challengeToken===token);assert.ok(challenge.challengeConsumedAt); }
+  finally { await close(server); }
+  instant=new Date("2026-01-01T00:03:00.000Z"); const restarted=createRuntimeServer(c,"secret",runner,{now:()=>instant,recovery:{launchTimeoutMs:100}}); await new Promise<void>(r=>restarted.listen(0,"127.0.0.1",r)); const restartedAddress=restarted.address();assert.ok(restartedAddress&&typeof restartedAddress==="object");const restartedBase=`http://127.0.0.1:${restartedAddress.port}`;
+  try { const tasks=readFileSync(join(c.stateDir,"parent-tasks.jsonl"),"utf8").trim().split("\n").map(line=>JSON.parse(line)); const unknown=tasks.find(t=>t.runId===authorizedRun);assert.equal(unknown.status,"launch_unknown");assert.equal(unknown.reportCapability,""); const replay=await fetch(restartedBase+"/v1/confirm",{method:"POST",headers,body:JSON.stringify({routerId:"router-a",chatId:"chat-a",token})});assert.equal(replay.status,404); const reReport=await fetch(restartedBase+"/v1/reports",{method:"POST",headers:{authorization:`Bearer ${authorizedCap}`,"content-type":"application/json"},body:JSON.stringify({runId:authorizedRun,kind:"completed",message:"late"})});assert.equal(reReport.status,401); const leased=(await(await fetch(restartedBase+"/v1/reports/lease",{method:"POST",headers,body:JSON.stringify({routerId:"router-a",chatId:"chat-a"})})).json() as any).report;assert.equal(leased.kind,"needs_user");assert.match(leased.message,/outcome is unknown/i); }
+  finally { await close(restarted); }
 });
 
 test("active worker slots are bounded per router chat", async () => {
