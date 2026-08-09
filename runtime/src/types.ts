@@ -64,4 +64,6 @@ export interface ParentReport {
   leaseUntil?: string;
   deliveredAt?: string;
   challengeConsumedAt?: string;
+  challengeReservationId?: string;
+  challengeReservationUntil?: string;
 }
