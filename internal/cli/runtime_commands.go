@@ -148,10 +148,29 @@ func newRunCommand() *cobra.Command {
 	return root
 }
 
+func runtimeNodePath(cfg runtimeclient.RuntimeConfig, resolve func(string) (string, error)) (string, error) {
+	if strings.TrimSpace(cfg.NodePath) != "" {
+		return cfg.NodePath, nil
+	}
+	nodePath, err := resolve("node")
+	if err != nil {
+		return "", fmt.Errorf("resolve Node runtime: %w", err)
+	}
+	return nodePath, nil
+}
+
 func newRuntimeCommand() *cobra.Command {
 	root := &cobra.Command{Use: "runtime", Short: "Manage the private local agent runtime"}
 	serve := &cobra.Command{Use: "serve", Short: "Run the loopback-only local runtime", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		if _, err := runtimeclient.Initialize(); err != nil {
+			return err
+		}
+		cfg, err := runtimeclient.LoadConfig()
+		if err != nil {
+			return err
+		}
+		nodePath, err := runtimeNodePath(cfg, runtimeclient.ResolveExecutable)
+		if err != nil {
 			return err
 		}
 		entry, err := runtimeclient.RuntimeEntry()
@@ -162,7 +181,7 @@ func newRuntimeCommand() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		process := exec.CommandContext(cmd.Context(), "node", entry, configPath)
+		process := exec.CommandContext(cmd.Context(), nodePath, entry, configPath)
 		process.Stdout = cmd.OutOrStdout()
 		process.Stderr = cmd.ErrOrStderr()
 		process.Stdin = os.Stdin

@@ -73,6 +73,18 @@ func (unsupportedMessageWatcher) Watch(context.Context, int64, func(imessage.Mes
 	return imessage.ErrWatchUnsupported
 }
 
+type silentFailureMessageWatcher struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (w *silentFailureMessageWatcher) Watch(context.Context, int64, func(imessage.Message) error) error {
+	w.mu.Lock()
+	w.calls++
+	w.mu.Unlock()
+	return errors.New("imsg watch exited unexpectedly")
+}
+
 func (f *queueCommander) Run(_ context.Context, _ string, args []string, _ int) (imessage.CommandResult, error) {
 	if len(args) > 0 && args[0] == "history" {
 		f.mu.Lock()
@@ -282,6 +294,49 @@ func TestMessageWatchMigratesCursorFromSeenRowIDs(t *testing.T) {
 	}
 	if state.IMessageCursor != 9391 {
 		t.Fatalf("persisted cursor = %d", state.IMessageCursor)
+	}
+}
+
+func TestSilentMessageWatchFailureFallsBackToPollingAfterBoundedRetries(t *testing.T) {
+	cfg := messageTestConfig(t)
+	store := orchestrator.Store{Path: filepath.Join(t.TempDir(), "state.json")}
+	if err := store.Update(func(st *orchestrator.State) error {
+		st.IMessageInitialized = true
+		st.IMessageChatID = "1"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	commander := &messageCommander{history: []map[string]any{{"id": "202", "text": "silent fallback", "chat_id": "1", "is_from_me": false}}}
+	watcher := &silentFailureMessageWatcher{}
+	runner := &Runner{
+		Store:                    store,
+		Now:                      func() time.Time { return time.Now().UTC() },
+		IMessage:                 &imessage.Adapter{Config: cfg, Commander: commander, Watcher: watcher},
+		MessagePollInterval:      10 * time.Millisecond,
+		MessageWatchRetryMin:     time.Millisecond,
+		MessageWatchRetryMax:     time.Millisecond,
+		MessageWatchFailureLimit: 2,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		runner.ReceiveMessages(ctx)
+		close(done)
+	}()
+	waitForMessageSends(t, commander, 1)
+	waitForMessageJobs(t, store, "202")
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("ReceiveMessages did not stop")
+	}
+	watcher.mu.Lock()
+	calls := watcher.calls
+	watcher.mu.Unlock()
+	if calls != 2 {
+		t.Fatalf("watch calls = %d, want 2", calls)
 	}
 }
 

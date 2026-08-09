@@ -85,6 +85,40 @@ func TestInitializeRejectsInvalidPort(t *testing.T) {
 	}
 }
 
+func TestInitializeUsesPersistedNodePathWhenPATHHasNoNode(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CONTEXT_DROP_HOME", home)
+	nodePath, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, configPath, _, err := Paths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(RuntimeConfig{Host: "127.0.0.1", Port: 47762, NodePath: nodePath, DefaultBackend: "tmux", TmuxSession: "context-drop", Agents: map[string]AgentConfig{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", t.TempDir())
+	if _, err := Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.NodePath != nodePath {
+		t.Fatalf("NodePath = %q, want %q", cfg.NodePath, nodePath)
+	}
+}
+
 func TestInitializeHonorsBackendEnvOverrides(t *testing.T) {
 	home := t.TempDir()
 	nodePath, err := ResolveExecutable("node")

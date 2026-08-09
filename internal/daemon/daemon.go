@@ -28,10 +28,11 @@ import (
 )
 
 const (
-	TickInterval                = 10 * time.Second
-	DefaultInboxInterval        = time.Minute
-	DefaultMessageWatchRetryMin = time.Second
-	DefaultMessageWatchRetryMax = 30 * time.Second
+	TickInterval                    = 10 * time.Second
+	DefaultInboxInterval            = time.Minute
+	DefaultMessageWatchRetryMin     = time.Second
+	DefaultMessageWatchRetryMax     = 30 * time.Second
+	DefaultMessageWatchFailureLimit = 3
 )
 
 type PIDInfo struct {
@@ -73,22 +74,23 @@ type DelegationRuntime interface {
 }
 
 type Runner struct {
-	Store                orchestrator.Store
-	Notifier             orchestrator.Notifier
-	Now                  func() time.Time
-	InboxInterval        time.Duration
-	Runtime              RuntimeLauncher
-	Delegation           DelegationRuntime
-	CLIConfig            config.CLIConfig
-	Inbox                func(context.Context, config.CLIConfig) ([]handoff.Handoff, error)
-	IMessage             *imessage.Adapter
-	MessagePollInterval  time.Duration
-	MessageWatchRetryMin time.Duration
-	MessageWatchRetryMax time.Duration
-	mu                   sync.Mutex
-	messagePollMu        sync.Mutex
-	messageWorkerOnce    sync.Once
-	messageQueue         chan messageBatch
+	Store                    orchestrator.Store
+	Notifier                 orchestrator.Notifier
+	Now                      func() time.Time
+	InboxInterval            time.Duration
+	Runtime                  RuntimeLauncher
+	Delegation               DelegationRuntime
+	CLIConfig                config.CLIConfig
+	Inbox                    func(context.Context, config.CLIConfig) ([]handoff.Handoff, error)
+	IMessage                 *imessage.Adapter
+	MessagePollInterval      time.Duration
+	MessageWatchRetryMin     time.Duration
+	MessageWatchRetryMax     time.Duration
+	MessageWatchFailureLimit int
+	mu                       sync.Mutex
+	messagePollMu            sync.Mutex
+	messageWorkerOnce        sync.Once
+	messageQueue             chan messageBatch
 }
 
 type messageBatch struct {
@@ -625,7 +627,12 @@ func (r *Runner) WatchMessages(ctx context.Context) error {
 	if retryMax < retryMin {
 		retryMax = DefaultMessageWatchRetryMax
 	}
+	failureLimit := r.MessageWatchFailureLimit
+	if failureLimit <= 0 {
+		failureLimit = DefaultMessageWatchFailureLimit
+	}
 	backoff := retryMin
+	consecutiveFailures := 0
 	for {
 		cursor, err := r.prepareMessageWatch(ctx)
 		watchStarted := time.Time{}
@@ -655,6 +662,11 @@ func (r *Runner) WatchMessages(ctx context.Context) error {
 		}
 		if !watchStarted.IsZero() && time.Since(watchStarted) >= time.Minute {
 			backoff = retryMin
+			consecutiveFailures = 0
+		}
+		consecutiveFailures++
+		if consecutiveFailures >= failureLimit {
+			return fmt.Errorf("iMessage watch failed %d consecutive times; use history polling: %w", consecutiveFailures, err)
 		}
 		log.Printf("Context Drop iMessage watch failed: %v; restarting in %s", err, backoff)
 		now := r.Now()
