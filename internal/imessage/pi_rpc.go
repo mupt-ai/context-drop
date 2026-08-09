@@ -160,10 +160,41 @@ func piRPCArgv(command []string) ([]string, bool) {
 	return args, hasSession
 }
 
-func (r *PiRPCResponder) SetDelegationEnv(url, capability, chatID string) {
+func (r *PiRPCResponder) SetDelegationEnv(url, capability string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.env = append(os.Environ(), "CONTEXT_DROP_DELEGATE_URL="+url, "CONTEXT_DROP_DELEGATE_CAPABILITY="+capability, "CONTEXT_DROP_CHAT_ID="+chatID)
+	base := append([]string(nil), r.env...)
+	if base == nil {
+		base = os.Environ()
+	}
+	r.env = r.env[:0]
+	for _, entry := range base {
+		if !strings.HasPrefix(entry, "CONTEXT_DROP_DELEGATE_URL=") && !strings.HasPrefix(entry, "CONTEXT_DROP_DELEGATE_CAPABILITY=") {
+			r.env = append(r.env, entry)
+		}
+	}
+	r.env = append(r.env, "CONTEXT_DROP_DELEGATE_URL="+url, "CONTEXT_DROP_DELEGATE_CAPABILITY="+capability)
+	// A rotated capability must take effect in a newly restricted process.
+	if r.cmd != nil {
+		r.stopLocked()
+	}
+}
+
+// DelegationEnv returns the current delegate URL and capability so callers
+// (including tests) can verify rotation without reading process internals.
+func (r *PiRPCResponder) DelegationEnv() (string, string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	url, capability := "", ""
+	for _, entry := range r.env {
+		switch {
+		case strings.HasPrefix(entry, "CONTEXT_DROP_DELEGATE_URL="):
+			url = strings.TrimPrefix(entry, "CONTEXT_DROP_DELEGATE_URL=")
+		case strings.HasPrefix(entry, "CONTEXT_DROP_DELEGATE_CAPABILITY="):
+			capability = strings.TrimPrefix(entry, "CONTEXT_DROP_DELEGATE_CAPABILITY=")
+		}
+	}
+	return url, capability
 }
 
 func (r *PiRPCResponder) Prepare(ctx context.Context) (PersistentResponderState, error) {

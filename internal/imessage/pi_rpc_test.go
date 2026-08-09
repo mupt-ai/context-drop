@@ -36,7 +36,7 @@ func TestRouterModeStructurallyRestrictsPiAndPreservesPinnedSession(t *testing.T
 	if strings.Contains(joined, "ambient.mjs") || strings.Contains(joined, "--tools=bash") {
 		t.Fatalf("router retained ambient execution tools: %q", joined)
 	}
-	responder.SetDelegationEnv("http://127.0.0.1:1/v1/delegate", "scoped-cap", "chat")
+	responder.SetDelegationEnv("http://127.0.0.1:1/v1/delegate", "scoped-cap")
 	if strings.Contains(strings.Join(responder.argv, " "), "scoped-cap") {
 		t.Fatal("capability leaked into model-visible argv")
 	}

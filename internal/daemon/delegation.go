@@ -5,20 +5,23 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"contextdrop.dev/context-drop/internal/imessage"
 	"contextdrop.dev/context-drop/internal/runtimeclient"
 )
 
-// configureRouter gives the constrained router only its scoped capability. The
-// runtime's general token remains in the Go client and is never placed in the
-// Pi process environment.
+const imessageRouterID = "imessage-router"
+
 func (r *Runner) configureRouter(ctx context.Context) error {
-	client := r.Delegation
-	if client == nil {
+	if r.Delegation == nil {
 		return fmt.Errorf("delegation runtime is unavailable")
 	}
-	capability, err := client.DelegateCapability(ctx)
+	if err := r.Delegation.Health(ctx); err != nil {
+		return err
+	}
+	capability, err := r.Delegation.IssueRouterCapability(ctx, imessageRouterID, r.IMessage.Config.ChatID)
 	if err != nil {
 		return err
 	}
@@ -26,12 +29,30 @@ func (r *Runner) configureRouter(ctx context.Context) error {
 	if !ok {
 		return fmt.Errorf("router mode requires the persistent Pi RPC responder")
 	}
-	runtimeClient, ok := client.(*runtimeclient.Client)
+	client, ok := r.Delegation.(*runtimeclient.Client)
 	if !ok {
 		return fmt.Errorf("delegation runtime does not expose a loopback address")
 	}
-	responder.SetDelegationEnv(strings.TrimRight(runtimeClient.Address, "/")+"/v1/delegate", capability, r.IMessage.Config.ChatID)
+	responder.SetDelegationEnv(strings.TrimRight(client.Address, "/")+"/v1/delegate", capability)
 	return nil
+}
+
+func (r *Runner) configureRouterWithRetry(ctx context.Context, attempts int, delay time.Duration) error {
+	var last error
+	for i := 0; i < attempts; i++ {
+		attemptCtx, cancel := context.WithTimeout(ctx, time.Second)
+		last = r.configureRouter(attemptCtx)
+		cancel()
+		if last == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+	return last
 }
 
 func (r *Runner) DeliverReports(ctx context.Context) {
@@ -48,62 +69,61 @@ func (r *Runner) DeliverReports(ctx context.Context) {
 }
 
 func (r *Runner) deliverReportsOnce(ctx context.Context) {
-	if r.IMessage == nil || !r.IMessage.Config.Enabled {
+	if r.IMessage == nil || !r.IMessage.Config.Enabled || r.Delegation == nil {
 		return
 	}
-	client := r.Delegation
-	if client == nil {
-		return
-	}
-	reports, err := client.PendingReports(ctx)
-	if err != nil {
-		return
-	}
-	for _, pending := range reports {
-		report, claimed, claimErr := client.DeliverReport(ctx, pending.ID)
-		if claimErr != nil || !claimed {
-			continue
+	for {
+		report, leased, err := r.Delegation.LeaseReport(ctx, imessageRouterID, r.IMessage.Config.ChatID)
+		if err != nil || !leased {
+			return
 		}
 		message := formatReport(report)
 		sendCtx, cancel := context.WithTimeout(ctx, time.Duration(r.IMessage.Config.SendTimeoutSeconds)*time.Second)
-		if err := r.IMessage.Send(sendCtx, message); err != nil {
-			// The report was atomically claimed before sending. This is an
-			// intentional at-most-once policy: restart cannot duplicate a
-			// notification after a send/crash race.
-		}
+		sendErr := r.IMessage.Send(sendCtx, message)
 		cancel()
+		_ = r.Delegation.FinishReport(ctx, report, imessageRouterID, r.IMessage.Config.ChatID, sendErr == nil)
+		if sendErr != nil {
+			return
+		}
 	}
 }
 
-func (r *Runner) continueActiveTask(ctx context.Context, incoming string) (string, bool) {
-	client := r.Delegation
-	if client == nil {
+func (r *Runner) confirmSensitiveAction(ctx context.Context, chatID, incoming string) (string, bool) {
+	const prefix = "CONFIRM "
+	if chatID != r.IMessage.Config.ChatID || !strings.HasPrefix(incoming, prefix) || strings.TrimSpace(incoming) != incoming {
 		return "", false
 	}
-	tasks, err := client.Delegations(ctx)
+	token := strings.TrimPrefix(incoming, prefix)
+	if token == "" || strings.ContainsAny(token, " \t\r\n") {
+		return "", false
+	}
+	run, err := r.Delegation.Confirm(ctx, imessageRouterID, r.IMessage.Config.ChatID, token)
 	if err != nil {
-		return "", false
+		return "that confirmation token is invalid, expired, already used, or belongs to another chat.", true
 	}
-	var latest *runtimeclient.Delegation
-	for i := range tasks {
-		task := &tasks[i]
-		if task.ChatID != r.IMessage.Config.ChatID || (latest != nil && task.CreatedAt <= latest.CreatedAt) {
+	return fmt.Sprintf("confirmed — i started authorized worker %s. the authorization is limited to the challenged action.", shortRunID(run.ID)), true
+}
+
+func flattenReportText(value string) string {
+	var b strings.Builder
+	space := false
+	for _, r := range value {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || unicode.IsSpace(r) {
+			space = true
 			continue
 		}
-		latest = task
+		if space && b.Len() > 0 {
+			b.WriteByte(' ')
+		}
+		space = false
+		b.WriteRune(r)
 	}
-	if latest == nil || latest.Status != "running" {
-		return "", false
+	text := strings.TrimSpace(b.String())
+	for utf8.RuneCountInString(text) > 1000 {
+		_, size := utf8.DecodeLastRuneInString(text)
+		text = text[:len(text)-size]
 	}
-	prompt := fmt.Sprintf("Continue active task %s safely.\n\nOriginal task:\n%s\n\nNew user message:\n%s", latest.RunID, latest.Task, incoming)
-	if len(prompt) > 16000 {
-		prompt = prompt[:16000]
-	}
-	run, err := client.Delegate(ctx, prompt, r.IMessage.Config.ChatID)
-	if err != nil {
-		return "", false
-	}
-	return fmt.Sprintf("got it — i started continuation worker %s. updates will come back here.", run.ID), true
+	return text
 }
 
 func formatReport(report runtimeclient.ParentReport) string {
@@ -111,11 +131,12 @@ func formatReport(report runtimeclient.ParentReport) string {
 	if kind == "" {
 		kind = "update"
 	}
-	message := strings.TrimSpace(report.Message)
-	if len(message) > 1000 {
-		message = message[:1000] + "…"
+	message := flattenReportText(report.Message)
+	result := fmt.Sprintf("Worker report (not independently verified) — task %s: %s\n%s", shortRunID(report.RunID), kind, message)
+	if report.SensitiveAction != "" && report.ChallengeToken != "" {
+		result += fmt.Sprintf("\nSensitive action blocked. To authorize only this challenged action, reply exactly: CONFIRM %s", report.ChallengeToken)
 	}
-	return fmt.Sprintf("Context Drop task %s: %s\n%s", shortRunID(report.RunID), kind, message)
+	return result
 }
 
 func shortRunID(id string) string {

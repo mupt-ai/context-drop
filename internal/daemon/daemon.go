@@ -65,11 +65,11 @@ type RuntimeLauncher interface {
 }
 
 type DelegationRuntime interface {
-	Delegate(context.Context, string, string) (runtimeclient.Run, error)
-	DelegateCapability(context.Context) (string, error)
-	PendingReports(context.Context) ([]runtimeclient.ParentReport, error)
-	DeliverReport(context.Context, string) (runtimeclient.ParentReport, bool, error)
-	Delegations(context.Context) ([]runtimeclient.Delegation, error)
+	Health(context.Context) error
+	IssueRouterCapability(context.Context, string, string) (string, error)
+	LeaseReport(context.Context, string, string) (runtimeclient.ParentReport, bool, error)
+	FinishReport(context.Context, runtimeclient.ParentReport, string, string, bool) error
+	Confirm(context.Context, string, string, string) (runtimeclient.Run, error)
 }
 
 type Runner struct {
@@ -304,18 +304,33 @@ func Run(ctx context.Context) error {
 	} else {
 		_ = recordRuntimeError(nil)
 	}
-	if runner.IMessage != nil && runner.IMessage.Config.RouterMode {
-		if configureErr := runner.configureRouter(ctx); configureErr != nil {
-			return fmt.Errorf("configure iMessage router: %w", configureErr)
+	defer func() { stopChild() }()
+	routerMode := runner.IMessage != nil && runner.IMessage.Config.RouterMode
+	routerReady := !routerMode
+	if routerMode && err == nil {
+		if configureErr := runner.configureRouterWithRetry(ctx, 100, 100*time.Millisecond); configureErr != nil {
+			stopChild()
+			childDone = nil
+			stopChild = func() {}
+			_ = recordRuntimeError(configureErr)
+			retry = time.After(backoff)
+		} else {
+			routerReady = true
 		}
 	}
-	defer func() { stopChild() }()
 	ticker := time.NewTicker(TickInterval)
 	defer ticker.Stop()
 	healthTicker := time.NewTicker(5 * time.Second)
 	defer healthTicker.Stop()
+	messageReceiverStarted := false
+	startMessageReceiver := func() {
+		if runner.IMessage != nil && runner.IMessage.Config.Enabled && routerReady && !messageReceiverStarted {
+			messageReceiverStarted = true
+			go runner.ReceiveMessages(ctx)
+		}
+	}
+	startMessageReceiver()
 	if runner.IMessage != nil && runner.IMessage.Config.Enabled {
-		go runner.ReceiveMessages(ctx)
 		go runner.DeliverReports(ctx)
 	}
 	if err := runner.Tick(ctx); err != nil {
@@ -349,6 +364,18 @@ func Run(ctx context.Context) error {
 				}
 			} else {
 				_ = recordRuntimeError(nil)
+				if routerMode {
+					if configureErr := runner.configureRouterWithRetry(ctx, 100, 100*time.Millisecond); configureErr != nil {
+						stopChild()
+						childDone = nil
+						stopChild = func() {}
+						_ = recordRuntimeError(configureErr)
+						retry = time.After(backoff)
+					} else {
+						routerReady = true
+						startMessageReceiver()
+					}
+				}
 			}
 		case <-healthTicker.C:
 			client, clientErr := runtimeclient.New()
@@ -800,8 +827,8 @@ func (r *Runner) processMessage(ctx context.Context, message imessage.Message) {
 	var response imessage.Response
 	var responderErr error
 	if r.IMessage.Config.RouterMode {
-		if continuationReply, handled := r.continueActiveTask(ctx, message.Text); handled {
-			response.Reply = continuationReply
+		if confirmationReply, handled := r.confirmSensitiveAction(ctx, message.ChatID, message.Text); handled {
+			response.Reply = confirmationReply
 		} else {
 			response, responderErr = r.IMessage.RespondMeasured(ctx, message)
 		}

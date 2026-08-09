@@ -46,11 +46,19 @@ export interface LaunchRequest {
 }
 
 export type ParentReportKind = "started" | "progress" | "needs_user" | "completed" | "failed";
+export type SensitiveAction = "payment_or_purchase" | "password_or_mfa" | "terms_or_subscription";
 export interface ParentReport {
   id: string;
   runId: string;
+  routerId: string;
+  chatId: string;
   kind: ParentReportKind;
   message: string;
+  sensitiveAction?: SensitiveAction;
+  challengeToken?: string;
   createdAt: string;
-  claimedAt?: string;
+  leaseId?: string;
+  leaseUntil?: string;
+  deliveredAt?: string;
+  challengeConsumedAt?: string;
 }

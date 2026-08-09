@@ -91,7 +91,11 @@ func Initialize() ([]string, error) {
 		herdrSession = value
 	}
 	herdrPath, _ := ResolveExecutable("herdr")
-	cfg := RuntimeConfig{Host: "127.0.0.1", Port: port, StateDir: dir, TokenFile: tokenPath, NodePath: nodePath, DefaultBackend: backend, TmuxSession: "context-drop", HerdrPath: herdrPath, HerdrSession: herdrSession, Agents: agents}
+	delegateAgent := ""
+	if _, ok := agents["pi"]; ok {
+		delegateAgent = "pi"
+	}
+	cfg := RuntimeConfig{Host: "127.0.0.1", Port: port, StateDir: dir, TokenFile: tokenPath, NodePath: nodePath, DefaultBackend: backend, TmuxSession: "context-drop", HerdrPath: herdrPath, HerdrSession: herdrSession, Agents: agents, DelegateAgent: delegateAgent}
 	if current, err := os.ReadFile(configPath); err == nil {
 		var existing RuntimeConfig
 		if json.Unmarshal(current, &existing) == nil {
@@ -116,6 +120,9 @@ func Initialize() ([]string, error) {
 			if os.Getenv("CONTEXT_DROP_HERDR_SESSION") == "" && existing.HerdrSession != "" {
 				cfg.HerdrSession = existing.HerdrSession
 			}
+			if existing.DelegateAgent != "" {
+				cfg.DelegateAgent = existing.DelegateAgent
+			}
 			for k, v := range existing.Agents {
 				// Older auto-detected Pi configs passed the prompt path as plain text.
 				// Pi loads file content only when the argument uses its @file syntax.
@@ -124,6 +131,16 @@ func Initialize() ([]string, error) {
 				}
 				cfg.Agents[k] = v
 			}
+		}
+	}
+	if cfg.DelegateAgent == "" {
+		if _, ok := cfg.Agents["pi"]; ok {
+			cfg.DelegateAgent = "pi"
+		}
+	}
+	if cfg.DelegateAgent != "" {
+		if _, ok := cfg.Agents[cfg.DelegateAgent]; !ok {
+			return nil, fmt.Errorf("delegateAgent %q is not configured", cfg.DelegateAgent)
 		}
 	}
 	data, err := json.MarshalIndent(cfg, "", "  ")

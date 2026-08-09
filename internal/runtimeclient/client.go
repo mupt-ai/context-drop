@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"contextdrop.dev/context-drop/internal/localhome"
@@ -19,19 +18,16 @@ import (
 const DefaultAddress = "http://127.0.0.1:47762"
 
 type ParentReport struct {
-	ID        string `json:"id"`
-	RunID     string `json:"runId"`
-	Kind      string `json:"kind"`
-	Message   string `json:"message"`
-	CreatedAt string `json:"createdAt"`
-}
-type Delegation struct {
-	ID        string `json:"id"`
-	RunID     string `json:"runId"`
-	ChatID    string `json:"chatID"`
-	Task      string `json:"task"`
-	Status    string `json:"status"`
-	CreatedAt string `json:"createdAt"`
+	ID              string `json:"id"`
+	RunID           string `json:"runId"`
+	RouterID        string `json:"routerId"`
+	ChatID          string `json:"chatId"`
+	Kind            string `json:"kind"`
+	Message         string `json:"message"`
+	SensitiveAction string `json:"sensitiveAction,omitempty"`
+	ChallengeToken  string `json:"challengeToken,omitempty"`
+	CreatedAt       string `json:"createdAt"`
+	LeaseID         string `json:"leaseId,omitempty"`
 }
 type Agent struct {
 	Name       string `json:"name"`
@@ -120,43 +116,36 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any, statu
 func (c *Client) Health(ctx context.Context) error {
 	return c.do(ctx, http.MethodGet, "/health", nil, &map[string]any{}, http.StatusOK)
 }
-func (c *Client) Delegate(ctx context.Context, task, chatID string) (Run, error) {
-	var out struct {
-		Run Run `json:"run"`
-	}
-	err := c.do(ctx, http.MethodPost, "/v1/delegate", map[string]string{"task": task, "chatID": chatID}, &out, http.StatusCreated)
-	return out.Run, err
-}
-func (c *Client) DelegateCapability(ctx context.Context) (string, error) {
+func (c *Client) IssueRouterCapability(ctx context.Context, routerID, chatID string) (string, error) {
 	var out struct {
 		Capability string `json:"capability"`
 	}
-	err := c.do(ctx, http.MethodGet, "/v1/delegate-capability", nil, &out, http.StatusOK)
+	err := c.do(ctx, http.MethodPost, "/v1/router-capabilities", map[string]string{"routerId": routerID, "chatId": chatID}, &out, http.StatusCreated)
 	return out.Capability, err
 }
-func (c *Client) PendingReports(ctx context.Context) ([]ParentReport, error) {
-	var out struct {
-		Reports []ParentReport `json:"reports"`
-	}
-	err := c.do(ctx, http.MethodGet, "/v1/reports", nil, &out, http.StatusOK)
-	return out.Reports, err
-}
-func (c *Client) DeliverReport(ctx context.Context, id string) (ParentReport, bool, error) {
+func (c *Client) LeaseReport(ctx context.Context, routerID, chatID string) (ParentReport, bool, error) {
 	var out struct {
 		Report ParentReport `json:"report"`
 	}
-	err := c.do(ctx, http.MethodPost, "/v1/reports/"+url.PathEscape(id)+"/deliver", map[string]string{}, &out, http.StatusOK)
-	if err != nil && strings.Contains(err.Error(), "already delivered") {
-		return ParentReport{}, false, nil
+	err := c.do(ctx, http.MethodPost, "/v1/reports/lease", map[string]string{"routerId": routerID, "chatId": chatID}, &out, http.StatusOK)
+	if err != nil {
+		return ParentReport{}, false, err
 	}
-	return out.Report, err == nil, err
+	return out.Report, out.Report.ID != "", nil
 }
-func (c *Client) Delegations(ctx context.Context) ([]Delegation, error) {
-	var out struct {
-		Tasks []Delegation `json:"tasks"`
+func (c *Client) FinishReport(ctx context.Context, report ParentReport, routerID, chatID string, delivered bool) error {
+	action := "release"
+	if delivered {
+		action = "ack"
 	}
-	err := c.do(ctx, http.MethodGet, "/v1/delegations", nil, &out, http.StatusOK)
-	return out.Tasks, err
+	return c.do(ctx, http.MethodPost, "/v1/reports/"+url.PathEscape(report.ID)+"/"+action, map[string]string{"routerId": routerID, "chatId": chatID, "leaseId": report.LeaseID}, &map[string]any{}, http.StatusOK)
+}
+func (c *Client) Confirm(ctx context.Context, routerID, chatID, token string) (Run, error) {
+	var out struct {
+		Run Run `json:"run"`
+	}
+	err := c.do(ctx, http.MethodPost, "/v1/confirm", map[string]string{"routerId": routerID, "chatId": chatID, "token": token}, &out, http.StatusCreated)
+	return out.Run, err
 }
 func (c *Client) Agents(ctx context.Context) ([]Agent, error) {
 	var out struct {

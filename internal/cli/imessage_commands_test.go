@@ -49,6 +49,16 @@ func TestIMessageSetupSavesWithoutExecuting(t *testing.T) {
 	}
 }
 
+func TestIMessageRouterModeRequiresConfiguredDelegateAgent(t *testing.T) {
+	t.Setenv("CONTEXT_DROP_HOME", t.TempDir())
+	cmd := newIMessageCommand()
+	cmd.SetArgs([]string{"setup", "--router-mode", "--trusted", "--chat-id", "chat"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "configured delegateAgent") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestIMessageLatencyReportUsesLatestInstrumentedSentSample(t *testing.T) {
 	jobs := map[string]orchestrator.MessageJob{}
 	base := time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC)

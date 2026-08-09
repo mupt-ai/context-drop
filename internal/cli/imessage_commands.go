@@ -35,6 +35,21 @@ func newIMessageSetupCommand() *cobra.Command {
 			if routerMode && !trusted {
 				return fmt.Errorf("--router-mode requires --trusted")
 			}
+			if routerMode {
+				runtimeCfg, configErr := runtimeclient.LoadConfig()
+				if configErr != nil {
+					return fmt.Errorf("--router-mode requires an initialized runtime and configured delegateAgent: %w", configErr)
+				}
+				delegateAgent := runtimeCfg.DelegateAgent
+				if delegateAgent == "" {
+					if _, ok := runtimeCfg.Agents["pi"]; ok {
+						delegateAgent = "pi"
+					}
+				}
+				if delegateAgent == "" || len(runtimeCfg.Agents[delegateAgent].Command) == 0 {
+					return fmt.Errorf("--router-mode requires a configured delegateAgent (Pi is preferred)")
+				}
+			}
 			if chatID == "" {
 				return fmt.Errorf("--chat-id is required; discover it with: imsg chats --json")
 			}
