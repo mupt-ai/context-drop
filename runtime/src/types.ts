@@ -56,6 +56,9 @@ export interface ParentReport {
   message: string;
   sensitiveAction?: SensitiveAction;
   challengeToken?: string;
+  challengedAction?: string;
+  challengeExpiresAt?: string;
+  authorizationId?: string;
   createdAt: string;
   leaseId?: string;
   leaseUntil?: string;

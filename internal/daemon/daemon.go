@@ -322,6 +322,7 @@ func Run(ctx context.Context) error {
 	defer ticker.Stop()
 	healthTicker := time.NewTicker(5 * time.Second)
 	defer healthTicker.Stop()
+	consecutiveHealthFailures := 0
 	messageReceiverStarted := false
 	startMessageReceiver := func() {
 		if runner.IMessage != nil && runner.IMessage.Config.Enabled && routerReady && !messageReceiverStarted {
@@ -387,15 +388,25 @@ func Run(ctx context.Context) error {
 			healthErr := client.Health(healthCtx)
 			cancel()
 			if healthErr == nil {
+				consecutiveHealthFailures = 0
 				backoff = time.Second
 				_ = recordRuntimeError(nil)
 				continue
 			}
-			// A nil child channel means the daemon adopted an already-running
-			// runtime. If it disappears, begin supervising a replacement.
-			if childDone == nil && retry == nil {
-				log.Printf("Context Drop runtime unhealthy: %v; restarting", healthErr)
-				retry = time.After(time.Second)
+			consecutiveHealthFailures++
+			// Permit normal slow starts and transient stalls, but replace a supervised
+			// child that stays alive yet unhealthy for three 5-second checks.
+			if consecutiveHealthFailures >= 3 && retry == nil {
+				log.Printf("Context Drop runtime remained unhealthy after %d checks: %v; restarting", consecutiveHealthFailures, healthErr)
+				stopChild()
+				childDone = nil
+				stopChild = func() {}
+				routerReady = !routerMode
+				consecutiveHealthFailures = 0
+				retry = time.After(backoff)
+				if backoff < 30*time.Second {
+					backoff *= 2
+				}
 			}
 		case <-ticker.C:
 			if err := runner.Tick(ctx); err != nil {

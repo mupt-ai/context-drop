@@ -103,7 +103,7 @@ func NewPiRPCResponder(cfg Config) (*PiRPCResponder, bool, error) {
 	if cfg.RouterMode {
 		argv = restrictedRouterArgv(argv)
 		routerExtensionPath = filepath.Join(dir, "pi-router-extension.mjs")
-		argv = append(argv, "--no-builtin-tools", "--no-extensions", "--no-skills", "--extension", routerExtensionPath)
+		argv = append(argv, "--no-builtin-tools", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-context-files", "--extension", routerExtensionPath)
 	}
 	argv = append(argv, "--extension", contextFilterPath)
 	return &PiRPCResponder{dir: cfg.ResponderCwd, argv: argv, contextFilterPath: contextFilterPath, routerExtensionPath: routerExtensionPath}, true, nil
@@ -114,11 +114,16 @@ func restrictedRouterArgv(argv []string) []string {
 	for i := 0; i < len(argv); i++ {
 		arg := argv[i]
 		switch arg {
-		case "--tools", "-t", "--exclude-tools", "-xt", "--extension", "-e":
+		case "--tools", "-t", "--exclude-tools", "-xt", "--extension", "-e", "--skill", "-s", "--system-prompt", "--append-system-prompt", "--prompt-template":
 			i++
-		case "--no-tools", "-nt", "--no-builtin-tools", "-nbt", "--no-extensions", "-ne", "--no-skills", "-ns":
+		case "--no-tools", "-nt", "--no-builtin-tools", "-nbt", "--no-extensions", "-ne", "--no-skills", "-ns", "--no-prompt-templates", "-np", "--no-context-files", "-nc":
 		default:
-			if strings.HasPrefix(arg, "--tools=") || strings.HasPrefix(arg, "--exclude-tools=") || strings.HasPrefix(arg, "--extension=") {
+			instructionPrefixes := []string{"--tools=", "--exclude-tools=", "--extension=", "--skill=", "--system-prompt=", "--append-system-prompt=", "--prompt-template="}
+			strip := false
+			for _, prefix := range instructionPrefixes {
+				strip = strip || strings.HasPrefix(arg, prefix)
+			}
+			if strip || strings.HasPrefix(arg, "@") {
 				continue
 			}
 			out = append(out, arg)

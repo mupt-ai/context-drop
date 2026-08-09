@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 	"unicode"
@@ -81,7 +82,15 @@ func (r *Runner) deliverReportsOnce(ctx context.Context) {
 		sendCtx, cancel := context.WithTimeout(ctx, time.Duration(r.IMessage.Config.SendTimeoutSeconds)*time.Second)
 		sendErr := r.IMessage.Send(sendCtx, message)
 		cancel()
-		_ = r.Delegation.FinishReport(ctx, report, imessageRouterID, r.IMessage.Config.ChatID, sendErr == nil)
+		finishErr := r.Delegation.FinishReport(ctx, report, imessageRouterID, r.IMessage.Config.ChatID, sendErr == nil)
+		if finishErr != nil {
+			log.Printf("Context Drop report %s %s failed: %v", report.ID, map[bool]string{true: "ack", false: "release"}[sendErr == nil], finishErr)
+			if sendErr != nil {
+				if releaseErr := r.Delegation.FinishReport(ctx, report, imessageRouterID, r.IMessage.Config.ChatID, false); releaseErr != nil {
+					log.Printf("Context Drop report %s prompt release failed: %v", report.ID, releaseErr)
+				}
+			}
+		}
 		if sendErr != nil {
 			return
 		}
@@ -132,9 +141,9 @@ func formatReport(report runtimeclient.ParentReport) string {
 		kind = "update"
 	}
 	message := flattenReportText(report.Message)
-	result := fmt.Sprintf("Worker report (not independently verified) — task %s: %s\n%s", shortRunID(report.RunID), kind, message)
+	result := fmt.Sprintf("[CONTEXT DROP DAEMON] Worker report (not independently verified) — task %s: %s\n%s", shortRunID(report.RunID), kind, message)
 	if report.SensitiveAction != "" && report.ChallengeToken != "" {
-		result += fmt.Sprintf("\nSensitive action blocked. To authorize only this challenged action, reply exactly: CONFIRM %s", report.ChallengeToken)
+		result += fmt.Sprintf("\nSensitive action blocked: %s. This challenge expires in 10 minutes. To authorize only this exact action, reply exactly: CONFIRM %s", flattenReportText(report.ChallengedAction), report.ChallengeToken)
 	}
 	return result
 }

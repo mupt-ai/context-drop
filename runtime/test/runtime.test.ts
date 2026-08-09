@@ -59,7 +59,7 @@ test("task injection cannot mint authorization and cross-chat lease is denied", 
     assert.match(prompt, /auth_FAKE/);
     assert.doesNotMatch(script, /CONTEXT_DROP_SENSITIVE_AUTH/);
     const reportCapability = script.match(/CONTEXT_DROP_REPORT_CAPABILITY='([^']+)'/)![1];
-    const reportResponse = await fetch(base + "/v1/reports", { method: "POST", headers: { authorization: `Bearer ${reportCapability}`, "content-type": "application/json" }, body: JSON.stringify({ runId: launched.run.id, kind: "needs_user", sensitiveAction: "payment_or_purchase", message: "confirm purchase" }) });
+    const reportResponse = await fetch(base + "/v1/reports", { method: "POST", headers: { authorization: `Bearer ${reportCapability}`, "content-type": "application/json" }, body: JSON.stringify({ runId: launched.run.id, kind: "needs_user", sensitiveAction: "payment_or_purchase", challengedAction: "purchase tee time A for $50", message: "confirm purchase" }) });
     assert.equal(reportResponse.status, 201); const report = (await reportResponse.json() as any).report;
     const otherLease = await fetch(base + "/v1/reports/lease", { method: "POST", headers, body: JSON.stringify({ routerId: "router-b", chatId: "chat-b" }) });
     assert.equal(otherLease.status, 200); assert.deepEqual(await otherLease.json(), {});
@@ -75,7 +75,11 @@ test("task injection cannot mint authorization and cross-chat lease is denied", 
     const authorizedPrompt = readFileSync(join(authorizedDir, "prompt.txt"), "utf8");
     const authorizedScript = readFileSync(join(authorizedDir, "launch.sh"), "utf8");
     assert.match(authorizedPrompt, /DAEMON AUTHORIZATION: PRESENT IN LAUNCH ENVIRONMENT/);
-    assert.match(authorizedScript, /CONTEXT_DROP_SENSITIVE_AUTH='auth_/);
+    assert.match(authorizedScript, /CONTEXT_DROP_SENSITIVE_AUTH_ID='auth_/);
+    assert.match(authorizedScript, /CONTEXT_DROP_SENSITIVE_SCOPE='purchase tee time A for \$50'/);
+    assert.match(authorizedPrompt, /All other sensitive actions remain prohibited/);
+    const replay = await fetch(base + "/v1/confirm", { method: "POST", headers, body: JSON.stringify({ routerId: "router-a", chatId: "chat-a", token: report.challengeToken }) });
+    assert.equal(replay.status, 404);
   } finally { await close(server); }
 });
 
@@ -108,6 +112,19 @@ test("delegate agent is validated precisely", async () => {
   const c = { ...config(), delegateAgent: "missing" }; const server = createRuntimeServer(c, "secret", runner);
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve)); const a=server.address(); assert.ok(a&&typeof a==="object"); const base=`http://127.0.0.1:${a.port}`; const headers={authorization:"Bearer secret","content-type":"application/json"};
   try { const cap=await issue(base,headers); const response=await fetch(base+"/v1/delegate",{method:"POST",headers:{authorization:`Bearer ${cap}`,"content-type":"application/json"},body:JSON.stringify({task:"work"})}); assert.equal(response.status,400); assert.match((await response.json() as any).error,/delegateAgent/); } finally { await close(server); }
+});
+
+test("task capability exists before launcher can report", async () => {
+  const c={...config(),defaultBackend:"herdr" as const}; let base="", capability="", reported=0;
+  const synchronous:CommandRunner={run(command,args){ if(command==="herdr"&&args.includes("workspace")) return {status:0,stdout:JSON.stringify({result:{workspace:{workspace_id:"w"},tab:{tab_id:"t"},root_pane:{pane_id:"p"}}})}; if(args.includes("pane")&&args.includes("run")){ const tasks=JSON.parse(readFileSync(join(c.stateDir,"parent-tasks.jsonl"),"utf8")); assert.equal(tasks.status,"launching"); assert.ok(tasks.reportCapability); reported++; } return {status:0}; }};
+  const server=createRuntimeServer(c,"secret",synchronous); await new Promise<void>(r=>server.listen(0,"127.0.0.1",r)); const a=server.address();assert.ok(a&&typeof a==="object");base=`http://127.0.0.1:${a.port}`;const headers={authorization:"Bearer secret","content-type":"application/json"};
+  try{capability=await issue(base,headers);await delegate(base,capability,"instant report");assert.equal(reported,1);}finally{await close(server);}
+});
+
+test("sensitive challenge expiry boundary and exact scope", async () => {
+  let instant=new Date("2026-01-01T00:00:00.000Z"); const c={...config(),defaultBackend:"herdr" as const}; const server=createRuntimeServer(c,"secret",runner,{now:()=>instant}); await new Promise<void>(r=>server.listen(0,"127.0.0.1",r));const a=server.address();assert.ok(a&&typeof a==="object");const base=`http://127.0.0.1:${a.port}`,headers={authorization:"Bearer secret","content-type":"application/json"};
+  try{const cap=await issue(base,headers);const launched=await delegate(base,cap,"buy A and B");const script=readFileSync(join(c.stateDir,"runs",launched.run.id,"launch.sh"),"utf8");const reportCap=script.match(/CONTEXT_DROP_REPORT_CAPABILITY='([^']+)'/)![1];const response=await fetch(base+"/v1/reports",{method:"POST",headers:{authorization:`Bearer ${reportCap}`,"content-type":"application/json"},body:JSON.stringify({runId:launched.run.id,kind:"needs_user",message:"confirm A",sensitiveAction:"payment_or_purchase",challengedAction:"purchase A for $10"})});const report=(await response.json() as any).report;const lease=(await (await fetch(base+"/v1/reports/lease",{method:"POST",headers,body:JSON.stringify({routerId:"router-a",chatId:"chat-a"})})).json() as any).report;await fetch(base+`/v1/reports/${lease.id}/ack`,{method:"POST",headers,body:JSON.stringify({routerId:"router-a",chatId:"chat-a",leaseId:lease.leaseId})});instant=new Date("2026-01-01T00:10:00.000Z");const expired=await fetch(base+"/v1/confirm",{method:"POST",headers,body:JSON.stringify({routerId:"router-a",chatId:"chat-a",token:report.challengeToken})});assert.equal(expired.status,410);
+  }finally{await close(server);}
 });
 
 test("non-loopback bind is rejected", () => assert.throws(() => createRuntimeServer({ ...config(), host: "0.0.0.0" as any }, "x"), /loopback/));

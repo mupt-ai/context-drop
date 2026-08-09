@@ -14,8 +14,9 @@ export default function (pi: any) {
       kind: StringEnum(["started", "progress", "needs_user", "completed", "failed"] as const),
       message: Type.String({ minLength: 1, maxLength: 4000 }),
       sensitiveAction: Type.Optional(StringEnum(["payment_or_purchase", "password_or_mfa", "terms_or_subscription"] as const)),
+      challengedAction: Type.Optional(Type.String({ minLength: 1, maxLength: 240 })),
     }),
-    async execute(_id: string, params: { kind: string; message: string; sensitiveAction?: string }, signal: AbortSignal) {
+    async execute(_id: string, params: { kind: string; message: string; sensitiveAction?: string; challengedAction?: string }, signal: AbortSignal) {
       if (!endpoint || !capability || !runId) throw new Error("parent reporting is not configured");
       const response = await fetch(endpoint, {
         method: "POST", signal,

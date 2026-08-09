@@ -18,16 +18,18 @@ import (
 const DefaultAddress = "http://127.0.0.1:47762"
 
 type ParentReport struct {
-	ID              string `json:"id"`
-	RunID           string `json:"runId"`
-	RouterID        string `json:"routerId"`
-	ChatID          string `json:"chatId"`
-	Kind            string `json:"kind"`
-	Message         string `json:"message"`
-	SensitiveAction string `json:"sensitiveAction,omitempty"`
-	ChallengeToken  string `json:"challengeToken,omitempty"`
-	CreatedAt       string `json:"createdAt"`
-	LeaseID         string `json:"leaseId,omitempty"`
+	ID                 string `json:"id"`
+	RunID              string `json:"runId"`
+	RouterID           string `json:"routerId"`
+	ChatID             string `json:"chatId"`
+	Kind               string `json:"kind"`
+	Message            string `json:"message"`
+	SensitiveAction    string `json:"sensitiveAction,omitempty"`
+	ChallengeToken     string `json:"challengeToken,omitempty"`
+	ChallengedAction   string `json:"challengedAction,omitempty"`
+	ChallengeExpiresAt string `json:"challengeExpiresAt,omitempty"`
+	CreatedAt          string `json:"createdAt"`
+	LeaseID            string `json:"leaseId,omitempty"`
 }
 type Agent struct {
 	Name       string `json:"name"`

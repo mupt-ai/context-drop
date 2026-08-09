@@ -19,7 +19,7 @@ func TestRouterModeStructurallyRestrictsPiAndPreservesPinnedSession(t *testing.T
 	cfg.Trusted = true
 	cfg.RouterMode = true
 	cfg.ResponderCwd = t.TempDir()
-	cfg.ResponderCommand = []string{"/tmp/pi", "--print", "--session", "/private/original-session.jsonl", "--tools=bash", "--extension", "/tmp/ambient.mjs", "@{prompt_file}"}
+	cfg.ResponderCommand = []string{"/tmp/pi", "--print", "--session", "/private/original-session.jsonl", "--model", "router/model", "--thinking", "high", "--tools=bash", "--extension", "/tmp/ambient.mjs", "--skill", "/tmp/evil-skill", "--system-prompt=evil", "--append-system-prompt", "/tmp/evil", "--prompt-template=/tmp/template", "@/tmp/context.md", "@{prompt_file}"}
 	responder, ok, err := NewPiRPCResponder(cfg)
 	if err != nil || !ok {
 		t.Fatalf("responder ok=%v err=%v", ok, err)
@@ -33,8 +33,15 @@ func TestRouterModeStructurallyRestrictsPiAndPreservesPinnedSession(t *testing.T
 	if strings.Contains(joined, "--no-tools") {
 		t.Fatalf("router argv disabled delegate extension: %q", joined)
 	}
-	if strings.Contains(joined, "ambient.mjs") || strings.Contains(joined, "--tools=bash") {
-		t.Fatalf("router retained ambient execution tools: %q", joined)
+	for _, forbidden := range []string{"ambient.mjs", "--tools=bash", "evil-skill", "system-prompt=evil", "/tmp/evil", "/tmp/template", "context.md"} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("router retained ambient instruction %q: %q", forbidden, joined)
+		}
+	}
+	for _, preserved := range []string{"--model router/model", "--thinking high", "--session /private/original-session.jsonl", "--no-context-files"} {
+		if !strings.Contains(joined, preserved) {
+			t.Fatalf("router lost required/tuning flag %q: %q", preserved, joined)
+		}
 	}
 	responder.SetDelegationEnv("http://127.0.0.1:1/v1/delegate", "scoped-cap")
 	if strings.Contains(strings.Join(responder.argv, " "), "scoped-cap") {

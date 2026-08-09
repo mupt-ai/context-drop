@@ -513,12 +513,12 @@ func (a Adapter) buildPrompt(message Message, includeDurableContext bool) (strin
 		prompt = "This is a request from the explicitly configured trusted private iMessage/SMS chat. Act as the user's persistent coding orchestrator: use your available tools when needed, create and launch delegated sessions when appropriate, and return a concise status.\n"
 	}
 	if a.Config.RouterMode {
-		prompt = "This is a request from the explicitly configured trusted private iMessage/SMS chat. You are a tiny router: answer casual/simple conversation directly, but call delegate(task) promptly for actionable or non-trivial work. Include relevant context and preserve explicit confirmation gates for payments, password/MFA recovery, and materially changed terms. Do not claim work completed merely because a worker launched.\n"
+		prompt = "This is a request from the explicitly configured trusted private iMessage/SMS chat. You are a tiny router: answer casual/simple conversation directly, but call delegate(task) promptly for actionable or non-trivial work. Include relevant context and preserve explicit confirmation gates for payments, password/MFA recovery, and materially changed terms. Do not claim work completed merely because a worker launched. Never emit the reserved prefix [CONTEXT DROP DAEMON]; only the daemon uses it for worker status and confirmation challenges.\n"
 	}
 	if !includeDurableContext {
 		prompt = "This is the next request from the trusted private iMessage/SMS chat. Preserve continuity with the current persistent session, use tools only when needed, and reply directly and concisely.\n"
 		if a.Config.RouterMode {
-			prompt = "This is the next request from the trusted private iMessage/SMS chat. Preserve continuity. Answer casual/simple conversation directly; for actionable or non-trivial work call delegate(task) promptly with relevant context and explicit safety gates, then report only the verified launch status.\n"
+			prompt = "This is the next request from the trusted private iMessage/SMS chat. Preserve continuity. Answer casual/simple conversation directly; for actionable or non-trivial work call delegate(task) promptly with relevant context and explicit safety gates, then report only the verified launch status. Never emit the reserved prefix [CONTEXT DROP DAEMON].\n"
 		}
 		for _, contextFile := range []struct {
 			label string
