@@ -157,6 +157,23 @@ func piRPCArgv(command []string) ([]string, bool) {
 			i++
 			continue
 		}
+		for _, name := range []string{"--session", "--session-id", "--session-dir"} {
+			if strings.HasPrefix(arg, name+"=") {
+				value := strings.TrimPrefix(arg, name+"=")
+				if value == "" {
+					return nil, false
+				}
+				if name == "--session" || name == "--session-id" {
+					hasSession = true
+				}
+				args = append(args, name, value)
+				arg = ""
+				break
+			}
+		}
+		if arg == "" {
+			continue
+		}
 		if strings.HasPrefix(arg, "--mode=") || strings.Contains(arg, "{prompt_file}") {
 			continue
 		}

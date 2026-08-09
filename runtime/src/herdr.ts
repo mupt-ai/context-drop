@@ -1,7 +1,7 @@
 import { chmodSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { LaunchRequest, RunRecord, RuntimeConfig } from "./types.js";
-import { prepareLaunch, systemRunner, type CommandRunner } from "./launch.js";
+import { LaunchOutcomeUnknownError, prepareLaunch, systemRunner, type CommandRunner } from "./launch.js";
 
 interface HerdrWorkspaceCreated {
   result?: {
@@ -52,7 +52,7 @@ export function launchInHerdr(config: RuntimeConfig, request: LaunchRequest, id:
     } else {
       runner.run(herdr, ["--session", session, "workspace", "close", workspace]);
     }
-    throw new Error(`herdr agent launch failed: ${start.stderr || "unknown error"}`);
+    throw new LaunchOutcomeUnknownError(`herdr agent launch outcome is unknown: ${start.stderr || "unknown error"}`);
   }
 
   return {

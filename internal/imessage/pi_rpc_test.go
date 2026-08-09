@@ -49,6 +49,17 @@ func TestRouterModeStructurallyRestrictsPiAndPreservesPinnedSession(t *testing.T
 	}
 }
 
+func TestPiRPCArgvAcceptsEqualsSessionSyntax(t *testing.T) {
+	got, ok := piRPCArgv([]string{"/opt/homebrew/bin/pi", "--print", "--session=/private/original-session.jsonl", "@{prompt_file}"})
+	if !ok {
+		t.Fatal("persistent Pi command was not recognized")
+	}
+	want := []string{"/opt/homebrew/bin/pi", "--mode", "rpc", "--session", "/private/original-session.jsonl"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("RPC argv = %#v, want %#v", got, want)
+	}
+}
+
 func TestPiRPCArgvPreservesPersistentSessionAndRemovesPrintPrompt(t *testing.T) {
 	got, ok := piRPCArgv([]string{
 		"/opt/homebrew/bin/pi", "--print", "--session-dir", "/tmp/sessions", "--session-id", "orchestrator", "--model", "router/model", "@{prompt_file}",

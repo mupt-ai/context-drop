@@ -4,6 +4,12 @@ import { join } from "node:path";
 import type { AgentConfig, LaunchRequest, RuntimeConfig } from "./types.js";
 
 export interface CommandResult { status: number | null; stdout?: string; stderr?: string }
+export class LaunchOutcomeUnknownError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "LaunchOutcomeUnknownError";
+  }
+}
 export interface CommandRunner { run(command: string, args: string[]): CommandResult }
 export const systemRunner: CommandRunner = {
   run(command, args) {

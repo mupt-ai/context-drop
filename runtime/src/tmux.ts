@@ -1,5 +1,5 @@
 import type { LaunchRequest, RunRecord, RuntimeConfig } from "./types.js";
-import { prepareLaunch, systemRunner, type CommandRunner } from "./launch.js";
+import { LaunchOutcomeUnknownError, prepareLaunch, systemRunner, type CommandRunner } from "./launch.js";
 
 export function launchInTmux(config: RuntimeConfig, request: LaunchRequest, id: string, runner: CommandRunner = systemRunner): RunRecord {
   const { name: window, argv, environment } = prepareLaunch(config, request, id);
@@ -10,7 +10,7 @@ export function launchInTmux(config: RuntimeConfig, request: LaunchRequest, id: 
   } else {
     result = runner.run("tmux", ["new-window", "-d", "-t", config.tmuxSession, "-n", window, "-c", request.repo, ...envArgs, "--", ...argv]);
   }
-  if (result.status !== 0) throw new Error(`tmux launch failed: ${result.stderr || "unknown error"}`);
+  if (result.status !== 0) throw new LaunchOutcomeUnknownError(`tmux launch outcome is unknown: ${result.stderr || "unknown error"}`);
   return {
     id,
     name: window,
