@@ -96,10 +96,13 @@ func newIMessageSetupCommand() *cobra.Command {
 			if conversationArchiveFile != "" {
 				cfg.ConversationArchiveFile = conversationArchiveFile
 			}
-			cfg.ResponderCwd = responderCwd
-			if trusted && cfg.ResponderCwd == "" {
-				return fmt.Errorf("--responder-cwd is required with --trusted")
+			if trusted && responderCwd == "" {
+				responderCwd, err = imessage.DefaultResponderCwd()
+				if err != nil {
+					return fmt.Errorf("create private orchestrator directory: %w", err)
+				}
 			}
+			cfg.ResponderCwd = responderCwd
 			cfg.ResponderCommand = responder
 			if err := imessage.Save(cfg); err != nil {
 				return err
@@ -121,11 +124,11 @@ func newIMessageSetupCommand() *cobra.Command {
 	cmd.Flags().DurationVar(&sendTimeout, "send-timeout", imessage.DefaultSendTimeoutSeconds*time.Second, "imsg send timeout")
 	cmd.Flags().IntVar(&maxMessageBytes, "max-message-bytes", imessage.DefaultMaxMessageBytes, "maximum inbound text bytes")
 	cmd.Flags().IntVar(&maxReplyBytes, "max-reply-bytes", imessage.DefaultMaxReplyBytes, "maximum responder output bytes")
-	cmd.Flags().StringVar(&personaFile, "persona-file", "", "absolute path to a private persona/context file prepended to each responder prompt (default: ~/.context-drop/SOUL.md if present)")
+	cmd.Flags().StringVar(&personaFile, "persona-file", "", "absolute path to a private persona/voice file prepended to each responder prompt (default: ~/.context-drop/SOUL.md if present)")
 	cmd.Flags().StringVar(&memoryFile, "memory-file", "", "absolute durable conversation-memory file prepended to each responder prompt (default: ~/.context-drop/MEMORY.md if present)")
 	cmd.Flags().StringVar(&conversationArchiveFile, "conversation-archive-file", "", "absolute JSONL corpus of full chat history used for verbatim beginning + retrieval excerpts in each responder prompt (default: ~/.context-drop/sessions/chat_full.jsonl if present)")
 	cmd.Flags().StringVar(&sessionFile, "session-file", "", "absolute Pi session file to continue (default: ~/.context-drop/sessions/imessage.jsonl if present)")
-	cmd.Flags().StringVar(&responderCwd, "responder-cwd", "", "absolute working directory for the responder (required with --trusted)")
+	cmd.Flags().StringVar(&responderCwd, "responder-cwd", "", "absolute working directory for the responder (trusted default: ~/.context-drop/orchestrator)")
 	cmd.Flags().StringArrayVar(&responderArgs, "responder-arg", nil, "explicit responder argv element; repeat, and include {prompt_file}")
 	cmd.Flags().BoolVar(&disabled, "disabled", false, "save configuration without enabling polling")
 	cmd.Flags().BoolVar(&trusted, "trusted", false, "enable persistent tool-enabled Pi orchestration for this explicitly configured private chat")

@@ -193,6 +193,21 @@ func DefaultSessionFile() (string, error) {
 	return existingRegularFile(filepath.Join(root, "sessions", "imessage.jsonl"))
 }
 
+func DefaultResponderCwd() (string, error) {
+	root, err := localhome.Root()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(root, "orchestrator")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
 func existingRegularFile(path string) (string, error) {
 	info, err := os.Stat(path)
 	if os.IsNotExist(err) {
@@ -509,7 +524,7 @@ func (a Adapter) buildPrompt(message Message, includeDurableContext bool) (strin
 		label string
 		path  string
 		max   int
-	}{{"Standing context and personal operating rules", a.Config.PersonaFile, DefaultMaxPersonaBytes}, {"Durable summarized memory", a.Config.MemoryFile, DefaultMaxPersonaBytes}} {
+	}{{"Persona and voice", a.Config.PersonaFile, DefaultMaxPersonaBytes}, {"Durable summarized memory", a.Config.MemoryFile, DefaultMaxPersonaBytes}} {
 		if contextFile.path == "" {
 			continue
 		}

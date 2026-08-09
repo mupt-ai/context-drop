@@ -218,6 +218,25 @@ func TestTrustedResponderRetriesTransientProviderFailure(t *testing.T) {
 	}
 }
 
+func TestDefaultResponderCwdCreatesPrivateOrchestratorDirectory(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CONTEXT_DROP_HOME", home)
+	dir, err := DefaultResponderCwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dir != filepath.Join(home, "orchestrator") {
+		t.Fatalf("responder cwd = %q", dir)
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.IsDir() || info.Mode().Perm() != 0o700 {
+		t.Fatalf("orchestrator directory mode = %v", info.Mode())
+	}
+}
+
 func TestConfigRejectsMissingResponderCwd(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.ResponderCwd = "/no/such/directory"
