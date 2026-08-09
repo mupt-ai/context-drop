@@ -143,6 +143,14 @@ func (c *Client) FinishReport(ctx context.Context, report ParentReport, routerID
 	}
 	return c.do(ctx, http.MethodPost, "/v1/reports/"+url.PathEscape(report.ID)+"/"+action, map[string]string{"routerId": routerID, "chatId": chatID, "leaseId": report.LeaseID}, &map[string]any{}, http.StatusOK)
 }
+func (c *Client) AutoAuthorize(ctx context.Context, report ParentReport, routerID, chatID string) (Run, string, error) {
+	var out struct {
+		Run     Run    `json:"run"`
+		Outcome string `json:"outcome"`
+	}
+	err := c.do(ctx, http.MethodPost, "/v1/reports/"+url.PathEscape(report.ID)+"/auto-authorize", map[string]string{"routerId": routerID, "chatId": chatID, "leaseId": report.LeaseID}, &out, http.StatusCreated)
+	return out.Run, out.Outcome, err
+}
 func (c *Client) Confirm(ctx context.Context, routerID, chatID, token string) (Run, error) {
 	var out struct {
 		Run Run `json:"run"`

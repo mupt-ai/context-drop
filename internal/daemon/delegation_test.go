@@ -26,6 +26,9 @@ type fakeDelegationRuntime struct {
 	leased          map[string]bool
 	finishDelivered []bool
 	confirmed       string
+	autoOutcome     string
+	autoErr         error
+	autoCalls       int
 }
 
 func (f *fakeDelegationRuntime) Health(context.Context) error {
@@ -64,6 +67,17 @@ func (f *fakeDelegationRuntime) FinishReport(_ context.Context, report runtimecl
 		delete(f.leased, report.ID)
 	}
 	return nil
+}
+func (f *fakeDelegationRuntime) AutoAuthorize(_ context.Context, _ runtimeclient.ParentReport, _, _ string) (runtimeclient.Run, string, error) {
+	f.autoCalls++
+	if f.autoErr != nil {
+		return runtimeclient.Run{}, "", f.autoErr
+	}
+	outcome := f.autoOutcome
+	if outcome == "" {
+		outcome = "running"
+	}
+	return runtimeclient.Run{ID: "run_yolo"}, outcome, nil
 }
 func (f *fakeDelegationRuntime) Confirm(_ context.Context, _, _, token string) (runtimeclient.Run, error) {
 	f.confirmed = token
@@ -156,6 +170,30 @@ func TestReportDeliveryUsesHTTPLeaseReleaseAndAck(t *testing.T) {
 	runner.deliverReportsOnce(context.Background())
 	if releases != 1 || acks != 1 || len(commander.sends) != 1 {
 		t.Fatalf("releases=%d acks=%d sends=%v", releases, acks, commander.sends)
+	}
+}
+
+func TestYoloSensitiveReportAutoAuthorizesWithoutSendingOrSummarizing(t *testing.T) {
+	backend := &fakeDelegationRuntime{reports: []runtimeclient.ParentReport{{ID: "r1", RouterID: imessageRouterID, ChatID: "chat", RunID: "run", Kind: "needs_user", Message: "confirm", SensitiveAction: "payment_or_purchase", ChallengedAction: "buy A", ChallengeToken: "TOKEN"}}}
+	commander := &reportCommander{}
+	responder := &recordingResponder{}
+	cfg := imessage.Defaults()
+	cfg.Enabled, cfg.RouterMode, cfg.YoloMode, cfg.ChatID, cfg.ImsgPath = true, true, true, "chat", "/bin/echo"
+	runner := &Runner{Delegation: backend, IMessage: &imessage.Adapter{Config: cfg, Commander: commander, PersistentResponder: responder}}
+	runner.deliverReportsOnce(context.Background())
+	if backend.autoCalls != 1 || len(commander.sends) != 0 || len(responder.prompts) != 0 || len(backend.finishDelivered) != 1 || !backend.finishDelivered[0] {
+		t.Fatalf("auto=%d sends=%v prompts=%v finishes=%v", backend.autoCalls, commander.sends, responder.prompts, backend.finishDelivered)
+	}
+}
+
+func TestYoloSafeAutoAuthorizationFailureReleasesForRetry(t *testing.T) {
+	backend := &fakeDelegationRuntime{autoErr: errors.New("safe launch failure"), reports: []runtimeclient.ParentReport{{ID: "r1", RouterID: imessageRouterID, ChatID: "chat", RunID: "run", Kind: "needs_user", SensitiveAction: "payment_or_purchase", ChallengedAction: "buy A"}}}
+	cfg := imessage.Defaults()
+	cfg.Enabled, cfg.RouterMode, cfg.YoloMode, cfg.ChatID = true, true, true, "chat"
+	runner := &Runner{Delegation: backend, IMessage: &imessage.Adapter{Config: cfg}}
+	runner.deliverReportsOnce(context.Background())
+	if backend.autoCalls != 1 || len(backend.finishDelivered) != 1 || backend.finishDelivered[0] {
+		t.Fatalf("calls=%d finishes=%v", backend.autoCalls, backend.finishDelivered)
 	}
 }
 

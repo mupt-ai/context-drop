@@ -42,7 +42,7 @@ func TestIMessageSetupSavesWithoutExecuting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ChatID != "1;nope" || filepath.Base(cfg.ImsgPath) != filepath.Base(fake) || len(cfg.ResponderCommand) != 2 {
+	if cfg.ChatID != "1;nope" || cfg.YoloMode || filepath.Base(cfg.ImsgPath) != filepath.Base(fake) || len(cfg.ResponderCommand) != 2 {
 		t.Fatalf("config = %#v", cfg)
 	}
 	if !strings.Contains(out.String(), "No message was sent") {
@@ -116,6 +116,29 @@ func TestIMessageRouterModeCreatesAndPinsDurableSession(t *testing.T) {
 	info, err := os.Stat(sessionPath)
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
 		t.Fatalf("session info=%v err=%v", info, err)
+	}
+}
+
+func TestIMessageYoloModePersistsOnlyWhenExplicit(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CONTEXT_DROP_HOME", home)
+	imsgPath, _ := writeRouterSetupFixture(t, home)
+	cmd := newIMessageCommand()
+	cmd.SetArgs([]string{"setup", "--router-mode", "--yolo-mode", "--trusted", "--chat-id", "chat", "--imsg-path", imsgPath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := imessage.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.YoloMode {
+		t.Fatalf("yolo mode not persisted: %#v", cfg)
+	}
+	bad := newIMessageCommand()
+	bad.SetArgs([]string{"setup", "--yolo-mode", "--trusted", "--chat-id", "chat", "--imsg-path", imsgPath})
+	if err := bad.Execute(); err == nil || !strings.Contains(err.Error(), "requires --router-mode") {
+		t.Fatalf("err=%v", err)
 	}
 }
 

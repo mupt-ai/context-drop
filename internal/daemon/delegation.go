@@ -78,6 +78,29 @@ func (r *Runner) deliverReportsOnce(ctx context.Context) {
 		if err != nil || !leased {
 			return
 		}
+		if r.IMessage.Config.YoloMode && report.SensitiveAction != "" && report.Kind == "needs_user" {
+			_, outcome, authorizeErr := r.Delegation.AutoAuthorize(ctx, report, imessageRouterID, r.IMessage.Config.ChatID)
+			if authorizeErr != nil {
+				if releaseErr := r.Delegation.FinishReport(ctx, report, imessageRouterID, r.IMessage.Config.ChatID, false); releaseErr != nil {
+					log.Printf("Context Drop YOLO report %s release failed: %v", report.ID, releaseErr)
+				}
+				return
+			}
+			if outcome == "launch_unknown" {
+				// The runtime atomically consumes/disposes the original report and
+				// enqueues a separate audit warning. Never ACK or retry ambiguity.
+				continue
+			}
+			if outcome != "running" {
+				log.Printf("Context Drop YOLO report %s returned invalid outcome %q", report.ID, outcome)
+				return
+			}
+			if finishErr := r.Delegation.FinishReport(ctx, report, imessageRouterID, r.IMessage.Config.ChatID, true); finishErr != nil {
+				log.Printf("Context Drop YOLO report %s ack failed: %v", report.ID, finishErr)
+				return
+			}
+			continue
+		}
 		if !reportIsUserVisible(report) {
 			if finishErr := r.Delegation.FinishReport(ctx, report, imessageRouterID, r.IMessage.Config.ChatID, true); finishErr != nil {
 				log.Printf("Context Drop suppressed report %s ack failed: %v", report.ID, finishErr)

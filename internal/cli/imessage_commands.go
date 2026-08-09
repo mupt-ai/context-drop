@@ -28,7 +28,7 @@ func newIMessageSetupCommand() *cobra.Command {
 	var poll, historyTimeout, responderTimeout, sendTimeout time.Duration
 	var syncLimit, maxMessageBytes, maxReplyBytes int
 	var responderArgs []string
-	var disabled, trusted, routerMode, useMigratedModel bool
+	var disabled, trusted, routerMode, yoloMode, useMigratedModel bool
 	cmd := &cobra.Command{
 		Use:   "setup",
 		Short: "Save local iMessage adapter settings without sending a message",
@@ -36,6 +36,9 @@ func newIMessageSetupCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if routerMode && !trusted {
 				return fmt.Errorf("--router-mode requires --trusted")
+			}
+			if yoloMode && !routerMode {
+				return fmt.Errorf("--yolo-mode requires --router-mode")
 			}
 			if routerMode {
 				runtimeCfg, configErr := runtimeclient.LoadConfig()
@@ -109,6 +112,7 @@ func newIMessageSetupCommand() *cobra.Command {
 			cfg.Enabled = !disabled
 			cfg.Trusted = trusted
 			cfg.RouterMode = routerMode
+			cfg.YoloMode = yoloMode
 			cfg.ChatID = chatID
 			cfg.Recipient = recipient
 			cfg.ImsgPath = resolvedImsg
@@ -166,6 +170,7 @@ func newIMessageSetupCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&disabled, "disabled", false, "save configuration without enabling polling")
 	cmd.Flags().BoolVar(&trusted, "trusted", false, "enable persistent Pi orchestration for this explicitly configured private chat")
 	cmd.Flags().BoolVar(&routerMode, "router-mode", false, "structurally restrict trusted Pi to the private delegate tool; requires --trusted")
+	cmd.Flags().BoolVar(&yoloMode, "yolo-mode", false, "DANGEROUS: automatically authorize exact sensitive worker actions without asking; requires --router-mode")
 	cmd.Flags().BoolVar(&useMigratedModel, "use-migrated-model", false, "use the migrated routing model (dari-prod/dari/routing) for the pi responder")
 	return cmd
 }

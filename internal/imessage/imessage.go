@@ -39,6 +39,7 @@ type Config struct {
 	Enabled                 bool     `json:"enabled"`
 	Trusted                 bool     `json:"trusted,omitempty"`
 	RouterMode              bool     `json:"router_mode,omitempty"`
+	YoloMode                bool     `json:"yolo_mode,omitempty"`
 	ChatID                  string   `json:"chat_id"`
 	Recipient               string   `json:"recipient,omitempty"`
 	ImsgPath                string   `json:"imsg_path"`
@@ -289,6 +290,9 @@ func (cfg Config) PollInterval() time.Duration {
 func Validate(cfg Config) error {
 	if cfg.RouterMode && !cfg.Trusted {
 		return fmt.Errorf("router mode requires a trusted private chat")
+	}
+	if cfg.YoloMode && !cfg.RouterMode {
+		return fmt.Errorf("yolo mode requires router mode")
 	}
 	if strings.TrimSpace(cfg.ChatID) == "" {
 		return fmt.Errorf("iMessage chat ID is required")

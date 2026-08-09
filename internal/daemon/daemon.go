@@ -70,6 +70,7 @@ type DelegationRuntime interface {
 	IssueRouterCapability(context.Context, string, string) (string, error)
 	LeaseReport(context.Context, string, string) (runtimeclient.ParentReport, bool, error)
 	FinishReport(context.Context, runtimeclient.ParentReport, string, string, bool) error
+	AutoAuthorize(context.Context, runtimeclient.ParentReport, string, string) (runtimeclient.Run, string, error)
 	Confirm(context.Context, string, string, string) (runtimeclient.Run, error)
 }
 
