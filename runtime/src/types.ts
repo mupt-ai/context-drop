@@ -1,4 +1,5 @@
 export type SessionBackend = "tmux" | "herdr";
+export type DelegationLane = "human_copilot" | "full_ai";
 
 export interface AgentConfig {
   command: string[];
@@ -14,6 +15,7 @@ export interface RuntimeConfig {
   tmuxSession: string;
   herdrPath?: string;
   herdrSession?: string;
+  autonomousHerdrSession?: string;
   agents: Record<string, AgentConfig>;
   delegateAgent?: string;
 }
@@ -30,6 +32,7 @@ export interface RunRecord {
   herdrWorkspace?: string;
   herdrTab?: string;
   herdrPane?: string;
+  lane?: DelegationLane;
   status: "running" | "exited" | "unknown";
   createdAt: string;
 }
@@ -41,6 +44,7 @@ export interface LaunchRequest {
   name?: string;
   backend?: SessionBackend;
   workspaceId?: string;
+  lane?: DelegationLane;
   environment?: Record<string, string>;
   extension?: string;
 }

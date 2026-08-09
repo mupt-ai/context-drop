@@ -19,6 +19,7 @@ export function launchInTmux(config: RuntimeConfig, request: LaunchRequest, id: 
     backend: "tmux",
     tmuxSession: config.tmuxSession,
     tmuxWindow: window,
+    lane: request.lane,
     status: "running",
     createdAt: new Date().toISOString(),
   };

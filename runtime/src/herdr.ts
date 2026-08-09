@@ -32,7 +32,7 @@ function parseWorkspace(output: string | undefined): { workspace?: string; tab: 
 export function launchInHerdr(config: RuntimeConfig, request: LaunchRequest, id: string, runner: CommandRunner = systemRunner): RunRecord {
   const { name, runDir, argv, environment } = prepareLaunch(config, request, id);
   const herdr = config.herdrPath || "herdr";
-  const session = config.herdrSession || "default";
+  const session = request.lane === "full_ai" ? (config.autonomousHerdrSession || "context-drop-ai") : (config.herdrSession || "default");
   const create = request.workspaceId
     ? runner.run(herdr, ["--session", session, "tab", "create", "--workspace", request.workspaceId, "--cwd", request.repo, "--label", name, "--no-focus"])
     : runner.run(herdr, ["--session", session, "workspace", "create", "--cwd", request.repo, "--label", name, "--no-focus"]);
@@ -65,6 +65,7 @@ export function launchInHerdr(config: RuntimeConfig, request: LaunchRequest, id:
     herdrWorkspace: workspace,
     herdrTab: location.tab,
     herdrPane: location.pane,
+    lane: request.lane,
     status: "running",
     createdAt: new Date().toISOString(),
   };

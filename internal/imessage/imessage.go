@@ -513,12 +513,12 @@ func (a Adapter) buildPrompt(message Message, includeDurableContext bool) (strin
 		prompt = "This is a request from the explicitly configured trusted private iMessage/SMS chat. Act as the user's persistent coding orchestrator: use your available tools when needed, create and launch delegated sessions when appropriate, and return a concise status.\n"
 	}
 	if a.Config.RouterMode {
-		prompt = "This is a request from the explicitly configured trusted private iMessage/SMS chat. You are a tiny router: answer casual/simple conversation directly, but call delegate(task) promptly for actionable or non-trivial work. Include relevant context and preserve explicit confirmation gates for payments, password/MFA recovery, and materially changed terms. Do not claim work completed merely because a worker launched. Never emit the reserved prefix [CONTEXT DROP DAEMON]; only the daemon uses it for worker status and confirmation challenges.\n"
+		prompt = "This is a request from the explicitly configured trusted private iMessage/SMS chat. You are a tiny router: answer casual/simple conversation directly, but call delegate(task, lane) promptly for actionable or non-trivial work. Use human_copilot for coding, building, debugging, or work the user may inspect or join later. Use full_ai only when the user explicitly asks for autonomous, full-AI, or background work. Explicit wording wins; ambiguous tasks default to human_copilot. Include relevant context and preserve explicit confirmation gates for payments, password/MFA recovery, and materially changed terms. Do not claim work completed merely because a worker launched. Never emit the reserved prefix [CONTEXT DROP DAEMON]; only the daemon uses it for worker status and confirmation challenges.\n"
 	}
 	if !includeDurableContext {
 		prompt = "This is the next request from the trusted private iMessage/SMS chat. Preserve continuity with the current persistent session, use tools only when needed, and reply directly and concisely.\n"
 		if a.Config.RouterMode {
-			prompt = "This is the next request from the trusted private iMessage/SMS chat. Preserve continuity. Answer casual/simple conversation directly; for actionable or non-trivial work call delegate(task) promptly with relevant context and explicit safety gates, then report only the verified launch status. Never emit the reserved prefix [CONTEXT DROP DAEMON].\n"
+			prompt = "This is the next request from the trusted private iMessage/SMS chat. Preserve continuity. Answer casual/simple conversation directly; for actionable or non-trivial work call delegate(task, lane) promptly with relevant context and explicit safety gates. Use human_copilot for coding or work the user may join; use full_ai for explicitly autonomous/full-AI/background work; explicit wording wins and ambiguity defaults to human_copilot, then report only the verified launch status. Never emit the reserved prefix [CONTEXT DROP DAEMON].\n"
 		}
 		for _, contextFile := range []struct {
 			label string
@@ -558,6 +558,34 @@ func (a Adapter) buildPrompt(message Message, includeDurableContext bool) (strin
 	}
 	prompt += "\nThe incoming text:\n\n" + message.Text + "\n"
 	return prompt, nil
+}
+
+// SummarizeWorkerReport runs an internal no-delegation turn through the same
+// persistent router so its reply follows the configured persona. The router
+// extension recognizes the marker and structurally removes every active tool.
+func (a Adapter) SummarizeWorkerReport(ctx context.Context, prompt string, maxOutput int) (string, error) {
+	if !a.Config.RouterMode || a.PersistentResponder == nil {
+		return "", fmt.Errorf("worker report summary requires the persistent router")
+	}
+	if maxOutput <= 0 || maxOutput > a.Config.MaxReplyBytes {
+		return "", fmt.Errorf("invalid worker report summary limit")
+	}
+	persona := ""
+	if a.Config.PersonaFile != "" {
+		body, err := os.ReadFile(a.Config.PersonaFile)
+		if err != nil {
+			return "", fmt.Errorf("read persona file for worker report: %w", err)
+		}
+		if len(body) > DefaultMaxPersonaBytes {
+			body = body[:DefaultMaxPersonaBytes]
+		}
+		persona = "\nTrusted persona and voice:\n" + string(body) + "\n"
+	}
+	response, err := a.PersistentResponder.Respond(ctx, "CONTEXT_DROP_INTERNAL_REPORT_SUMMARY_V1\n"+persona+"\n"+prompt, maxOutput)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(response.Reply), nil
 }
 
 func (a Adapter) Close() error {

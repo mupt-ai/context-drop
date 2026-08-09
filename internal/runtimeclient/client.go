@@ -48,6 +48,7 @@ type Run struct {
 	HerdrWorkspace string `json:"herdrWorkspace,omitempty"`
 	HerdrTab       string `json:"herdrTab,omitempty"`
 	HerdrPane      string `json:"herdrPane,omitempty"`
+	Lane           string `json:"lane,omitempty"`
 	Status         string `json:"status"`
 	CreatedAt      string `json:"createdAt"`
 }

@@ -17,17 +17,18 @@ type AgentConfig struct {
 	PromptMode string   `json:"promptMode"`
 }
 type RuntimeConfig struct {
-	Host           string                 `json:"host"`
-	Port           int                    `json:"port"`
-	StateDir       string                 `json:"stateDir"`
-	TokenFile      string                 `json:"tokenFile"`
-	NodePath       string                 `json:"nodePath"`
-	DefaultBackend string                 `json:"defaultBackend"`
-	TmuxSession    string                 `json:"tmuxSession"`
-	HerdrPath      string                 `json:"herdrPath,omitempty"`
-	HerdrSession   string                 `json:"herdrSession"`
-	Agents         map[string]AgentConfig `json:"agents"`
-	DelegateAgent  string                 `json:"delegateAgent,omitempty"`
+	Host                   string                 `json:"host"`
+	Port                   int                    `json:"port"`
+	StateDir               string                 `json:"stateDir"`
+	TokenFile              string                 `json:"tokenFile"`
+	NodePath               string                 `json:"nodePath"`
+	DefaultBackend         string                 `json:"defaultBackend"`
+	TmuxSession            string                 `json:"tmuxSession"`
+	HerdrPath              string                 `json:"herdrPath,omitempty"`
+	HerdrSession           string                 `json:"herdrSession"`
+	AutonomousHerdrSession string                 `json:"autonomousHerdrSession"`
+	Agents                 map[string]AgentConfig `json:"agents"`
+	DelegateAgent          string                 `json:"delegateAgent,omitempty"`
 }
 
 func Initialize() ([]string, error) {
@@ -100,12 +101,16 @@ func Initialize() ([]string, error) {
 	if value := os.Getenv("CONTEXT_DROP_HERDR_SESSION"); value != "" {
 		herdrSession = value
 	}
+	autonomousHerdrSession := "context-drop-ai"
+	if value := os.Getenv("CONTEXT_DROP_AUTONOMOUS_HERDR_SESSION"); value != "" {
+		autonomousHerdrSession = value
+	}
 	herdrPath, _ := ResolveExecutable("herdr")
 	delegateAgent := ""
 	if _, ok := agents["pi"]; ok {
 		delegateAgent = "pi"
 	}
-	cfg := RuntimeConfig{Host: "127.0.0.1", Port: port, StateDir: dir, TokenFile: tokenPath, NodePath: nodePath, DefaultBackend: backend, TmuxSession: "context-drop", HerdrPath: herdrPath, HerdrSession: herdrSession, Agents: agents, DelegateAgent: delegateAgent}
+	cfg := RuntimeConfig{Host: "127.0.0.1", Port: port, StateDir: dir, TokenFile: tokenPath, NodePath: nodePath, DefaultBackend: backend, TmuxSession: "context-drop", HerdrPath: herdrPath, HerdrSession: herdrSession, AutonomousHerdrSession: autonomousHerdrSession, Agents: agents, DelegateAgent: delegateAgent}
 	if hasExisting {
 		if existing.Host == "127.0.0.1" || existing.Host == "::1" {
 			cfg.Host = existing.Host
@@ -124,6 +129,9 @@ func Initialize() ([]string, error) {
 		}
 		if os.Getenv("CONTEXT_DROP_HERDR_SESSION") == "" && existing.HerdrSession != "" {
 			cfg.HerdrSession = existing.HerdrSession
+		}
+		if os.Getenv("CONTEXT_DROP_AUTONOMOUS_HERDR_SESSION") == "" && existing.AutonomousHerdrSession != "" {
+			cfg.AutonomousHerdrSession = existing.AutonomousHerdrSession
 		}
 		if existing.DelegateAgent != "" {
 			cfg.DelegateAgent = existing.DelegateAgent

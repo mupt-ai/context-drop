@@ -18,7 +18,7 @@ func TestInitializeHonorsPortAndPrivateModes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Port != 49123 || cfg.Host != "127.0.0.1" || cfg.DefaultBackend != "herdr" || cfg.HerdrSession != "default" {
+	if cfg.Port != 49123 || cfg.Host != "127.0.0.1" || cfg.DefaultBackend != "herdr" || cfg.HerdrSession != "default" || cfg.AutonomousHerdrSession != "context-drop-ai" {
 		t.Fatalf("config = %#v", cfg)
 	}
 	if cfg.NodePath == "" || !filepath.IsAbs(cfg.NodePath) {
@@ -136,6 +136,7 @@ func TestInitializeHonorsBackendEnvOverrides(t *testing.T) {
 	t.Setenv("CONTEXT_DROP_HOME", home)
 	t.Setenv("CONTEXT_DROP_BACKEND", "herdr")
 	t.Setenv("CONTEXT_DROP_HERDR_SESSION", "cdx")
+	t.Setenv("CONTEXT_DROP_AUTONOMOUS_HERDR_SESSION", "cdx-ai")
 	if _, err := Initialize(); err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +144,7 @@ func TestInitializeHonorsBackendEnvOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.DefaultBackend != "herdr" || cfg.HerdrSession != "cdx" {
+	if cfg.DefaultBackend != "herdr" || cfg.HerdrSession != "cdx" || cfg.AutonomousHerdrSession != "cdx-ai" {
 		t.Fatalf("config = %#v", cfg)
 	}
 	if cfg.HerdrPath != "" {
