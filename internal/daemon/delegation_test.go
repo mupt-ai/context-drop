@@ -218,6 +218,22 @@ func TestReportVisibilityPolicyAndSensitiveInstruction(t *testing.T) {
 	}
 }
 
+func TestReportSummaryTaskRefOnlyForContinuableNeedsUser(t *testing.T) {
+	prompt := reportSummaryPrompt(runtimeclient.ParentReport{Kind: "needs_user", Message: "which branch", ContinuationID: "ref_123"})
+	if !strings.Contains(prompt, "internal taskRef") || !strings.Contains(prompt, "ref_123") || !strings.Contains(prompt, "never print") {
+		t.Fatalf("continuable prompt missing taskRef: %q", prompt)
+	}
+	for _, report := range []runtimeclient.ParentReport{
+		{Kind: "needs_user", Message: "confirm purchase", SensitiveAction: "payment_or_purchase", ChallengedAction: "buy A", ChallengeToken: "TOKEN", ContinuationID: "ref_123"},
+		{Kind: "completed", Message: "done", ContinuationID: "ref_123"},
+		{Kind: "needs_user", Message: "which branch"},
+	} {
+		if strings.Contains(reportSummaryPrompt(report), "internal taskRef") {
+			t.Fatalf("taskRef leaked for %+v: %q", report, reportSummaryPrompt(report))
+		}
+	}
+}
+
 func TestReportSummaryFailureReleasesWithoutSending(t *testing.T) {
 	backend := &fakeDelegationRuntime{reports: []runtimeclient.ParentReport{{ID: "r1", RouterID: imessageRouterID, ChatID: "chat", RunID: "run", Kind: "completed", Message: "done"}}}
 	commander := &reportCommander{}

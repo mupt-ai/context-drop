@@ -30,6 +30,7 @@ type ParentReport struct {
 	ChallengeExpiresAt string `json:"challengeExpiresAt,omitempty"`
 	CreatedAt          string `json:"createdAt"`
 	LeaseID            string `json:"leaseId,omitempty"`
+	ContinuationID     string `json:"continuationId,omitempty"`
 }
 type Agent struct {
 	Name       string `json:"name"`
