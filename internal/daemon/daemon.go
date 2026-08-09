@@ -760,6 +760,13 @@ func (r *Runner) startMessageWorker(ctx context.Context) {
 	})
 }
 
+func responderFailureReply(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "i hit the responder time limit before finishing, so i stopped it instead of leaving chat hung. send it again and i’ll delegate it."
+	}
+	return "i couldn’t process that message. try again, and i’ll tell you what’s blocked if it fails."
+}
+
 func (r *Runner) processMessage(ctx context.Context, message imessage.Message) {
 	processingStarted := r.Now()
 	if err := r.Store.Update(func(st *orchestrator.State) error {
@@ -793,7 +800,7 @@ func (r *Runner) processMessage(ctx context.Context, message imessage.Message) {
 		// Only send a generic error when the responder failed. If `imsg send`
 		// failed after possibly delivering, never send a second reply.
 		if responderErr != nil {
-			_ = r.IMessage.Send(ctx, "Context Drop could not process that message.")
+			_ = r.IMessage.Send(ctx, responderFailureReply(responderErr))
 		}
 	}
 	if err := r.Store.Update(func(st *orchestrator.State) error {

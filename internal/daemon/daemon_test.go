@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -38,6 +39,20 @@ func (f *fakeNotifier) Notify(title, message string) error {
 	defer f.mu.Unlock()
 	f.messages = append(f.messages, title+":"+message)
 	return nil
+}
+
+func TestResponderFailureReplyExplainsTimeout(t *testing.T) {
+	reply := responderFailureReply(fmt.Errorf("Pi RPC responder: %w", context.DeadlineExceeded))
+	if !strings.Contains(reply, "responder time limit") || !strings.Contains(reply, "delegate") {
+		t.Fatalf("reply = %q", reply)
+	}
+}
+
+func TestResponderFailureReplyDoesNotExposeInternalError(t *testing.T) {
+	reply := responderFailureReply(errors.New("secret internal detail"))
+	if strings.Contains(reply, "secret internal detail") {
+		t.Fatalf("reply exposed internal error: %q", reply)
+	}
 }
 
 func TestRunnerClaimsDueBeforeLaunchAndRecordsJob(t *testing.T) {
