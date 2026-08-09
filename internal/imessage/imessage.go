@@ -513,7 +513,7 @@ func (a Adapter) buildPrompt(message Message, includeDurableContext bool) (strin
 		for _, contextFile := range []struct {
 			label string
 			path  string
-		}{{"standing context", a.Config.PersonaFile}, {"durable memory", a.Config.MemoryFile}, {"full chat archive", a.Config.ConversationArchiveFile}} {
+		}{{"persona and voice", a.Config.PersonaFile}, {"durable memory", a.Config.MemoryFile}, {"full chat archive", a.Config.ConversationArchiveFile}} {
 			if contextFile.path != "" {
 				prompt += "The authoritative " + contextFile.label + " remains available at " + contextFile.path + "; read it when this request needs facts not already present in session context.\n"
 			}
