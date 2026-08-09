@@ -8,7 +8,9 @@ import (
 	"os"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestPiRPCArgvPreservesPersistentSessionAndRemovesPrintPrompt(t *testing.T) {
@@ -95,6 +97,34 @@ func TestPiRPCResponderReusesOneWarmProcess(t *testing.T) {
 	}
 }
 
+func TestPiRPCResponderAbortsTimedOutTurnAndRemainsWarm(t *testing.T) {
+	responder := &PiRPCResponder{
+		argv: []string{os.Args[0], "-test.run=TestPiRPCHelperProcess"},
+		env:  append(os.Environ(), "CONTEXT_DROP_PI_RPC_HELPER=1", "CONTEXT_DROP_PI_RPC_MESSAGE_COUNT=2", "CONTEXT_DROP_PI_RPC_HANG_FIRST=1"),
+	}
+	defer responder.Close()
+	if _, err := responder.Prepare(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := responder.Respond(ctx, "hang", 1024); err == nil || !strings.Contains(err.Error(), "deadline exceeded") {
+		t.Fatalf("timed out response error = %v", err)
+	}
+	if responder.cmd == nil {
+		t.Fatal("cooperatively aborted responder was discarded")
+	}
+
+	response, err := responder.Respond(context.Background(), "next", 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Reply != "reply 2" {
+		t.Fatalf("reply after abort = %q", response.Reply)
+	}
+}
+
 func TestPiRPCHelperProcess(t *testing.T) {
 	if os.Getenv("CONTEXT_DROP_PI_RPC_HELPER") != "1" {
 		return
@@ -114,11 +144,17 @@ func TestPiRPCHelperProcess(t *testing.T) {
 		switch command.Type {
 		case "get_state":
 			_ = enc.Encode(map[string]any{"id": command.ID, "type": "response", "command": "get_state", "success": true, "data": map[string]any{"messageCount": messageCount}})
+		case "abort":
+			_ = enc.Encode(map[string]any{"id": command.ID, "type": "response", "command": "abort", "success": true})
+			_ = enc.Encode(map[string]any{"type": "agent_settled"})
 		case "prompt":
 			prompts++
+			_ = enc.Encode(map[string]any{"id": command.ID, "type": "response", "command": "prompt", "success": true})
+			if prompts == 1 && os.Getenv("CONTEXT_DROP_PI_RPC_HANG_FIRST") == "1" {
+				continue
+			}
 			text := fmt.Sprintf("reply %d", prompts)
 			assistant := map[string]any{"role": "assistant", "model": "router", "responseModel": "fast/model", "responseId": fmt.Sprintf("response-%d", prompts), "usage": map[string]any{"totalTokens": 42}, "content": []map[string]any{{"type": "text", "text": text}}}
-			_ = enc.Encode(map[string]any{"id": command.ID, "type": "response", "command": "prompt", "success": true})
 			_ = enc.Encode(map[string]any{"type": "turn_start"})
 			_ = enc.Encode(map[string]any{"type": "message_update", "assistantMessageEvent": map[string]any{"type": "text_delta", "delta": text}})
 			_ = enc.Encode(map[string]any{"type": "message_end", "message": assistant})

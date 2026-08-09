@@ -27,6 +27,7 @@ const (
 	DefaultSyncLimit                   = 20
 	DefaultHistoryTimeoutSeconds       = 30
 	DefaultResponderTimeoutSeconds     = 180
+	MaxTrustedResponderDuration        = 2 * time.Minute
 	DefaultSendTimeoutSeconds          = 60
 	DefaultMaxMessageBytes             = 64 * 1024
 	DefaultMaxReplyBytes               = 8 * 1024
@@ -390,12 +391,23 @@ func (a Adapter) Respond(ctx context.Context, message Message) (string, error) {
 	return response.Reply, err
 }
 
+func (a Adapter) responderTimeout() time.Duration {
+	timeout := time.Duration(a.Config.ResponderTimeoutSeconds) * time.Second
+	if a.Config.Trusted && a.PersistentResponder != nil && timeout > MaxTrustedResponderDuration {
+		return MaxTrustedResponderDuration
+	}
+	return timeout
+}
+
 func (a Adapter) RespondMeasured(ctx context.Context, message Message) (Response, error) {
+	respondCtx, cancel := context.WithTimeout(ctx, a.responderTimeout())
+	defer cancel()
+
 	includeDurableContext := true
 	var responderState PersistentResponderState
 	if a.PersistentResponder != nil {
 		var err error
-		responderState, err = a.PersistentResponder.Prepare(ctx)
+		responderState, err = a.PersistentResponder.Prepare(respondCtx)
 		if err != nil {
 			return Response{}, err
 		}
@@ -408,7 +420,7 @@ func (a Adapter) RespondMeasured(ctx context.Context, message Message) (Response
 	}
 	promptBuild := time.Since(promptStarted)
 	if a.PersistentResponder != nil {
-		response, respondErr := a.PersistentResponder.Respond(ctx, prompt, a.Config.MaxReplyBytes)
+		response, respondErr := a.PersistentResponder.Respond(respondCtx, prompt, a.Config.MaxReplyBytes)
 		response.Metrics.PromptBuild = promptBuild
 		response.Metrics.PromptBytes = len(prompt)
 		response.Metrics.ResponderStartup = responderState.Startup
@@ -449,8 +461,6 @@ func (a Adapter) RespondMeasured(ctx context.Context, message Message) (Response
 	for i, arg := range a.Config.ResponderCommand {
 		argv[i] = strings.ReplaceAll(arg, "{prompt_file}", promptPath)
 	}
-	respondCtx, cancel := context.WithTimeout(ctx, time.Duration(a.Config.ResponderTimeoutSeconds)*time.Second)
-	defer cancel()
 	respondStarted := time.Now()
 	var result CommandResult
 	for attempt := 0; ; attempt++ {

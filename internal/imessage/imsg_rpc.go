@@ -133,7 +133,8 @@ func (s *IMsgRPCSender) prepareLocked() error {
 	s.done = make(chan error, 1)
 	s.stderr = stderr
 	go readIMsgRPC(stdout, s.records)
-	go func() { s.done <- cmd.Wait() }()
+	done := s.done
+	go func() { done <- cmd.Wait() }()
 	return nil
 }
 

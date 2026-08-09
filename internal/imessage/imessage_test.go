@@ -167,6 +167,22 @@ func TestWarmPersistentResponderUsesIncrementalPromptAndKeepsMemoryAvailable(t *
 	}
 }
 
+func TestTrustedPersistentResponderBudgetCapsExcessiveConfiguredTimeout(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Trusted = true
+	cfg.ResponderTimeoutSeconds = 1200
+	adapter := Adapter{Config: cfg, PersistentResponder: &fakePersistentResponder{}}
+	if got := adapter.responderTimeout(); got != MaxTrustedResponderDuration {
+		t.Fatalf("responder timeout = %v, want %v", got, MaxTrustedResponderDuration)
+	}
+
+	cfg.ResponderTimeoutSeconds = 30
+	adapter.Config = cfg
+	if got := adapter.responderTimeout(); got != 30*time.Second {
+		t.Fatalf("short responder timeout = %v, want 30s", got)
+	}
+}
+
 func TestEmptyPersistentSessionReceivesFullBootstrapContext(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Trusted = true

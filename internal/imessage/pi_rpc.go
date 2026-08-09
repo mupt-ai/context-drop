@@ -177,7 +177,8 @@ func (r *PiRPCResponder) start(ctx context.Context) error {
 	r.done = make(chan error, 1)
 	r.stderr = stderr
 	go r.read(stdout, r.records)
-	go func() { r.done <- cmd.Wait() }()
+	done := r.done
+	go func() { done <- cmd.Wait() }()
 
 	id := r.requestID("state")
 	if err := r.write(map[string]any{"id": id, "type": "get_state"}); err != nil {
@@ -277,6 +278,9 @@ func (r *PiRPCResponder) Respond(ctx context.Context, prompt string, maxOutput i
 	for {
 		record, err := r.next(ctx)
 		if err != nil {
+			if ctx.Err() != nil && r.abortAndDrain(time.Second) {
+				return Response{}, fmt.Errorf("Pi RPC responder: %w", ctx.Err())
+			}
 			r.stopLocked()
 			return Response{}, fmt.Errorf("Pi RPC responder: %w", err)
 		}
@@ -424,6 +428,44 @@ func (r *PiRPCResponder) next(ctx context.Context) (rpcRecord, error) {
 		return rpcRecord{}, err
 	case record := <-r.records:
 		return record, nil
+	}
+}
+
+// abortAndDrain cooperatively cancels Pi's active operation and consumes its
+// remaining events so the warm RPC stream is safe for the next message. Pi
+// propagates abort to active tools, which is essential because killing only the
+// long-lived Pi parent can leave shell descendants running.
+func (r *PiRPCResponder) abortAndDrain(timeout time.Duration) bool {
+	id := r.requestID("abort")
+	if err := r.write(map[string]any{"id": id, "type": "abort"}); err != nil {
+		return false
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	acknowledged := false
+	settled := false
+	for {
+		select {
+		case <-timer.C:
+			return false
+		case <-r.done:
+			return false
+		case record := <-r.records:
+			switch record.Type {
+			case "response":
+				if record.ID == id {
+					if !record.Success {
+						return false
+					}
+					acknowledged = true
+				}
+			case "agent_settled":
+				settled = true
+			}
+			if acknowledged && settled {
+				return true
+			}
+		}
 	}
 }
 
