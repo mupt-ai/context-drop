@@ -186,6 +186,35 @@ func TestYoloSensitiveReportAutoAuthorizesWithoutSendingOrSummarizing(t *testing
 	}
 }
 
+func TestYoloStaleSensitiveReportSummarizesWithoutTokenAndQueueProgresses(t *testing.T) {
+	backend := &fakeDelegationRuntime{
+		autoErr: &runtimeclient.HTTPError{StatusCode: http.StatusConflict, Code: "task_not_runnable", Body: `{"error":"task ended"}`},
+		reports: []runtimeclient.ParentReport{
+			{ID: "stale", RouterID: imessageRouterID, ChatID: "chat", RunID: "dead", Kind: "needs_user", Message: "could not sign in", SensitiveAction: "password_or_mfa", ChallengedAction: "sign in", ChallengeToken: "OLDTOKEN"},
+			{ID: "new", RouterID: imessageRouterID, ChatID: "chat", RunID: "new", Kind: "completed", Message: "newer result"},
+		},
+	}
+	commander := &reportCommander{}
+	responder := &recordingResponder{}
+	cfg := imessage.Defaults()
+	cfg.Enabled, cfg.RouterMode, cfg.YoloMode, cfg.ChatID, cfg.ImsgPath = true, true, true, "chat", "/bin/echo"
+	runner := &Runner{Delegation: backend, IMessage: &imessage.Adapter{Config: cfg, Commander: commander, PersistentResponder: responder}}
+
+	runner.deliverReportsOnce(context.Background())
+	if backend.autoCalls != 1 || len(backend.finishDelivered) != 1 || !backend.finishDelivered[0] || len(commander.sends) != 1 {
+		t.Fatalf("auto=%d finishes=%v sends=%v", backend.autoCalls, backend.finishDelivered, commander.sends)
+	}
+	if strings.Contains(commander.sends[0], "OLDTOKEN") || strings.Contains(responder.prompts[0], "OLDTOKEN") || !strings.Contains(responder.prompts[0], "worker session ended") || strings.Contains(commander.sends[0], "CONTEXT DROP DAEMON") {
+		t.Fatalf("prompt=%q send=%q", responder.prompts[0], commander.sends[0])
+	}
+
+	backend.autoErr = nil
+	runner.deliverReportsOnce(context.Background())
+	if len(backend.finishDelivered) != 2 || !backend.finishDelivered[1] || len(commander.sends) != 2 || len(responder.prompts) != 2 {
+		t.Fatalf("finishes=%v sends=%v prompts=%v", backend.finishDelivered, commander.sends, responder.prompts)
+	}
+}
+
 func TestYoloSafeAutoAuthorizationFailureReleasesForRetry(t *testing.T) {
 	backend := &fakeDelegationRuntime{autoErr: errors.New("safe launch failure"), reports: []runtimeclient.ParentReport{{ID: "r1", RouterID: imessageRouterID, ChatID: "chat", RunID: "run", Kind: "needs_user", SensitiveAction: "payment_or_purchase", ChallengedAction: "buy A"}}}
 	cfg := imessage.Defaults()

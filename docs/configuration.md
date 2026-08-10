@@ -102,6 +102,8 @@ Worker sessions are location-persisted (`herdrSession`/`herdrWorkspace`/`herdrTa
 
 The daemon records the latest local runtime failure (for example an occupied loopback port owned by a different process) in its state and surfaces it in `context-drop daemon status` as `Runtime error`. Port conflicts are reported clearly and retried with capped backoff rather than silently selecting another port.
 
+Report delivery drains at most one report per tick. If a YOLO auto-authorization is rejected because the underlying worker task is no longer runnable (for example its Herdr pane was reaped), the daemon summarizes the original blocked claim in the persona, notes the worker session ended, and ACKs the report instead of retrying it forever. This prevents one stale sensitive report from head-of-line blocking newer worker updates. A transient auto-authorization failure is released for a later retry. See `parent-reports.jsonl` and `parent-tasks.jsonl` under the runtime state directory.
+
 ## Credential modes
 
 In normal human mode, run `context-drop init` once on the first machine, then use `context-drop token create` and `context-drop join <token>` for additional machines.

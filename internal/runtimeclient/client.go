@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -58,6 +59,29 @@ type Client struct {
 	HTTP           *http.Client
 }
 
+type HTTPError struct {
+	StatusCode int
+	Code       string
+	Body       string
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("runtime returned %s: %s", http.StatusText(e.StatusCode), e.Body)
+}
+
+func AutoAuthorizationFailureReason(err error) string {
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		return ""
+	}
+	switch httpErr.Code {
+	case "task_not_runnable", "authorization_expired":
+		return httpErr.Code
+	default:
+		return ""
+	}
+}
+
 func Paths() (dir, configPath, tokenPath string, err error) {
 	base, err := localhome.Root()
 	if err != nil {
@@ -110,7 +134,12 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any, statu
 	defer resp.Body.Close()
 	if resp.StatusCode != status {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("runtime returned %s: %s", resp.Status, bytes.TrimSpace(b))
+		body := string(bytes.TrimSpace(b))
+		var payload struct {
+			Code string `json:"code"`
+		}
+		_ = json.Unmarshal(b, &payload)
+		return &HTTPError{StatusCode: resp.StatusCode, Code: payload.Code, Body: body}
 	}
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)

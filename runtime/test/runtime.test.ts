@@ -107,6 +107,18 @@ test("task injection cannot mint authorization and cross-chat lease is denied", 
   } finally { await close(server); }
 });
 
+test("stale auto-authorization reports task_not_runnable and stays leaseable", async () => {
+  const c={...config(),defaultBackend:"herdr" as const};const server=createRuntimeServer(c,"secret",runner);await new Promise<void>(r=>server.listen(0,"127.0.0.1",r));const a=server.address();assert.ok(a&&typeof a==="object");const base=`http://127.0.0.1:${a.port}`,headers={authorization:"Bearer secret","content-type":"application/json"};
+  try{const cap=await issue(base,headers);const launched=await delegate(base,cap,"buy");const script=readFileSync(join(c.stateDir,"runs",launched.run.id,"launch.sh"),"utf8"),reportCap=script.match(/CONTEXT_DROP_REPORT_CAPABILITY='([^']+)'/)![1];const report=(await(await fetch(base+"/v1/reports",{method:"POST",headers:{authorization:`Bearer ${reportCap}`,"content-type":"application/json"},body:JSON.stringify({runId:launched.run.id,kind:"needs_user",message:"stale confirm",sensitiveAction:"payment_or_purchase",challengedAction:"buy A"})})).json() as any).report;
+    // Simulate dead-pane reaping: mark the underlying task failed.
+    const taskPath=join(c.stateDir,"parent-tasks.jsonl");const tasks=readFileSync(taskPath,"utf8").trim().split("\n").map(line=>JSON.parse(line));tasks.forEach(t=>{if(t.runId===launched.run.id){t.status="failed";t.reportCapability="";}});writeFileSync(taskPath,tasks.map(t=>JSON.stringify(t)).join("\n")+"\n");
+    const leased=(await(await fetch(base+"/v1/reports/lease",{method:"POST",headers,body:JSON.stringify({routerId:"router-a",chatId:"chat-a"})})).json() as any).report;assert.equal(leased.id,report.id);
+    const stale=await fetch(base+`/v1/reports/${report.id}/auto-authorize`,{method:"POST",headers,body:JSON.stringify({routerId:"router-a",chatId:"chat-a",leaseId:leased.leaseId})});assert.equal(stale.status,409);const payload=await stale.json() as any;assert.equal(payload.code,"task_not_runnable");
+    const release=await fetch(base+`/v1/reports/${report.id}/release`,{method:"POST",headers,body:JSON.stringify({routerId:"router-a",chatId:"chat-a",leaseId:leased.leaseId})});assert.equal(release.status,200);
+    const requeued=(await(await fetch(base+"/v1/reports/lease",{method:"POST",headers,body:JSON.stringify({routerId:"router-a",chatId:"chat-a"})})).json() as any).report;assert.equal(requeued.id,report.id);
+  }finally{await close(server);}
+});
+
 test("daemon auto-authorization requires exact live lease, preserves lane, and is idempotent", async () => {
   const { c,server,base,headers }=await fixture();
   try{const cap=await issue(base,headers);const launched=await delegate(base,cap,"buy A","full_ai");const script=readFileSync(join(c.stateDir,"runs",launched.run.id,"launch.sh"),"utf8");const reportCap=script.match(/CONTEXT_DROP_REPORT_CAPABILITY='([^']+)'/)![1];const created=await fetch(base+"/v1/reports",{method:"POST",headers:{authorization:`Bearer ${reportCap}`,"content-type":"application/json"},body:JSON.stringify({runId:launched.run.id,kind:"needs_user",message:"confirm",sensitiveAction:"payment_or_purchase",challengedAction:"buy A for $10"})});const report=(await created.json() as any).report;

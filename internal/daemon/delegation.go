@@ -73,71 +73,79 @@ func (r *Runner) deliverReportsOnce(ctx context.Context) {
 	if r.IMessage == nil || !r.IMessage.Config.Enabled || r.Delegation == nil {
 		return
 	}
-	for {
-		report, leased, err := r.Delegation.LeaseReport(ctx, imessageRouterID, r.IMessage.Config.ChatID)
-		if err != nil || !leased {
-			return
-		}
-		if r.IMessage.Config.YoloMode && report.SensitiveAction != "" && report.Kind == "needs_user" {
-			_, outcome, authorizeErr := r.Delegation.AutoAuthorize(ctx, report, imessageRouterID, r.IMessage.Config.ChatID)
-			if authorizeErr != nil {
+	report, leased, err := r.Delegation.LeaseReport(ctx, imessageRouterID, r.IMessage.Config.ChatID)
+	if err != nil || !leased {
+		return
+	}
+	yoloFailureReason := ""
+	if r.IMessage.Config.YoloMode && report.SensitiveAction != "" && report.Kind == "needs_user" {
+		_, outcome, authorizeErr := r.Delegation.AutoAuthorize(ctx, report, imessageRouterID, r.IMessage.Config.ChatID)
+		if authorizeErr != nil {
+			if yoloFailureReason = runtimeclient.AutoAuthorizationFailureReason(authorizeErr); yoloFailureReason != "" {
+			} else {
 				if releaseErr := r.Delegation.FinishReport(ctx, report, imessageRouterID, r.IMessage.Config.ChatID, false); releaseErr != nil {
 					log.Printf("Context Drop YOLO report %s release failed: %v", report.ID, releaseErr)
 				}
 				return
 			}
+		} else {
 			if outcome == "launch_unknown" {
 				// The runtime atomically consumes/disposes the original report and
 				// enqueues a separate audit warning. Never ACK or retry ambiguity.
-				continue
+				return
 			}
 			if outcome != "running" {
 				log.Printf("Context Drop YOLO report %s returned invalid outcome %q", report.ID, outcome)
+				if releaseErr := r.Delegation.FinishReport(ctx, report, imessageRouterID, r.IMessage.Config.ChatID, false); releaseErr != nil {
+					log.Printf("Context Drop YOLO report %s release failed: %v", report.ID, releaseErr)
+				}
 				return
 			}
 			if finishErr := r.Delegation.FinishReport(ctx, report, imessageRouterID, r.IMessage.Config.ChatID, true); finishErr != nil {
 				log.Printf("Context Drop YOLO report %s ack failed: %v", report.ID, finishErr)
-				return
 			}
-			continue
-		}
-		if !reportIsUserVisible(report) {
-			if finishErr := r.Delegation.FinishReport(ctx, report, imessageRouterID, r.IMessage.Config.ChatID, true); finishErr != nil {
-				log.Printf("Context Drop suppressed report %s ack failed: %v", report.ID, finishErr)
-				return
-			}
-			continue
-		}
-		instruction := ""
-		if report.SensitiveAction != "" && report.ChallengeToken != "" {
-			instruction = sensitiveConfirmationInstruction(report)
-		}
-		summaryLimit := r.IMessage.Config.MaxReplyBytes - len(instruction)
-		summaryCtx, summaryCancel := context.WithTimeout(ctx, imessage.MaxTrustedResponderDuration)
-		message, summaryErr := r.IMessage.SummarizeWorkerReport(summaryCtx, reportSummaryPrompt(report), summaryLimit)
-		summaryCancel()
-		if summaryErr == nil {
-			message += instruction
-		}
-		var sendErr error
-		if summaryErr == nil {
-			sendCtx, cancel := context.WithTimeout(ctx, time.Duration(r.IMessage.Config.SendTimeoutSeconds)*time.Second)
-			sendErr = r.IMessage.Send(sendCtx, message)
-			cancel()
-		} else {
-			sendErr = summaryErr
-		}
-		finishErr := r.Delegation.FinishReport(ctx, report, imessageRouterID, r.IMessage.Config.ChatID, sendErr == nil)
-		if finishErr != nil {
-			log.Printf("Context Drop report %s %s failed: %v", report.ID, map[bool]string{true: "ack", false: "release"}[sendErr == nil], finishErr)
-			if sendErr != nil {
-				if releaseErr := r.Delegation.FinishReport(ctx, report, imessageRouterID, r.IMessage.Config.ChatID, false); releaseErr != nil {
-					log.Printf("Context Drop report %s prompt release failed: %v", report.ID, releaseErr)
-				}
-			}
-		}
-		if sendErr != nil {
 			return
+		}
+	}
+	if !reportIsUserVisible(report) {
+		if finishErr := r.Delegation.FinishReport(ctx, report, imessageRouterID, r.IMessage.Config.ChatID, true); finishErr != nil {
+			log.Printf("Context Drop suppressed report %s ack failed: %v", report.ID, finishErr)
+		}
+		return
+	}
+	instruction := ""
+	if yoloFailureReason == "" && report.SensitiveAction != "" && report.ChallengeToken != "" {
+		instruction = sensitiveConfirmationInstruction(report)
+	}
+	summaryLimit := r.IMessage.Config.MaxReplyBytes - len(instruction)
+	summaryPrompt := reportSummaryPrompt(report)
+	switch yoloFailureReason {
+	case "task_not_runnable":
+		summaryPrompt += "\nAuthoritative delivery context: the worker session ended before this action could continue. Say that naturally and clearly. Do not suggest that authorization or the action happened. Do not print or request any old confirmation token."
+	case "authorization_expired":
+		summaryPrompt += "\nAuthoritative delivery context: this action did not continue because its authorization window expired. Say that naturally and clearly. Do not suggest that authorization or the action happened. Do not print or request any old confirmation token."
+	}
+	summaryCtx, summaryCancel := context.WithTimeout(ctx, imessage.MaxTrustedResponderDuration)
+	message, summaryErr := r.IMessage.SummarizeWorkerReport(summaryCtx, summaryPrompt, summaryLimit)
+	summaryCancel()
+	if summaryErr == nil {
+		message += instruction
+	}
+	var sendErr error
+	if summaryErr == nil {
+		sendCtx, cancel := context.WithTimeout(ctx, time.Duration(r.IMessage.Config.SendTimeoutSeconds)*time.Second)
+		sendErr = r.IMessage.Send(sendCtx, message)
+		cancel()
+	} else {
+		sendErr = summaryErr
+	}
+	finishErr := r.Delegation.FinishReport(ctx, report, imessageRouterID, r.IMessage.Config.ChatID, sendErr == nil)
+	if finishErr != nil {
+		log.Printf("Context Drop report %s %s failed: %v", report.ID, map[bool]string{true: "ack", false: "release"}[sendErr == nil], finishErr)
+		if sendErr != nil {
+			if releaseErr := r.Delegation.FinishReport(ctx, report, imessageRouterID, r.IMessage.Config.ChatID, false); releaseErr != nil {
+				log.Printf("Context Drop report %s prompt release failed: %v", report.ID, releaseErr)
+			}
 		}
 	}
 }
