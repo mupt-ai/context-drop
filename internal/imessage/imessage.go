@@ -585,6 +585,9 @@ func (a Adapter) SummarizeWorkerReport(ctx context.Context, prompt string, maxOu
 		}
 		persona = "\nTrusted persona and voice:\n" + string(body) + "\n"
 	}
+	if _, err := a.PersistentResponder.Prepare(ctx); err != nil {
+		return "", fmt.Errorf("prepare worker report summary responder: %w", err)
+	}
 	response, err := a.PersistentResponder.Respond(ctx, "CONTEXT_DROP_INTERNAL_REPORT_SUMMARY_V1\n"+persona+"\n"+prompt, maxOutput)
 	if err != nil {
 		return "", err

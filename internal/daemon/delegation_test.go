@@ -1,10 +1,12 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -264,7 +266,11 @@ func TestReportSummaryTaskRefOnlyForContinuableNeedsUser(t *testing.T) {
 }
 
 func TestReportSummaryFailureReleasesWithoutSending(t *testing.T) {
-	backend := &fakeDelegationRuntime{reports: []runtimeclient.ParentReport{{ID: "r1", RouterID: imessageRouterID, ChatID: "chat", RunID: "run", Kind: "completed", Message: "done"}}}
+	backend := &fakeDelegationRuntime{reports: []runtimeclient.ParentReport{{ID: "r1", RouterID: imessageRouterID, ChatID: "chat", RunID: "run", Kind: "completed", Message: "secret worker body"}}}
+	var logs bytes.Buffer
+	originalOutput := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(originalOutput) })
 	commander := &reportCommander{}
 	cfg := imessage.Defaults()
 	cfg.Enabled = true
@@ -275,6 +281,9 @@ func TestReportSummaryFailureReleasesWithoutSending(t *testing.T) {
 	runner.deliverReportsOnce(context.Background())
 	if len(commander.sends) != 0 || len(backend.finishDelivered) != 1 || backend.finishDelivered[0] {
 		t.Fatalf("sends=%v finishes=%v", commander.sends, backend.finishDelivered)
+	}
+	if !strings.Contains(logs.String(), "report r1 summary failed") || strings.Contains(logs.String(), "secret worker body") {
+		t.Fatalf("unsafe or missing summary failure log: %q", logs.String())
 	}
 }
 

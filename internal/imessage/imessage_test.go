@@ -25,8 +25,11 @@ type fakeCommander struct {
 }
 
 type fakePersistentResponder struct {
-	state  PersistentResponderState
-	prompt string
+	state      PersistentResponderState
+	prepareErr error
+	respondErr error
+	prompt     string
+	calls      []string
 }
 
 type fakePersistentSender struct {
@@ -44,11 +47,16 @@ func (f *fakePersistentSender) Send(_ context.Context, chatID, text string) erro
 func (f *fakePersistentSender) Close() error { return nil }
 
 func (f *fakePersistentResponder) Prepare(context.Context) (PersistentResponderState, error) {
-	return f.state, nil
+	f.calls = append(f.calls, "prepare")
+	return f.state, f.prepareErr
 }
 
 func (f *fakePersistentResponder) Respond(_ context.Context, prompt string, _ int) (Response, error) {
+	f.calls = append(f.calls, "respond")
 	f.prompt = prompt
+	if f.respondErr != nil {
+		return Response{}, f.respondErr
+	}
 	return Response{Reply: "done"}, nil
 }
 
@@ -83,6 +91,50 @@ func testConfig(t *testing.T) Config {
 	cfg.ImsgPath = executable
 	cfg.ResponderCommand = []string{executable, "--prompt", "{prompt_file}"}
 	return cfg
+}
+
+func TestSummarizeWorkerReportPreparesColdResponderBeforeResponding(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.RouterMode = true
+	responder := &fakePersistentResponder{state: PersistentResponderState{ColdStart: true}}
+	adapter := Adapter{Config: cfg, PersistentResponder: responder}
+
+	message, err := adapter.SummarizeWorkerReport(context.Background(), "worker status", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message != "done" || !reflect.DeepEqual(responder.calls, []string{"prepare", "respond"}) {
+		t.Fatalf("message=%q calls=%v", message, responder.calls)
+	}
+}
+
+func TestSummarizeWorkerReportPreparesWarmResponderBeforeResponding(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.RouterMode = true
+	responder := &fakePersistentResponder{}
+	adapter := Adapter{Config: cfg, PersistentResponder: responder}
+
+	if _, err := adapter.SummarizeWorkerReport(context.Background(), "worker status", 100); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(responder.calls, []string{"prepare", "respond"}) {
+		t.Fatalf("calls=%v", responder.calls)
+	}
+}
+
+func TestSummarizeWorkerReportReturnsPrepareFailureWithoutResponding(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.RouterMode = true
+	responder := &fakePersistentResponder{prepareErr: errors.New("prepare failed")}
+	adapter := Adapter{Config: cfg, PersistentResponder: responder}
+
+	_, err := adapter.SummarizeWorkerReport(context.Background(), "worker status", 100)
+	if err == nil || !strings.Contains(err.Error(), "prepare worker report summary responder") {
+		t.Fatalf("err=%v", err)
+	}
+	if !reflect.DeepEqual(responder.calls, []string{"prepare"}) {
+		t.Fatalf("calls=%v", responder.calls)
+	}
 }
 
 func TestParseMessagesJSONAndJSONL(t *testing.T) {

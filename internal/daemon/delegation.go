@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -74,7 +75,11 @@ func (r *Runner) deliverReportsOnce(ctx context.Context) {
 		return
 	}
 	report, leased, err := r.Delegation.LeaseReport(ctx, imessageRouterID, r.IMessage.Config.ChatID)
-	if err != nil || !leased {
+	if err != nil {
+		log.Printf("Context Drop report lease failed (report ID unavailable): %s", safeDeliveryError(err))
+		return
+	}
+	if !leased {
 		return
 	}
 	yoloFailureReason := ""
@@ -82,9 +87,11 @@ func (r *Runner) deliverReportsOnce(ctx context.Context) {
 		_, outcome, authorizeErr := r.Delegation.AutoAuthorize(ctx, report, imessageRouterID, r.IMessage.Config.ChatID)
 		if authorizeErr != nil {
 			if yoloFailureReason = runtimeclient.AutoAuthorizationFailureReason(authorizeErr); yoloFailureReason != "" {
+				log.Printf("Context Drop YOLO report %s auto-authorization definitively failed (%s): %s", report.ID, yoloFailureReason, safeDeliveryError(authorizeErr))
 			} else {
+				log.Printf("Context Drop YOLO report %s auto-authorization failed; releasing for retry: %s", report.ID, safeDeliveryError(authorizeErr))
 				if releaseErr := r.Delegation.FinishReport(ctx, report, imessageRouterID, r.IMessage.Config.ChatID, false); releaseErr != nil {
-					log.Printf("Context Drop YOLO report %s release failed: %v", report.ID, releaseErr)
+					log.Printf("Context Drop YOLO report %s release failed: %s", report.ID, safeDeliveryError(releaseErr))
 				}
 				return
 			}
@@ -97,19 +104,19 @@ func (r *Runner) deliverReportsOnce(ctx context.Context) {
 			if outcome != "running" {
 				log.Printf("Context Drop YOLO report %s returned invalid outcome %q", report.ID, outcome)
 				if releaseErr := r.Delegation.FinishReport(ctx, report, imessageRouterID, r.IMessage.Config.ChatID, false); releaseErr != nil {
-					log.Printf("Context Drop YOLO report %s release failed: %v", report.ID, releaseErr)
+					log.Printf("Context Drop YOLO report %s release failed: %s", report.ID, safeDeliveryError(releaseErr))
 				}
 				return
 			}
 			if finishErr := r.Delegation.FinishReport(ctx, report, imessageRouterID, r.IMessage.Config.ChatID, true); finishErr != nil {
-				log.Printf("Context Drop YOLO report %s ack failed: %v", report.ID, finishErr)
+				log.Printf("Context Drop YOLO report %s ack failed: %s", report.ID, safeDeliveryError(finishErr))
 			}
 			return
 		}
 	}
 	if !reportIsUserVisible(report) {
 		if finishErr := r.Delegation.FinishReport(ctx, report, imessageRouterID, r.IMessage.Config.ChatID, true); finishErr != nil {
-			log.Printf("Context Drop suppressed report %s ack failed: %v", report.ID, finishErr)
+			log.Printf("Context Drop suppressed report %s ack failed: %s", report.ID, safeDeliveryError(finishErr))
 		}
 		return
 	}
@@ -128,7 +135,9 @@ func (r *Runner) deliverReportsOnce(ctx context.Context) {
 	summaryCtx, summaryCancel := context.WithTimeout(ctx, imessage.MaxTrustedResponderDuration)
 	message, summaryErr := r.IMessage.SummarizeWorkerReport(summaryCtx, summaryPrompt, summaryLimit)
 	summaryCancel()
-	if summaryErr == nil {
+	if summaryErr != nil {
+		log.Printf("Context Drop report %s summary failed: %s", report.ID, safeDeliveryError(summaryErr))
+	} else {
 		message += instruction
 	}
 	var sendErr error
@@ -136,18 +145,41 @@ func (r *Runner) deliverReportsOnce(ctx context.Context) {
 		sendCtx, cancel := context.WithTimeout(ctx, time.Duration(r.IMessage.Config.SendTimeoutSeconds)*time.Second)
 		sendErr = r.IMessage.Send(sendCtx, message)
 		cancel()
+		if sendErr != nil {
+			log.Printf("Context Drop report %s iMessage send failed: %s", report.ID, safeDeliveryError(sendErr))
+		}
 	} else {
 		sendErr = summaryErr
 	}
 	finishErr := r.Delegation.FinishReport(ctx, report, imessageRouterID, r.IMessage.Config.ChatID, sendErr == nil)
 	if finishErr != nil {
-		log.Printf("Context Drop report %s %s failed: %v", report.ID, map[bool]string{true: "ack", false: "release"}[sendErr == nil], finishErr)
+		log.Printf("Context Drop report %s %s failed: %s", report.ID, map[bool]string{true: "ack", false: "release"}[sendErr == nil], safeDeliveryError(finishErr))
 		if sendErr != nil {
 			if releaseErr := r.Delegation.FinishReport(ctx, report, imessageRouterID, r.IMessage.Config.ChatID, false); releaseErr != nil {
-				log.Printf("Context Drop report %s prompt release failed: %v", report.ID, releaseErr)
+				log.Printf("Context Drop report %s prompt release failed: %s", report.ID, safeDeliveryError(releaseErr))
 			}
 		}
 	}
+}
+
+func safeDeliveryError(err error) string {
+	if err == nil {
+		return "none"
+	}
+	var httpErr *runtimeclient.HTTPError
+	if errors.As(err, &httpErr) {
+		if httpErr.Code != "" {
+			return fmt.Sprintf("runtime HTTP %d (%s)", httpErr.StatusCode, httpErr.Code)
+		}
+		return fmt.Sprintf("runtime HTTP %d", httpErr.StatusCode)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "deadline exceeded"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "context canceled"
+	}
+	return fmt.Sprintf("error type %T", err)
 }
 
 func (r *Runner) confirmSensitiveAction(ctx context.Context, chatID, incoming string) (string, bool) {
