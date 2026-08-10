@@ -132,7 +132,7 @@ context-drop launch --backend herdr \
   --prompt "Inspect the failing tests." --name inspect-tests
 ```
 
-A Herdr launch creates a new workspace by default. To place the run in an existing Herdr workspace, pass its stable workspace ID. Context Drop creates a new tab inside that workspace and does not disturb its existing panes:
+A lane-less Herdr launch is AI-managed by default: it creates a new tab in the reusable `ContextDropManaged` workspace in session `default`. To make a run human-copilot work in an existing Herdr workspace, pass its stable workspace ID. Context Drop creates a new tab inside that workspace and does not disturb its existing panes:
 
 ```bash
 herdr workspace list
@@ -141,7 +141,7 @@ context-drop launch --backend herdr --workspace w1 \
   --prompt "Inspect the failing tests." --name inspect-tests
 ```
 
-Do not predict workspace IDs from sidebar order. Read the ID from `herdr workspace list`. Herdr must already have the configured named session running; Context Drop uses the session named by `herdrSession` in its private runtime config.
+Do not predict workspace IDs from sidebar order. Read the ID from `herdr workspace list`. Herdr must already have the configured named session running; AI-managed runs use `default`, while human-copilot runs use the session named by `herdrSession` in its private runtime config.
 
 Inspect recorded runs with:
 

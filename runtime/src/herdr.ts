@@ -99,9 +99,13 @@ function createWorkspace(herdr: string, session: string, repo: string, label: st
 
 function humanCopilotLocation(config: RuntimeConfig, session: string, repo: string, runner: CommandRunner): WorkspaceLocation {
   const herdr = config.herdrPath || "herdr";
-  const focused = discoverWorkspaces(config, session, runner).filter(workspace => workspace.focused);
+  const workspaces = discoverWorkspaces(config, session, runner);
+  const focused = workspaces.filter(workspace => workspace.focused);
   if (focused.length > 1) throw new Error("herdr workspace discovery is ambiguous: multiple workspaces are focused");
   if (focused.length === 1) return createTab(herdr, session, focused[0].id, repo, COPILOT_LABEL, runner);
+  const fallback = workspaces.filter(workspace => workspace.label === COPILOT_LABEL);
+  if (fallback.length > 1) throw new Error(`herdr copilot workspace discovery is ambiguous: multiple workspaces are labeled ${COPILOT_LABEL}`);
+  if (fallback.length === 1) return createTab(herdr, session, fallback[0].id, repo, COPILOT_LABEL, runner);
   return createWorkspace(herdr, session, repo, COPILOT_LABEL, runner);
 }
 
@@ -140,10 +144,12 @@ export function paneAlive(config: RuntimeConfig, run: RunRecord, runner: Command
   return reachable.status === 0 ? false : undefined;
 }
 
-export function closeHerdrWorker(config: RuntimeConfig, run: RunRecord, runner: CommandRunner = systemRunner): void {
-  if (paneAlive(config, run, runner) !== true) return;
+export function closeHerdrWorker(config: RuntimeConfig, run: RunRecord, runner: CommandRunner = systemRunner): boolean {
+  const alive = paneAlive(config, run, runner);
+  if (alive === false) return true;
+  if (alive !== true) return false;
   const herdr = config.herdrPath || "herdr";
-  runner.run(herdr, ["--session", run.herdrSession!, "pane", "close", run.herdrPane!]);
+  return runner.run(herdr, ["--session", run.herdrSession!, "pane", "close", run.herdrPane!]).status === 0;
 }
 
 export function continueInHerdr(config: RuntimeConfig, run: RunRecord, message: string, runner: CommandRunner = systemRunner): void {
@@ -161,12 +167,13 @@ export function continueInHerdr(config: RuntimeConfig, run: RunRecord, message: 
 export function launchInHerdr(config: RuntimeConfig, request: LaunchRequest, id: string, runner: CommandRunner = systemRunner): RunRecord {
   const { name, runDir, argv, environment } = prepareLaunch(config, request, id);
   const herdr = config.herdrPath || "herdr";
-  const session = config.herdrSession || "default";
+  const lane = request.lane ?? (request.workspaceId ? "human_copilot" : "full_ai");
+  const session = lane === "full_ai" ? "default" : config.herdrSession || "default";
   let location: WorkspaceLocation;
-  if (request.workspaceId) {
-    location = createTab(herdr, session, request.workspaceId, request.repo, request.lane === "full_ai" ? AI_TAB_LABEL : COPILOT_LABEL, runner);
-  } else if (request.lane === "full_ai") {
+  if (lane === "full_ai") {
     location = fullAILocation(config, session, request.repo, runner);
+  } else if (request.workspaceId) {
+    location = createTab(herdr, session, request.workspaceId, request.repo, COPILOT_LABEL, runner);
   } else {
     location = humanCopilotLocation(config, session, request.repo, runner);
   }
@@ -195,7 +202,7 @@ export function launchInHerdr(config: RuntimeConfig, request: LaunchRequest, id:
     herdrWorkspace: location.workspace,
     herdrTab: location.tab,
     herdrPane: location.pane,
-    lane: request.lane,
+    lane,
     status: "running",
     createdAt: new Date().toISOString(),
   };

@@ -1,6 +1,15 @@
 import type { LaunchRequest, RunRecord, RuntimeConfig } from "./types.js";
 import { LaunchOutcomeUnknownError, prepareLaunch, systemRunner, type CommandRunner } from "./launch.js";
 
+export function closeTmuxWorker(config: RuntimeConfig, run: RunRecord, runner: CommandRunner = systemRunner): boolean {
+  if (run.backend !== "tmux" || !run.tmuxSession || !run.tmuxWindow) return false;
+  const target = `${run.tmuxSession}:${run.tmuxWindow}`;
+  const exists = runner.run("tmux", ["list-windows", "-t", run.tmuxSession, "-F", "#{window_name}"]);
+  if (exists.status !== 0) return false;
+  if (!(exists.stdout ?? "").split("\n").includes(run.tmuxWindow)) return true;
+  return runner.run("tmux", ["kill-window", "-t", target]).status === 0;
+}
+
 export function launchInTmux(config: RuntimeConfig, request: LaunchRequest, id: string, runner: CommandRunner = systemRunner): RunRecord {
   const { name: window, argv, environment } = prepareLaunch(config, request, id);
   const envArgs = Object.entries(environment).flatMap(([key, value]) => ["-e", `${key}=${value}`]);

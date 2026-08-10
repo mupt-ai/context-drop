@@ -11,12 +11,12 @@ export default function (pi) {
   pi.registerTool({
     name: "delegate",
     label: "Delegate",
-    description: "Launch a Context Drop task worker. Use human_copilot for coding, building, debugging, or anything the user may inspect or join later. Use full_ai only when the user explicitly asks for autonomous, full-AI, or background work; explicit wording wins and ambiguous tasks are human_copilot.",
+    description: "Launch a Context Drop task worker. Default ordinary actionable work—including booking, research, status checks, coding, and autonomous execution—to full_ai. Use human_copilot only when the user explicitly asks to watch, join, or copilot the worker, or explicitly supplies an applicable workspace context. Preserve the user's explicit wording; explicit lane intent wins.",
     parameters: Type.Object({
       task: Type.String({ minLength: 1, maxLength: 16000 }),
       lane: StringEnum(["human_copilot", "full_ai"]),
     }),
-    async execute(_id, { task, lane = "human_copilot" }, signal) {
+    async execute(_id, { task, lane = "full_ai" }, signal) {
       if (!endpoint || !capability) throw new Error("delegation is not configured");
       const response = await fetch(endpoint, {
         method: "POST", signal,
