@@ -4,7 +4,7 @@ import { existsSync, readFileSync, mkdirSync, writeFileSync, chmodSync, renameSy
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DelegationLane, LaunchRequest, ParentReport, RunRecord, RuntimeConfig, ParentReportKind, SensitiveAction } from "./types.js";
-import { continueInHerdr, launchInHerdr } from "./herdr.js";
+import { closeHerdrWorker, continueInHerdr, launchInHerdr, paneAlive } from "./herdr.js";
 import { LaunchOutcomeUnknownError, systemRunner, type CommandRunner } from "./launch.js";
 import { launchInTmux } from "./tmux.js";
 
@@ -20,6 +20,8 @@ const PENDING_REPORT_MAX_MS = 24 * 60 * 60_000;
 const MAX_ACTIVE_TASKS_PER_OWNER = 32;
 const MAX_ACTIVE_TASKS_GLOBAL = 256;
 const TERMINAL_HISTORY_LIMIT = 500;
+const PANE_PROBE_COOLDOWN_MS = 60_000;
+const MAX_PANE_PROBES_PER_RECONCILE = 8;
 interface RouterCapability { id: string; routerId: string; chatId: string; digest: string; createdAt: string; revokedAt?: string }
 interface TaskRecord { id: string; runId: string; routerId: string; chatId: string; task: string; lane: DelegationLane; reportCapability: string; createdAt: string; updatedAt: string; status: "launching" | "launch_committed" | "running" | "completed" | "failed" | "launch_failed" | "launch_unknown"; launchError?: string; authorizationId?: string; authorizationReportId?: string; authorizedAction?: SensitiveAction; authorizedScope?: string; authorizationExpiresAt?: string; pendingTerminalReport?: ParentReport }
 export interface RuntimeRecoveryPolicy { launchTimeoutMs:number; workerIdleTimeoutMs:number; reservationMs:number; pendingReportMaxMs:number }
@@ -54,9 +56,9 @@ function prepareTask(config: RuntimeConfig, owner: {routerId:string;chatId:strin
 function routerFor(config: RuntimeConfig, capability: string): RouterCapability | undefined { const d = digest(capability); return records<RouterCapability>(pathFor(config, "router-capabilities.jsonl")).find(r => !r.revokedAt && capMatches(r.digest, d)); }
 function requireActiveSlot(config:RuntimeConfig,owner:{routerId:string;chatId:string}):void { const active=records<TaskRecord>(pathFor(config,"parent-tasks.jsonl")).filter(t=>t.status==="launching"||t.status==="launch_committed"||t.status==="running"); if(active.length>=MAX_ACTIVE_TASKS_GLOBAL)throw new Error("delegated worker capacity reached"); if(active.filter(t=>t.routerId===owner.routerId&&t.chatId===owner.chatId).length>=MAX_ACTIVE_TASKS_PER_OWNER)throw new Error("delegated worker capacity reached for this chat"); }
 function ownerInput(input: any): {routerId:string;chatId:string} { if (typeof input?.routerId !== "string" || !input.routerId.trim() || typeof input?.chatId !== "string" || !input.chatId.trim()) throw new Error("routerId and chatId are required"); return { routerId: input.routerId, chatId: input.chatId }; }
-function reconcileAndCompact(config:RuntimeConfig,current:Date,policy:RuntimeRecoveryPolicy):void {
+function reconcileAndCompact(config:RuntimeConfig,current:Date,policy:RuntimeRecoveryPolicy,runner:CommandRunner,probeTimes:Map<string,number>):void {
   const currentMs=current.getTime(), reportsPath=pathFor(config,"parent-reports.jsonl"), tasksPath=pathFor(config,"parent-tasks.jsonl");
-  let reports=records<ParentReport>(reportsPath); const tasks=records<TaskRecord>(tasksPath);
+  let reports=records<ParentReport>(reportsPath); const tasks=records<TaskRecord>(tasksPath); const runs=loadRuns(config); const runByID=new Map(runs.map(run=>[run.id,run])); let probes=0;
   for(const task of tasks){
     if(task.pendingTerminalReport){ if(!reports.some(r=>r.id===task.pendingTerminalReport!.id))reports.push(task.pendingTerminalReport); delete task.pendingTerminalReport; }
     if(task.authorizationReportId&&task.authorizationId&&task.status!=="launch_failed") { const challenge=reports.find(r=>r.id===task.authorizationReportId); if(challenge&&!challenge.challengeConsumedAt){challenge.challengeConsumedAt=current.toISOString();challenge.authorizationId=task.authorizationId;} }
@@ -68,6 +70,13 @@ function reconcileAndCompact(config:RuntimeConfig,current:Date,policy:RuntimeRec
       if(!reports.some(r=>r.runId===task.runId&&r.kind==="needs_user")) reports.push({id:`report_${currentMs.toString(36)}_${randomBytes(5).toString("hex")}`,runId:task.runId,routerId:task.routerId,chatId:task.chatId,kind:"needs_user",message:"Sensitive worker launch outcome is unknown. Do not retry this confirmation; audit the external action and explicitly decide next steps.",createdAt:current.toISOString()});
     } else if(task.status==="launching"&&age>=policy.launchTimeoutMs){task.status="launch_failed";task.launchError="launch did not complete before recovery timeout";task.reportCapability="";task.updatedAt=current.toISOString();}
     else if(task.status==="running"&&age>=policy.workerIdleTimeoutMs){task.status="failed";task.launchError="worker exceeded bounded idle lifetime";task.reportCapability="";task.updatedAt=current.toISOString();}
+    else if(task.status==="running"&&probes<MAX_PANE_PROBES_PER_RECONCILE){
+      const run=runByID.get(task.runId),lastProbe=probeTimes.get(task.runId)??-Infinity;
+      if(run?.backend==="herdr"&&run.herdrSession&&run.herdrPane&&currentMs-lastProbe>=PANE_PROBE_COOLDOWN_MS){
+        probeTimes.set(task.runId,currentMs);probes++;
+        if(paneAlive(config,run,runner)===false){task.status="failed";task.launchError="worker pane closed";task.reportCapability="";task.updatedAt=current.toISOString();}
+      }
+    }
   }
   for(const report of reports){
     const launchedAuthorization=report.authorizationId&&tasks.some(t=>t.authorizationId===report.authorizationId&&t.status==="running");
@@ -85,7 +94,7 @@ function reconcileAndCompact(config:RuntimeConfig,current:Date,policy:RuntimeRec
   const terminalTasks=tasks.filter(t=>!activeTasks.includes(t)).slice(-TERMINAL_HISTORY_LIMIT);
   const unique=[...new Map([...activeTasks,...terminalTasks].map(t=>[t.runId,t])).values()]; replace(tasksPath,unique);
   const caps=records<RouterCapability>(pathFor(config,"router-capabilities.jsonl")); replace(pathFor(config,"router-capabilities.jsonl"),caps.filter(c=>!c.revokedAt).concat(caps.filter(c=>c.revokedAt).slice(-20)));
-  const keepRuns=new Set(unique.map(t=>t.runId)); const runs=loadRuns(config); const historicalRuns=runs.filter(r=>!keepRuns.has(r.id)).slice(0,TERMINAL_HISTORY_LIMIT); replace(pathFor(config,"runs.jsonl"),runs.filter(r=>keepRuns.has(r.id)).concat(historicalRuns)); const keptArtifacts=new Set([...keepRuns,...historicalRuns.map(r=>r.id)]); const runRoot=pathFor(config,"runs"); if(existsSync(runRoot)) for(const entry of readdirSync(runRoot)){if(!keptArtifacts.has(entry))rmSync(resolve(runRoot,entry),{recursive:true,force:true});}
+  const keepRuns=new Set(unique.map(t=>t.runId)); const historicalRuns=runs.filter(r=>!keepRuns.has(r.id)).slice(0,TERMINAL_HISTORY_LIMIT); replace(pathFor(config,"runs.jsonl"),runs.filter(r=>keepRuns.has(r.id)).concat(historicalRuns)); const keptArtifacts=new Set([...keepRuns,...historicalRuns.map(r=>r.id)]); const runRoot=pathFor(config,"runs"); if(existsSync(runRoot)) for(const entry of readdirSync(runRoot)){if(!keptArtifacts.has(entry))rmSync(resolve(runRoot,entry),{recursive:true,force:true});}
 }
 
 function acquireWriterLock(config: RuntimeConfig): string {
@@ -109,12 +118,13 @@ export function createRuntimeServer(config: RuntimeConfig, token: string, runner
   mkdirSync(config.stateDir, { recursive: true, mode: 0o700 }); chmodSync(config.stateDir, 0o700);
   const writerLock = acquireWriterLock(config);
   const policy:RuntimeRecoveryPolicy={launchTimeoutMs:options.recovery?.launchTimeoutMs??LAUNCH_TIMEOUT_MS,workerIdleTimeoutMs:options.recovery?.workerIdleTimeoutMs??WORKER_IDLE_TIMEOUT_MS,reservationMs:options.recovery?.reservationMs??RESERVATION_MS,pendingReportMaxMs:options.recovery?.pendingReportMaxMs??PENDING_REPORT_MAX_MS};
-  reconcileAndCompact(config,now(),policy);
+  const probeTimes=new Map<string,number>();
+  reconcileAndCompact(config,now(),policy,runner,probeTimes);
   let requestQueue: Promise<void> = Promise.resolve();
   const server = createServer((req, res) => {
     requestQueue = requestQueue.then(async () => {
     try {
-      const current=now(); reconcileAndCompact(config,current,policy);
+      const current=now(); reconcileAndCompact(config,current,policy,runner,probeTimes);
       const general = capMatches(auth(req), token); const url = new URL(req.url ?? "/", "http://runtime");
       if (req.method === "GET" && url.pathname === "/health") { if (!general) return json(res, 401, { error: "unauthorized" }); return json(res, 200, { ok: true }); }
       if (req.method === "POST" && url.pathname === "/v1/router-capabilities") {
@@ -161,7 +171,9 @@ export function createRuntimeServer(config: RuntimeConfig, token: string, runner
         if (!general) return json(res, 401, { error: "unauthorized" }); const owner = ownerInput(await body(req)); const all = records<ParentReport>(pathFor(config, "parent-reports.jsonl")); const report = all.find(r => r.routerId === owner.routerId && r.chatId === owner.chatId && !r.deliveredAt && (!r.leaseUntil || Date.parse(r.leaseUntil) <= current.getTime())); if (!report) return json(res, 200, {}); report.leaseId = randomBytes(16).toString("base64url"); report.leaseUntil = new Date(current.getTime() + LEASE_MS).toISOString(); replace(pathFor(config, "parent-reports.jsonl"), all); return json(res, 200, { report });
       }
       const delivery = url.pathname.match(/^\/v1\/reports\/([^/]+)\/(ack|release)$/); if (req.method === "POST" && delivery) {
-        if (!general) return json(res, 401, { error: "unauthorized" }); const input = await body(req); const owner = ownerInput(input); const all = records<ParentReport>(pathFor(config, "parent-reports.jsonl")); const report = all.find(r => r.id === decodeURIComponent(delivery[1]) && r.routerId === owner.routerId && r.chatId === owner.chatId); if (!report || !capMatches(input.leaseId ?? "", report.leaseId ?? "")) return json(res, 409, { error: "invalid report lease" }); if (delivery[2] === "ack") report.deliveredAt = now().toISOString(); delete report.leaseId; delete report.leaseUntil; replace(pathFor(config, "parent-reports.jsonl"), all); reconcileAndCompact(config,current,policy); return json(res, 200, { report });
+        if (!general) return json(res, 401, { error: "unauthorized" }); const input = await body(req); const owner = ownerInput(input); const all = records<ParentReport>(pathFor(config, "parent-reports.jsonl")); const report = all.find(r => r.id === decodeURIComponent(delivery[1]) && r.routerId === owner.routerId && r.chatId === owner.chatId); if (!report || !capMatches(input.leaseId ?? "", report.leaseId ?? "")) return json(res, 409, { error: "invalid report lease" }); if (delivery[2] === "ack") report.deliveredAt = now().toISOString(); delete report.leaseId; delete report.leaseUntil; replace(pathFor(config, "parent-reports.jsonl"), all);
+        if(delivery[2]==="ack"&&(report.kind==="completed"||report.kind==="failed")){const task=records<TaskRecord>(pathFor(config,"parent-tasks.jsonl")).find(t=>t.runId===report.runId);const pendingContinuation=all.some(r=>r.runId===report.runId&&r.kind==="needs_user"&&r.continuationId&&!r.continuedAt);const run=loadRuns(config).find(r=>r.id===report.runId);if(task&&(task.status==="completed"||task.status==="failed")&&!pendingContinuation&&run?.backend==="herdr")closeHerdrWorker(config,run,runner);}
+        reconcileAndCompact(config,current,policy,runner,probeTimes); return json(res, 200, { report });
       }
       if (req.method === "POST" && url.pathname === "/v1/runs") { if (!general) return json(res, 401, { error: "unauthorized" }); const input = await body(req) as LaunchRequest; if (typeof input?.agent !== "string" || typeof input?.repo !== "string" || typeof input?.prompt !== "string" || (input.name !== undefined && typeof input.name !== "string") || (input.backend !== undefined && input.backend !== "tmux" && input.backend !== "herdr") || (input.workspaceId !== undefined && typeof input.workspaceId !== "string") || (input.lane !== undefined && input.lane !== "human_copilot" && input.lane !== "full_ai") || input.environment !== undefined || input.extension !== undefined) throw new Error("invalid launch request"); const id = `run_${Date.now().toString(36)}_${randomBytes(5).toString("hex")}`; const backend = input.backend ?? config.defaultBackend ?? "tmux"; const run = backend === "herdr" ? launchInHerdr(config, input, id, runner) : launchInTmux(config, input, id, runner); append(pathFor(config, "runs.jsonl"), run); return json(res, 201, run); }
       if (req.method === "GET" && url.pathname === "/v1/agents") { if (!general) return json(res, 401, { error: "unauthorized" }); return json(res, 200, { agents: Object.entries(config.agents).map(([name,a]) => ({ name, command: a.command[0], prompt_mode: a.promptMode ?? "arg" })) }); }

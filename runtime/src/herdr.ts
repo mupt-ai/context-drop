@@ -29,6 +29,23 @@ function parseWorkspace(output: string | undefined): { workspace?: string; tab: 
   return { workspace, tab, pane };
 }
 
+// undefined means Herdr itself is unavailable, so callers must fail safe and
+// preserve the task rather than treating every pane as gone.
+export function paneAlive(config: RuntimeConfig, run: RunRecord, runner: CommandRunner = systemRunner): boolean | undefined {
+  const herdr = config.herdrPath || "herdr";
+  if (run.backend !== "herdr" || !run.herdrSession || !run.herdrPane) return undefined;
+  const pane = runner.run(herdr, ["--session", run.herdrSession, "pane", "get", run.herdrPane]);
+  if (pane.status === 0) return true;
+  const reachable = runner.run(herdr, ["--session", run.herdrSession, "pane", "list"]);
+  return reachable.status === 0 ? false : undefined;
+}
+
+export function closeHerdrWorker(config: RuntimeConfig, run: RunRecord, runner: CommandRunner = systemRunner): void {
+  if (paneAlive(config, run, runner) !== true) return;
+  const herdr = config.herdrPath || "herdr";
+  runner.run(herdr, ["--session", run.herdrSession!, "pane", "close", run.herdrPane!]);
+}
+
 export function continueInHerdr(config: RuntimeConfig, run: RunRecord, message: string, runner: CommandRunner = systemRunner): void {
   const herdr = config.herdrPath || "herdr";
   if (run.backend !== "herdr" || !run.herdrSession || !run.herdrPane) throw new Error("task has no persisted Herdr pane");
