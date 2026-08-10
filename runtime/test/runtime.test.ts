@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildAgentArgv, type CommandRunner } from "../src/launch.js";
 import { closeHerdrWorker, launchInHerdr } from "../src/herdr.js";
+import { continueInTmux } from "../src/tmux.js";
 import { createRuntimeServer } from "../src/server.js";
 import type { RuntimeConfig } from "../src/types.js";
 
@@ -37,6 +38,11 @@ async function delegate(base: string, capability: string, task: string, lane: "h
 }
 
 test("buildAgentArgv preserves argv boundaries", () => assert.deepEqual(buildAgentArgv({ command: ["agent", "--file", "{prompt_file}"] }, "/tmp/a b;rm"), ["agent", "--file", "/tmp/a b;rm"]));
+
+test("tmux follow-up verifies the window and preserves message boundaries", () => {
+  const calls:string[][]=[];const c=config();continueInTmux(c,{id:"run",name:"worker",agent:"mock",repo:c.stateDir,backend:"tmux",tmuxSession:"context-drop",tmuxWindow:"worker",status:"running",createdAt:new Date().toISOString()},"status; do not execute this as shell",{run(_command,args){calls.push(args);if(args[0]==="list-windows")return{status:0,stdout:"other\nworker\n"};return{status:0};}});
+  assert.deepEqual(calls[1].slice(0,4),["send-keys","-t","context-drop:worker","-l"]);assert.match(calls[1][4],/status; do not execute this as shell/);assert.deepEqual(calls[2],["send-keys","-t","context-drop:worker","Enter"]);
+});
 
 test("human copilot opens a privacy-safe no-focus tab in the uniquely focused workspace", () => {
   const c=config(),calls:string[][]=[];const recording:CommandRunner={run(_command,args){calls.push(args);if(args[2]==="workspace"&&args[3]==="list")return{status:0,stdout:JSON.stringify({result:{workspaces:[{workspace_id:"opaque-current",label:"User Project",focused:true},{workspace_id:"other",label:"Other",focused:false}]}})};if(args[2]==="tab"&&args[3]==="create")return{status:0,stdout:JSON.stringify({result:{tab:{tab_id:"opaque-current:t9"},root_pane:{pane_id:"opaque-current:p9"}}})};return{status:0};}};
@@ -75,6 +81,18 @@ test("ordinary delegation defaults to full-AI while explicit copilot uses the fo
   const server=createRuntimeServer(c,"secret",recording);await new Promise<void>(r=>server.listen(0,"127.0.0.1",r));const a=server.address();assert.ok(a&&typeof a==="object");const base=`http://127.0.0.1:${a.port}`,headers={authorization:"Bearer secret","content-type":"application/json"};
   try{const cap=await issue(base,headers);const implicitResponse=await fetch(base+"/v1/delegate",{method:"POST",headers:{authorization:`Bearer ${cap}`,"content-type":"application/json"},body:JSON.stringify({task:"ordinary research"})});assert.equal(implicitResponse.status,201);const implicit=await implicitResponse.json() as any;const copilot=await delegate(base,cap,"let me watch this","human_copilot");assert.equal(implicit.run.lane,"full_ai");assert.equal(implicit.run.herdrSession,"default");assert.equal(implicit.run.herdrWorkspace,"managed");assert.equal(copilot.run.lane,"human_copilot");assert.equal(copilot.run.herdrSession,"default");assert.equal(copilot.run.herdrWorkspace,"human");assert.ok(calls.every(args=>args[1]==="default"));const tasks=readFileSync(join(c.stateDir,"parent-tasks.jsonl"),"utf8").trim().split("\n").map(line=>JSON.parse(line));assert.deepEqual(tasks.map(t=>t.lane),["full_ai","human_copilot"]);const invalid=await fetch(base+"/v1/delegate",{method:"POST",headers:{authorization:`Bearer ${cap}`,"content-type":"application/json"},body:JSON.stringify({task:"bad",lane:"spoofed in task"})});assert.equal(invalid.status,400);}
   finally{await close(server);}
+});
+
+test("task controls backfill legacy records and enforce owner and sensitive boundaries", async () => {
+  const {c,server,base,headers}=await fixture();
+  try{
+    const capA=await issue(base,headers,"router-a","chat-a"),capB=await issue(base,headers,"router-b","chat-b");const launched=await delegate(base,capA,"research status","full_ai");const taskPath=join(c.stateDir,"parent-tasks.jsonl");const saved=readFileSync(taskPath,"utf8").trim().split("\n").map(line=>JSON.parse(line));delete saved[0].controlRef;delete saved[0].label;writeFileSync(taskPath,saved.map(value=>JSON.stringify(value)).join("\n")+"\n");
+    const listA=await fetch(base+"/v1/tasks",{headers:{authorization:`Bearer ${capA}`}});assert.equal(listA.status,200);const bodyA=await listA.json() as any;assert.equal(bodyA.tasks.length,1);assert.equal(bodyA.tasks[0].label,"Older delegated task");assert.ok(bodyA.tasks[0].taskRef);
+    const listB=await fetch(base+"/v1/tasks",{headers:{authorization:`Bearer ${capB}`}});assert.deepEqual((await listB.json() as any).tasks,[]);
+    const cross=await fetch(base+"/v1/tasks/bump",{method:"POST",headers:{authorization:`Bearer ${capB}`,"content-type":"application/json"},body:JSON.stringify({taskRef:bodyA.tasks[0].taskRef,message:"nudge"})});assert.equal(cross.status,404);
+    const guessed=await fetch(base+"/v1/tasks/bump",{method:"POST",headers:{authorization:`Bearer ${capA}`,"content-type":"application/json"},body:JSON.stringify({taskRef:"guess",message:"nudge"})});assert.equal(guessed.status,404);
+    const updated=readFileSync(taskPath,"utf8").trim().split("\n").map(line=>JSON.parse(line));updated[0].authorizationId="auth_sensitive";writeFileSync(taskPath,updated.map(value=>JSON.stringify(value)).join("\n")+"\n");const sensitive=await fetch(base+"/v1/tasks/bump",{method:"POST",headers:{authorization:`Bearer ${capA}`,"content-type":"application/json"},body:JSON.stringify({taskRef:bodyA.tasks[0].taskRef,message:"change the purchase"})});assert.equal(sensitive.status,400);assert.match(await sensitive.text(),/authorized sensitive workers cannot be bumped/);assert.equal(launched.run.backend,"herdr");
+  }finally{await close(server);}
 });
 
 test("full-AI creates one managed workspace then reuses it with new tabs", () => {

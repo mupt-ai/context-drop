@@ -4,6 +4,8 @@ import { StringEnum } from "@earendil-works/pi-ai";
 const endpoint = process.env.CONTEXT_DROP_DELEGATE_URL;
 const capability = process.env.CONTEXT_DROP_DELEGATE_CAPABILITY;
 const continueEndpoint = endpoint?.replace(/\/delegate$/, "/continue");
+const tasksEndpoint = endpoint?.replace(/\/delegate$/, "/tasks");
+const bumpEndpoint = endpoint?.replace(/\/delegate$/, "/tasks/bump");
 export const REPORT_SUMMARY_MARKER = "CONTEXT_DROP_INTERNAL_REPORT_SUMMARY_V1";
 
 export default function (pi) {
@@ -14,18 +16,50 @@ export default function (pi) {
     description: "Launch a Context Drop task worker. Default ordinary actionable work—including booking, research, status checks, coding, and autonomous execution—to full_ai. Use human_copilot only when the user explicitly asks to watch, join, or copilot the worker, or explicitly supplies an applicable workspace context. Preserve the user's explicit wording; explicit lane intent wins.",
     parameters: Type.Object({
       task: Type.String({ minLength: 1, maxLength: 16000 }),
+      label: Type.Optional(Type.String({ minLength: 1, maxLength: 120, description: "Short private task label suitable for resolving later status or bump requests." })),
       lane: StringEnum(["human_copilot", "full_ai"]),
     }),
-    async execute(_id, { task, lane = "full_ai" }, signal) {
+    async execute(_id, { task, label, lane = "full_ai" }, signal) {
       if (!endpoint || !capability) throw new Error("delegation is not configured");
       const response = await fetch(endpoint, {
         method: "POST", signal,
         headers: { authorization: `Bearer ${capability}`, "content-type": "application/json" },
-        body: JSON.stringify({ task, lane }),
+        body: JSON.stringify({ task, label, lane }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || `delegate failed (${response.status})`);
       return { content: [{ type: "text", text: `worker ${result.run.id} started in ${result.run.herdrSession || result.run.backend} as ${result.run.lane || lane} (${result.run.status})` }], details: result };
+    },
+  });
+
+  pi.registerTool({
+    name: "list_tasks",
+    label: "List active tasks",
+    description: "Get the authoritative current delegated-task list for this chat. Use for questions like what is running, what tasks are going on, worker status, or when resolving which task the user wants to bump. Never answer those questions from stale session memory.",
+    parameters: Type.Object({}),
+    async execute(_id, _input, signal) {
+      if (!tasksEndpoint || !capability) throw new Error("task status is not configured");
+      const response = await fetch(tasksEndpoint, { method: "GET", signal, headers: { authorization: `Bearer ${capability}` } });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `task status failed (${response.status})`);
+      return { content: [{ type: "text", text: JSON.stringify(result.tasks) }], details: result };
+    },
+  });
+
+  pi.registerTool({
+    name: "bump_task",
+    label: "Bump task",
+    description: "Send a nudge or follow-up to a currently active task. Use a taskRef returned by list_tasks. If the user's target is ambiguous, list tasks and ask which one; never guess or launch a duplicate.",
+    parameters: Type.Object({
+      taskRef: Type.String({ minLength: 1, maxLength: 128 }),
+      message: Type.String({ minLength: 1, maxLength: 16000 }),
+    }),
+    async execute(_id, { taskRef, message }, signal) {
+      if (!bumpEndpoint || !capability) throw new Error("task bumping is not configured");
+      const response = await fetch(bumpEndpoint, { method: "POST", signal, headers: { authorization: `Bearer ${capability}`, "content-type": "application/json" }, body: JSON.stringify({ taskRef, message }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `task bump failed (${response.status})`);
+      return { content: [{ type: "text", text: `bumped ${result.task.label}` }], details: result };
     },
   });
 
@@ -53,7 +87,7 @@ export default function (pi) {
   pi.on("before_agent_start", (event) => {
     summaryTurn = event.prompt.startsWith(REPORT_SUMMARY_MARKER + "\n");
     if (!summaryTurn) {
-      pi.setActiveTools(["delegate", "continue_task"]);
+      pi.setActiveTools(["delegate", "list_tasks", "bump_task", "continue_task"]);
       return;
     }
     pi.setActiveTools([]);
