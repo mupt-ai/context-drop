@@ -15,7 +15,7 @@ export interface RuntimeConfig {
   tmuxSession: string;
   herdrPath?: string;
   herdrSession?: string;
-  autonomousHerdrSession?: string;
+  fullAIHerdrWorkspaceLabel?: string;
   agents: Record<string, AgentConfig>;
   delegateAgent?: string;
 }
