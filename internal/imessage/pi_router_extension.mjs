@@ -35,14 +35,14 @@ export default function (pi) {
   pi.registerTool({
     name: "list_tasks",
     label: "List active tasks",
-    description: "Get the authoritative current delegated-task list for this chat. Use for questions like what is running, what tasks are going on, worker status, or when resolving which task the user wants to bump. Never answer those questions from stale session memory.",
+    description: "Get authoritative live task status from the configured backend: live Herdr agents when using Herdr, or live tmux panes when using tmux. Also returns separately identified Context Drop delegated tasks that can be bumped. Use for every question about what is running, current work, agents, worker status, or which delegated task to bump. Never answer from session memory or persisted run records.",
     parameters: Type.Object({}),
     async execute(_id, _input, signal) {
       if (!tasksEndpoint || !capability) throw new Error("task status is not configured");
       const response = await fetch(tasksEndpoint, { method: "GET", signal, headers: { authorization: `Bearer ${capability}` } });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || `task status failed (${response.status})`);
-      return { content: [{ type: "text", text: JSON.stringify(result.tasks) }], details: result };
+      return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
     },
   });
 

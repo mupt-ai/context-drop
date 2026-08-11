@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { buildAgentArgv, type CommandRunner } from "../src/launch.js";
 import { closeHerdrWorker, launchInHerdr } from "../src/herdr.js";
 import { continueInTmux } from "../src/tmux.js";
+import { liveTaskStatus } from "../src/live_status.js";
 import { createRuntimeServer } from "../src/server.js";
 import type { RuntimeConfig } from "../src/types.js";
 
@@ -15,6 +16,7 @@ const config = (): RuntimeConfig => ({
   agents: { mock: { command: ["mock-agent", "--prompt-file", "{prompt_file}"] } }, delegateAgent: "mock",
 });
 const runner: CommandRunner = { run(command, args) {
+  if (command === "herdr" && args[2] === "agent" && args[3] === "list") return { status: 0, stdout: JSON.stringify({ result: { agents: [] } }) };
   if (command === "herdr" && args[2] === "workspace" && args[3] === "list") return { status: 0, stdout: JSON.stringify({ result: { workspaces: [{ workspace_id: "managed", label: "ContextDropManaged", focused: true }] } }) };
   if (command === "herdr" && args.includes("workspace")) return { status: 0, stdout: JSON.stringify({ result: { workspace: { workspace_id: "w" }, tab: { tab_id: "t" }, root_pane: { pane_id: "p" } } }) };
   if (command === "herdr" && args[2] === "tab" && args[3] === "create") return { status: 0, stdout: JSON.stringify({ result: { tab: { tab_id: "t" }, root_pane: { pane_id: "p" } } }) };
@@ -38,6 +40,16 @@ async function delegate(base: string, capability: string, task: string, lane: "h
 }
 
 test("buildAgentArgv preserves argv boundaries", () => assert.deepEqual(buildAgentArgv({ command: ["agent", "--file", "{prompt_file}"] }, "/tmp/a b;rm"), ["agent", "--file", "/tmp/a b;rm"]));
+
+test("live task status uses only the configured backend", () => {
+  const herdr=liveTaskStatus({...config(),defaultBackend:"herdr"},{run(command,args){assert.equal(command,"herdr");assert.deepEqual(args,["--session","default","agent","list"]);return{status:0,stdout:JSON.stringify({result:{agents:[{agent:"codex",agent_status:"blocked",foreground_cwd:"/repo",focused:false,terminal_title_stripped:"Fix parser"}]}})}}});assert.deepEqual(herdr,{backend:"herdr",tasks:[{label:"repo",agent:"codex",status:"blocked",focused:false}]});
+  const tmux=liveTaskStatus({...config(),defaultBackend:"tmux"},{run(command,args){assert.equal(command,"tmux");assert.equal(args[0],"list-panes");return{status:0,stdout:"worker\u001fpi\u001f/repo\u001f0\n"}}});assert.deepEqual(tmux,{backend:"tmux",tasks:[{label:"repo",agent:"pi",status:"running"}]});
+});
+
+test("live task status fails instead of falling back to stored state", () => {
+  assert.throws(()=>liveTaskStatus({...config(),defaultBackend:"herdr"},{run(){return{status:1,stderr:"offline"}}}),/live Herdr status is unavailable/);
+  assert.throws(()=>liveTaskStatus({...config(),defaultBackend:"tmux"},{run(){return{status:1,stderr:"no server"}}}),/live tmux status is unavailable/);
+});
 
 test("tmux follow-up verifies the window and preserves message boundaries", () => {
   const calls:string[][]=[];const c=config();continueInTmux(c,{id:"run",name:"worker",agent:"mock",repo:c.stateDir,backend:"tmux",tmuxSession:"context-drop",tmuxWindow:"worker",status:"running",createdAt:new Date().toISOString()},"status; do not execute this as shell",{run(_command,args){calls.push(args);if(args[0]==="list-windows")return{status:0,stdout:"other\nworker\n"};return{status:0};}});
@@ -87,11 +99,11 @@ test("task controls backfill legacy records and enforce owner and sensitive boun
   const {c,server,base,headers}=await fixture();
   try{
     const capA=await issue(base,headers,"router-a","chat-a"),capB=await issue(base,headers,"router-b","chat-b");const launched=await delegate(base,capA,"research status","full_ai");const taskPath=join(c.stateDir,"parent-tasks.jsonl");const saved=readFileSync(taskPath,"utf8").trim().split("\n").map(line=>JSON.parse(line));delete saved[0].controlRef;delete saved[0].label;writeFileSync(taskPath,saved.map(value=>JSON.stringify(value)).join("\n")+"\n");
-    const listA=await fetch(base+"/v1/tasks",{headers:{authorization:`Bearer ${capA}`}});assert.equal(listA.status,200);const bodyA=await listA.json() as any;assert.equal(bodyA.tasks.length,1);assert.equal(bodyA.tasks[0].label,"Older delegated task");assert.ok(bodyA.tasks[0].taskRef);
-    const listB=await fetch(base+"/v1/tasks",{headers:{authorization:`Bearer ${capB}`}});assert.deepEqual((await listB.json() as any).tasks,[]);
-    const cross=await fetch(base+"/v1/tasks/bump",{method:"POST",headers:{authorization:`Bearer ${capB}`,"content-type":"application/json"},body:JSON.stringify({taskRef:bodyA.tasks[0].taskRef,message:"nudge"})});assert.equal(cross.status,404);
+    const listA=await fetch(base+"/v1/tasks",{headers:{authorization:`Bearer ${capA}`}});assert.equal(listA.status,200);const bodyA=await listA.json() as any;assert.equal(bodyA.tasks.length,0);assert.equal(bodyA.delegatedTasks.length,1);assert.equal(bodyA.delegatedTasks[0].label,"Older delegated task");assert.ok(bodyA.delegatedTasks[0].taskRef);
+    const listB=await fetch(base+"/v1/tasks",{headers:{authorization:`Bearer ${capB}`}});assert.deepEqual((await listB.json() as any).delegatedTasks,[]);
+    const cross=await fetch(base+"/v1/tasks/bump",{method:"POST",headers:{authorization:`Bearer ${capB}`,"content-type":"application/json"},body:JSON.stringify({taskRef:bodyA.delegatedTasks[0].taskRef,message:"nudge"})});assert.equal(cross.status,404);
     const guessed=await fetch(base+"/v1/tasks/bump",{method:"POST",headers:{authorization:`Bearer ${capA}`,"content-type":"application/json"},body:JSON.stringify({taskRef:"guess",message:"nudge"})});assert.equal(guessed.status,404);
-    const updated=readFileSync(taskPath,"utf8").trim().split("\n").map(line=>JSON.parse(line));updated[0].authorizationId="auth_sensitive";writeFileSync(taskPath,updated.map(value=>JSON.stringify(value)).join("\n")+"\n");const sensitive=await fetch(base+"/v1/tasks/bump",{method:"POST",headers:{authorization:`Bearer ${capA}`,"content-type":"application/json"},body:JSON.stringify({taskRef:bodyA.tasks[0].taskRef,message:"change the purchase"})});assert.equal(sensitive.status,400);assert.match(await sensitive.text(),/authorized sensitive workers cannot be bumped/);assert.equal(launched.run.backend,"herdr");
+    const updated=readFileSync(taskPath,"utf8").trim().split("\n").map(line=>JSON.parse(line));updated[0].authorizationId="auth_sensitive";writeFileSync(taskPath,updated.map(value=>JSON.stringify(value)).join("\n")+"\n");const sensitive=await fetch(base+"/v1/tasks/bump",{method:"POST",headers:{authorization:`Bearer ${capA}`,"content-type":"application/json"},body:JSON.stringify({taskRef:bodyA.delegatedTasks[0].taskRef,message:"change the purchase"})});assert.equal(sensitive.status,400);assert.match(await sensitive.text(),/authorized sensitive workers cannot be bumped/);assert.equal(launched.run.backend,"herdr");
   }finally{await close(server);}
 });
 
