@@ -111,7 +111,7 @@ func TestUploadCommandJSONAndFlagBranches(t *testing.T) {
 		_, _ = fmt.Fprint(w, `{"id":"drop-json","url":"http://example.test/d/drop-json","expires_at":"2026-05-23T12:00:00Z","content_type":"text/custom","size":5}`)
 	}))
 	defer server.Close()
-	if err := config.SaveCLIConfig(config.CLIConfig{Endpoint: "https://wrong.example", ChainSessionToken: "session", DefaultTTL: time.Hour}); err != nil {
+	if err := config.SaveCLIConfig(config.CLIConfig{Endpoint: "https://wrong.example", UploadToken: "session", ChainSessionToken: "session", DefaultTTL: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	file := filepath.Join(t.TempDir(), "input.txt")
@@ -134,7 +134,7 @@ func TestRunUploadErrorBranches(t *testing.T) {
 		_, _ = fmt.Fprint(w, `{"error":"upload bad"}`)
 	}))
 	defer server.Close()
-	if err := config.SaveCLIConfig(config.CLIConfig{Endpoint: server.URL, ChainSessionToken: "session", DefaultTTL: time.Hour}); err != nil {
+	if err := config.SaveCLIConfig(config.CLIConfig{Endpoint: server.URL, UploadToken: "session", ChainSessionToken: "session", DefaultTTL: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	file := filepath.Join(t.TempDir(), "input.txt")
@@ -224,7 +224,7 @@ func TestListPullDoctorErrorBranches(t *testing.T) {
 		_, _ = fmt.Fprint(w, `{"error":"server bad"}`)
 	}))
 	defer errorServer.Close()
-	if err := config.SaveCLIConfig(config.CLIConfig{Endpoint: "https://wrong.example", ChainSessionToken: "session", DefaultTTL: time.Hour}); err != nil {
+	if err := config.SaveCLIConfig(config.CLIConfig{Endpoint: "https://wrong.example", UploadToken: "session", ChainSessionToken: "session", DefaultTTL: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := executeRoot(t, "list", "--endpoint", errorServer.URL); err == nil || !strings.Contains(err.Error(), "server bad") {
@@ -267,13 +267,13 @@ func TestListPullDoctorErrorBranches(t *testing.T) {
 		t.Fatal("pullDrops write error = nil, want error")
 	}
 
-	if err := config.SaveCLIConfig(config.CLIConfig{Endpoint: errorServer.URL, ChainSessionToken: "session", DefaultTTL: time.Hour}); err != nil {
+	if err := config.SaveCLIConfig(config.CLIConfig{Endpoint: errorServer.URL, UploadToken: "session", ChainSessionToken: "session", DefaultTTL: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := executeRoot(t, "doctor"); err == nil || !strings.Contains(err.Error(), "500") {
 		t.Fatalf("doctor status error = %v", err)
 	}
-	if err := config.SaveCLIConfig(config.CLIConfig{Endpoint: "http://[::1", ChainSessionToken: "session", DefaultTTL: time.Hour}); err != nil {
+	if err := config.SaveCLIConfig(config.CLIConfig{Endpoint: "http://[::1", UploadToken: "session", ChainSessionToken: "session", DefaultTTL: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := executeRoot(t, "doctor"); err == nil {
@@ -307,7 +307,7 @@ func TestListPullWatchAndConfigBranches(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	if err := config.SaveCLIConfig(config.CLIConfig{Endpoint: server.URL, ChainSessionToken: "session", DefaultTTL: time.Hour}); err != nil {
+	if err := config.SaveCLIConfig(config.CLIConfig{Endpoint: server.URL, UploadToken: "session", ChainSessionToken: "session", DefaultTTL: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 

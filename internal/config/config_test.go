@@ -43,6 +43,7 @@ func TestLoadCLIConfigFileAndEnvOverrides(t *testing.T) {
 		``,
 		`# comment`,
 		`endpoint = "https://file.example"`,
+		`upload_token = "upload-file"`,
 		`chain_id = "chain-file"`,
 		`machine_id = "mach-file"`,
 		`machine_name = "file-machine"`,
@@ -55,6 +56,7 @@ func TestLoadCLIConfigFileAndEnvOverrides(t *testing.T) {
 	}
 
 	t.Setenv("CONTEXT_DROP_ENDPOINT", "https://env.example")
+	t.Setenv("CONTEXT_DROP_UPLOAD_TOKEN", "upload-env")
 	t.Setenv("CONTEXT_DROP_CHAIN_ID", "chain-env")
 	t.Setenv("CONTEXT_DROP_MACHINE_ID", "mach-env")
 	t.Setenv("CONTEXT_DROP_MACHINE_NAME", "env-machine")
@@ -65,7 +67,7 @@ func TestLoadCLIConfigFileAndEnvOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Endpoint != "https://env.example" || cfg.ChainID != "chain-env" || cfg.MachineID != "mach-env" || cfg.MachineName != "env-machine" || cfg.ChainSessionToken != "session-env" || cfg.DefaultTTL != 30*time.Minute || !cfg.Clipboard {
+	if cfg.Endpoint != "https://env.example" || cfg.UploadToken != "upload-env" || cfg.ChainID != "chain-env" || cfg.MachineID != "mach-env" || cfg.MachineName != "env-machine" || cfg.ChainSessionToken != "session-env" || cfg.DefaultTTL != 30*time.Minute || !cfg.Clipboard {
 		t.Fatalf("LoadCLIConfig() = %+v", cfg)
 	}
 }
@@ -121,6 +123,7 @@ func TestSaveCLIConfigPreservesRuntimeEnvOverrides(t *testing.T) {
 	path := useTempConfig(t)
 	persisted := CLIConfig{
 		Endpoint:          "https://file.example",
+		UploadToken:       "upload-file",
 		ChainID:           "chain-file",
 		MachineID:         "mach-file",
 		MachineName:       "file-machine",
@@ -133,6 +136,7 @@ func TestSaveCLIConfigPreservesRuntimeEnvOverrides(t *testing.T) {
 	}
 
 	t.Setenv("CONTEXT_DROP_ENDPOINT", "https://env.example")
+	t.Setenv("CONTEXT_DROP_UPLOAD_TOKEN", "upload-env")
 	t.Setenv("CONTEXT_DROP_CHAIN_SESSION_TOKEN", "session-env")
 	runtimeCfg, err := LoadCLIConfig()
 	if err != nil {
@@ -147,7 +151,7 @@ func TestSaveCLIConfigPreservesRuntimeEnvOverrides(t *testing.T) {
 	if err := loadCLIConfigFile(path, &loaded); err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Endpoint != persisted.Endpoint || loaded.ChainSessionToken != persisted.ChainSessionToken || loaded.MachineName != "updated" {
+	if loaded.Endpoint != persisted.Endpoint || loaded.UploadToken != persisted.UploadToken || loaded.ChainSessionToken != persisted.ChainSessionToken || loaded.MachineName != "updated" {
 		t.Fatalf("persisted config = %+v", loaded)
 	}
 }
@@ -159,8 +163,8 @@ func TestLoadServerConfig(t *testing.T) {
 	t.Setenv("CONTEXT_DROP_DATA_DIR", ".data-test")
 	t.Setenv("CONTEXT_DROP_GCS_BUCKET", "bucket")
 	t.Setenv("CONTEXT_DROP_GCS_PREFIX", "/prefix/")
+	t.Setenv("CONTEXT_DROP_UPLOAD_TOKEN", "upload-secret")
 	t.Setenv("CONTEXT_DROP_DEFAULT_TTL", "2h")
-	t.Setenv("CONTEXT_DROP_JOIN_TOKEN_TTL", "5m")
 	t.Setenv("CONTEXT_DROP_MAX_TTL", "24h")
 	t.Setenv("CONTEXT_DROP_MAX_BYTES", "1234")
 
@@ -168,7 +172,7 @@ func TestLoadServerConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Addr != ":9999" || cfg.BaseURL != "https://drop.example.com" || cfg.Storage != "gcs" || cfg.DataDir != ".data-test" || cfg.GCSBucket != "bucket" || cfg.GCSPrefix != "prefix" || cfg.DefaultTTL != 2*time.Hour || cfg.JoinTokenTTL != 5*time.Minute || cfg.MaxTTL != 24*time.Hour || cfg.MaxBytes != 1234 {
+	if cfg.Addr != ":9999" || cfg.BaseURL != "https://drop.example.com" || cfg.Storage != "gcs" || cfg.DataDir != ".data-test" || cfg.GCSBucket != "bucket" || cfg.GCSPrefix != "prefix" || cfg.UploadToken != "upload-secret" || cfg.DefaultTTL != 2*time.Hour || cfg.MaxTTL != 24*time.Hour || cfg.MaxBytes != 1234 {
 		t.Fatalf("LoadServerConfig() = %+v", cfg)
 	}
 }
@@ -200,17 +204,20 @@ func TestPreserveAndEnvHelpers(t *testing.T) {
 	}
 }
 
+func TestLoadServerConfigRequiresUploadToken(t *testing.T) {
+	t.Setenv("CONTEXT_DROP_UPLOAD_TOKEN", "")
+	if _, err := LoadServerConfig(); err == nil || !strings.Contains(err.Error(), "CONTEXT_DROP_UPLOAD_TOKEN is required") {
+		t.Fatalf("LoadServerConfig() error = %v", err)
+	}
+}
+
 func TestLoadServerConfigDurationError(t *testing.T) {
+	t.Setenv("CONTEXT_DROP_UPLOAD_TOKEN", "upload-secret")
 	t.Setenv("CONTEXT_DROP_DEFAULT_TTL", "bad")
 	if _, err := LoadServerConfig(); err == nil || !strings.Contains(err.Error(), "CONTEXT_DROP_DEFAULT_TTL") {
 		t.Fatalf("LoadServerConfig() error = %v, want duration error", err)
 	}
 	t.Setenv("CONTEXT_DROP_DEFAULT_TTL", "1h")
-	t.Setenv("CONTEXT_DROP_JOIN_TOKEN_TTL", "bad")
-	if _, err := LoadServerConfig(); err == nil || !strings.Contains(err.Error(), "CONTEXT_DROP_JOIN_TOKEN_TTL") {
-		t.Fatalf("LoadServerConfig() join ttl error = %v", err)
-	}
-	t.Setenv("CONTEXT_DROP_JOIN_TOKEN_TTL", "1m")
 	t.Setenv("CONTEXT_DROP_MAX_TTL", "bad")
 	if _, err := LoadServerConfig(); err == nil || !strings.Contains(err.Error(), "CONTEXT_DROP_MAX_TTL") {
 		t.Fatalf("LoadServerConfig() max ttl error = %v", err)

@@ -7,13 +7,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
 	"contextdrop.dev/context-drop/internal/api"
 	"contextdrop.dev/context-drop/internal/config"
-	"contextdrop.dev/context-drop/internal/pairing"
 	"contextdrop.dev/context-drop/internal/storage"
 )
 
@@ -42,8 +40,8 @@ Configuration is provided with environment variables:
   CONTEXT_DROP_DATA_DIR              data directory for local storage (default .data)
   CONTEXT_DROP_GCS_BUCKET            GCS bucket for gcs storage
   CONTEXT_DROP_GCS_PREFIX            optional GCS object prefix
+  CONTEXT_DROP_UPLOAD_TOKEN          required bearer token for uploads
   CONTEXT_DROP_DEFAULT_TTL           default drop TTL (default 24h)
-  CONTEXT_DROP_JOIN_TOKEN_TTL        default join token TTL (default 10m, max 15m)
   CONTEXT_DROP_MAX_TTL               maximum drop TTL (default 168h)
   CONTEXT_DROP_MAX_BYTES             maximum upload size in bytes (default 26214400)
 `
@@ -65,12 +63,7 @@ func runWithConfig(ctx context.Context, cfg config.ServerConfig) error {
 	if err != nil {
 		return err
 	}
-	pairingStore, err := newPairingStore(ctx, cfg)
-	if err != nil {
-		return err
-	}
-
-	httpServer := newHTTPServer(cfg, store, pairingStore)
+	httpServer := newHTTPServer(cfg, store)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -78,15 +71,14 @@ func runWithConfig(ctx context.Context, cfg config.ServerConfig) error {
 	return serve(ctx, httpServer, cfg)
 }
 
-func newHTTPServer(cfg config.ServerConfig, store storage.Store, pairingStore pairing.Store) *http.Server {
+func newHTTPServer(cfg config.ServerConfig, store storage.Store) *http.Server {
 	apiServer := api.NewServer(api.Options{
-		BaseURL:      cfg.BaseURL,
-		Store:        store,
-		PairingStore: pairingStore,
-		JoinTokenTTL: cfg.JoinTokenTTL,
-		DefaultTTL:   cfg.DefaultTTL,
-		MaxTTL:       cfg.MaxTTL,
-		MaxBytes:     cfg.MaxBytes,
+		BaseURL:     cfg.BaseURL,
+		Store:       store,
+		UploadToken: cfg.UploadToken,
+		DefaultTTL:  cfg.DefaultTTL,
+		MaxTTL:      cfg.MaxTTL,
+		MaxBytes:    cfg.MaxBytes,
 	})
 
 	return &http.Server{
@@ -126,17 +118,6 @@ func newStore(ctx context.Context, cfg config.ServerConfig) (storage.Store, erro
 		return storage.NewLocal(cfg.DataDir), nil
 	case "gcs":
 		return storage.NewGCS(ctx, cfg.GCSBucket, cfg.GCSPrefix)
-	default:
-		return nil, fmt.Errorf("unknown CONTEXT_DROP_STORAGE %q", cfg.Storage)
-	}
-}
-
-func newPairingStore(ctx context.Context, cfg config.ServerConfig) (pairing.Store, error) {
-	switch cfg.Storage {
-	case "", "local":
-		return pairing.NewLocal(filepath.Join(cfg.DataDir, "pairing.json")), nil
-	case "gcs":
-		return pairing.NewGCS(ctx, cfg.GCSBucket, cfg.GCSPrefix)
 	default:
 		return nil, fmt.Errorf("unknown CONTEXT_DROP_STORAGE %q", cfg.Storage)
 	}

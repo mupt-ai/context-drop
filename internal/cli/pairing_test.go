@@ -77,7 +77,7 @@ func TestPairingCommandEndpointErrorBranches(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	if err := config.SaveCLIConfig(config.CLIConfig{Endpoint: "https://wrong.example", ChainSessionToken: "session", DefaultTTL: time.Hour}); err != nil {
+	if err := config.SaveCLIConfig(config.CLIConfig{Endpoint: "https://wrong.example", UploadToken: "session", ChainSessionToken: "session", DefaultTTL: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	cases := []struct {
@@ -119,7 +119,7 @@ func TestMachineAndMessageJSONAndSendErrors(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	if err := config.SaveCLIConfig(config.CLIConfig{Endpoint: server.URL, ChainSessionToken: "session", DefaultTTL: time.Hour}); err != nil {
+	if err := config.SaveCLIConfig(config.CLIConfig{Endpoint: server.URL, UploadToken: "session", ChainSessionToken: "session", DefaultTTL: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	stdout, _, err := executeRoot(t, "machines", "list", "--json")
@@ -175,13 +175,13 @@ func TestSendBodyUploadsSingleFile(t *testing.T) {
 	cmd.SetContext(context.Background())
 	cmd.SetArgs([]string{"send"})
 	file := filepath.Join(t.TempDir(), "note.txt")
-	if err := config.SaveCLIConfig(config.CLIConfig{Endpoint: server.URL, ChainSessionToken: "session", DefaultTTL: time.Hour}); err != nil {
+	if err := config.SaveCLIConfig(config.CLIConfig{Endpoint: server.URL, UploadToken: "session", ChainSessionToken: "session", DefaultTTL: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(file, []byte("hello"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	body, uploaded, err := sendBody(cmd, config.CLIConfig{Endpoint: server.URL, ChainSessionToken: "session", DefaultTTL: time.Hour}, []string{file})
+	body, uploaded, err := sendBody(cmd, config.CLIConfig{Endpoint: server.URL, UploadToken: "session", ChainSessionToken: "session", DefaultTTL: time.Hour}, []string{file})
 	if err != nil {
 		t.Fatal(err)
 	}

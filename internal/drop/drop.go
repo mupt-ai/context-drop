@@ -25,7 +25,6 @@ type Metadata struct {
 	SHA256      string    `json:"sha256,omitempty"`
 	CreatedAt   time.Time `json:"created_at"`
 	ExpiresAt   time.Time `json:"expires_at"`
-	ChainID     string    `json:"chain_id,omitempty"`
 }
 
 // NewID returns a URL-safe random ID with 144 bits of entropy.

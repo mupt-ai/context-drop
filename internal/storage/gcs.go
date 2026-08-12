@@ -7,13 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sort"
 	"strings"
 
 	"cloud.google.com/go/storage"
 	"contextdrop.dev/context-drop/internal/drop"
 	"google.golang.org/api/googleapi"
-	"google.golang.org/api/iterator"
 )
 
 type GCSStore struct {
@@ -44,7 +42,6 @@ func (s *GCSStore) Put(ctx context.Context, meta drop.Metadata, body io.Reader) 
 	blobWriter.Metadata = map[string]string{
 		"filename":   meta.Filename,
 		"expires_at": meta.ExpiresAt.UTC().Format(timeFormatRFC3339Nano),
-		"chain_id":   meta.ChainID,
 	}
 	if _, err := io.Copy(blobWriter, body); err != nil {
 		_ = blobWriter.Close()
@@ -100,57 +97,6 @@ func (s *GCSStore) GetBlob(ctx context.Context, meta drop.Metadata) (io.ReadClos
 	return r, nil
 }
 
-func (s *GCSStore) List(ctx context.Context, chainID string) ([]drop.Metadata, error) {
-	query := &storage.Query{Prefix: s.objectName("", "")}
-	it := s.client.Bucket(s.bucket).Objects(ctx, query)
-
-	var out []drop.Metadata
-	for {
-		attrs, err := it.Next()
-		if errors.Is(err, iterator.Done) {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-		if !strings.HasSuffix(attrs.Name, "/"+drop.MetaName) {
-			continue
-		}
-		id := idFromMetaObject(attrs.Name)
-		if !drop.ValidID(id) {
-			continue
-		}
-		meta, err := s.GetMeta(ctx, id)
-		if err != nil {
-			if errors.Is(err, ErrNotFound) {
-				continue
-			}
-			return nil, err
-		}
-		if meta.ChainID == chainID {
-			out = append(out, meta)
-		}
-	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].CreatedAt.After(out[j].CreatedAt)
-	})
-	return out, nil
-}
-
-func (s *GCSStore) Delete(ctx context.Context, id string) error {
-	if !drop.ValidID(id) {
-		return fmt.Errorf("invalid drop id")
-	}
-	bucket := s.client.Bucket(s.bucket)
-	for _, name := range []string{drop.BlobName, drop.MetaName} {
-		err := bucket.Object(s.objectName(id, name)).Delete(ctx)
-		if err != nil && !isGCSNotFound(err) {
-			return err
-		}
-	}
-	return nil
-}
-
 func (s *GCSStore) objectName(id, name string) string {
 	path := "drops/"
 	if id != "" {
@@ -161,14 +107,6 @@ func (s *GCSStore) objectName(id, name string) string {
 		return path
 	}
 	return s.prefix + "/" + path
-}
-
-func idFromMetaObject(name string) string {
-	parts := strings.Split(strings.Trim(name, "/"), "/")
-	if len(parts) < 3 || parts[len(parts)-1] != drop.MetaName {
-		return ""
-	}
-	return parts[len(parts)-2]
 }
 
 func isGCSNotFound(err error) bool {

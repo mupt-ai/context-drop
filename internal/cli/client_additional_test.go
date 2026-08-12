@@ -12,13 +12,13 @@ import (
 )
 
 func TestUploadValidationAndRequest(t *testing.T) {
-	if _, err := Upload(context.Background(), UploadRequest{ChainSessionToken: "session", Data: []byte("x")}); err == nil || !strings.Contains(err.Error(), "endpoint") {
+	if _, err := Upload(context.Background(), UploadRequest{UploadToken: "token", Data: []byte("x")}); err == nil || !strings.Contains(err.Error(), "endpoint") {
 		t.Fatalf("Upload(no endpoint) error = %v, want endpoint", err)
 	}
-	if _, err := Upload(context.Background(), UploadRequest{Endpoint: "https://example.test", Data: []byte("x")}); err == nil || !strings.Contains(err.Error(), "not initialized") {
-		t.Fatalf("Upload(no session) error = %v, want init error", err)
+	if _, err := Upload(context.Background(), UploadRequest{Endpoint: "https://example.test", Data: []byte("x")}); err == nil || !strings.Contains(err.Error(), "upload token is required") {
+		t.Fatalf("Upload(no token) error = %v, want token error", err)
 	}
-	if _, err := Upload(context.Background(), UploadRequest{Endpoint: "https://example.test", ChainSessionToken: "session"}); err == nil || !strings.Contains(err.Error(), "empty") {
+	if _, err := Upload(context.Background(), UploadRequest{Endpoint: "https://example.test", UploadToken: "token"}); err == nil || !strings.Contains(err.Error(), "empty") {
 		t.Fatalf("Upload(empty) error = %v, want empty", err)
 	}
 
@@ -26,7 +26,7 @@ func TestUploadValidationAndRequest(t *testing.T) {
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/drops" {
 			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
 		}
-		if got := r.Header.Get("Authorization"); got != "Bearer session" {
+		if got := r.Header.Get("Authorization"); got != "Bearer token" {
 			t.Fatalf("Authorization = %q", got)
 		}
 		if got := r.Header.Get("X-Filename"); got != "hello.txt" {
@@ -41,12 +41,12 @@ func TestUploadValidationAndRequest(t *testing.T) {
 	defer server.Close()
 
 	resp, err := Upload(context.Background(), UploadRequest{
-		Endpoint:          server.URL,
-		ChainSessionToken: "session",
-		Filename:          "hello.txt",
-		ContentType:       "text/plain",
-		TTL:               30 * time.Minute,
-		Data:              []byte("hello"),
+		Endpoint:    server.URL,
+		UploadToken: "token",
+		Filename:    "hello.txt",
+		ContentType: "text/plain",
+		TTL:         30 * time.Minute,
+		Data:        []byte("hello"),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -113,7 +113,7 @@ func TestCreateChainInviteJoinAndMessagingClients(t *testing.T) {
 
 func TestClientErrorBranches(t *testing.T) {
 	badEndpoint := "http://[::1"
-	if _, err := Upload(context.Background(), UploadRequest{Endpoint: badEndpoint, ChainSessionToken: "session", Data: []byte("x")}); err == nil {
+	if _, err := Upload(context.Background(), UploadRequest{Endpoint: badEndpoint, UploadToken: "token", Data: []byte("x")}); err == nil {
 		t.Fatal("Upload(bad endpoint) error = nil, want error")
 	}
 	if _, err := ListDrops(context.Background(), "https://example.test", ""); err == nil || !strings.Contains(err.Error(), "not initialized") {
@@ -143,7 +143,7 @@ func TestClientErrorBranches(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	if _, err := Upload(context.Background(), UploadRequest{Endpoint: server.URL, ChainSessionToken: "session", Data: []byte("x")}); err == nil || !strings.Contains(err.Error(), "bad drops") {
+	if _, err := Upload(context.Background(), UploadRequest{Endpoint: server.URL, UploadToken: "token", Data: []byte("x")}); err == nil || !strings.Contains(err.Error(), "bad drops") {
 		t.Fatalf("Upload(server error) = %v", err)
 	}
 	if _, err := ListDrops(context.Background(), server.URL, "session"); err == nil || !strings.Contains(err.Error(), "bad drops") {

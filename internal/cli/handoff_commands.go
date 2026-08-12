@@ -40,7 +40,7 @@ func newHandoffCreateCommand() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				uploaded, err := Upload(cmd.Context(), UploadRequest{Endpoint: cfg.Endpoint, ChainSessionToken: cfg.ChainSessionToken,
+				uploaded, err := Upload(cmd.Context(), UploadRequest{Endpoint: cfg.Endpoint, UploadToken: cfg.UploadToken,
 					Filename: drop.SafeFilename(filename), ContentType: contentType, TTL: ttlOrDefault(ttl, cfg.DefaultTTL), Data: data})
 				if err != nil {
 					return err

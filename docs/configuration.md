@@ -25,6 +25,7 @@ The CLI stores the following values in the config file:
 | Key | Purpose | Default |
 | --- | --- | --- |
 | `endpoint` | Service endpoint used by CLI commands. | `https://contextdrop.dev` |
+| `upload_token` | Bearer token used only for file uploads. | empty |
 | `chain_id` | Current machine chain ID. | empty |
 | `machine_id` | Current machine ID inside the chain. | empty |
 | `machine_name` | Human-friendly machine name. | empty |
@@ -32,7 +33,7 @@ The CLI stores the following values in the config file:
 | `default_ttl` | Default upload TTL. | `24h` |
 | `clipboard` | Whether clipboard integration is enabled by default. | `false` |
 
-The CLI writes the config file with user-only permissions. Keep it private because it can contain a chain session token.
+The CLI writes the config file with user-only permissions. Keep it private because it can contain upload and legacy chain session tokens.
 
 ## Set config values
 
@@ -64,6 +65,7 @@ Environment variables override values loaded from the config file for the curren
 | --- | --- |
 | `CONTEXT_DROP_CONFIG` | Path to the CLI config file. |
 | `CONTEXT_DROP_ENDPOINT` | Service endpoint. |
+| `CONTEXT_DROP_UPLOAD_TOKEN` | Runtime bearer token used by file uploads. |
 | `CONTEXT_DROP_CHAIN_ID` | Runtime chain ID. |
 | `CONTEXT_DROP_MACHINE_ID` | Runtime machine ID. |
 | `CONTEXT_DROP_MACHINE_NAME` | Runtime machine name. |
@@ -141,8 +143,8 @@ The `context-drop-server` binary is configured with environment variables. Run `
 | `CONTEXT_DROP_DATA_DIR` | Local only | `.data` | Directory for local storage. |
 | `CONTEXT_DROP_GCS_BUCKET` | GCS only | empty | Google Cloud Storage bucket name. |
 | `CONTEXT_DROP_GCS_PREFIX` | No | empty | Optional object prefix in the GCS bucket. |
+| `CONTEXT_DROP_UPLOAD_TOKEN` | Yes | empty | Bearer token accepted by the upload endpoint. |
 | `CONTEXT_DROP_DEFAULT_TTL` | No | `24h` | Default TTL when an upload does not specify one. |
-| `CONTEXT_DROP_JOIN_TOKEN_TTL` | No | `10m` | Default pairing join-token TTL. Must not exceed 15 minutes. |
 | `CONTEXT_DROP_MAX_TTL` | No | `168h` | Maximum accepted drop TTL. |
 | `CONTEXT_DROP_MAX_BYTES` | No | `26214400` | Maximum upload size in bytes. |
 

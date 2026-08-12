@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 
 	"contextdrop.dev/context-drop/internal/drop"
 )
@@ -102,55 +101,6 @@ func (s *LocalStore) GetBlob(ctx context.Context, meta drop.Metadata) (io.ReadCl
 		return nil, err
 	}
 	return f, nil
-}
-
-func (s *LocalStore) List(ctx context.Context, chainID string) ([]drop.Metadata, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	root := filepath.Join(s.root, "drops")
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, err
-	}
-
-	var out []drop.Metadata
-	for _, entry := range entries {
-		if !entry.IsDir() || !drop.ValidID(entry.Name()) {
-			continue
-		}
-		meta, err := s.GetMeta(ctx, entry.Name())
-		if err != nil {
-			if errors.Is(err, ErrNotFound) {
-				continue
-			}
-			return nil, err
-		}
-		if meta.ChainID == chainID {
-			out = append(out, meta)
-		}
-	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].CreatedAt.After(out[j].CreatedAt)
-	})
-	return out, nil
-}
-
-func (s *LocalStore) Delete(ctx context.Context, id string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	dir, err := s.dropDir(id)
-	if err != nil {
-		return err
-	}
-	if err := os.RemoveAll(dir); err != nil {
-		return err
-	}
-	return nil
 }
 
 func (s *LocalStore) dropDir(id string) (string, error) {

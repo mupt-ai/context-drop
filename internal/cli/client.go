@@ -15,12 +15,12 @@ import (
 )
 
 type UploadRequest struct {
-	Endpoint          string
-	ChainSessionToken string
-	Filename          string
-	ContentType       string
-	TTL               time.Duration
-	Data              []byte
+	Endpoint    string
+	UploadToken string
+	Filename    string
+	ContentType string
+	TTL         time.Duration
+	Data        []byte
 }
 
 type UploadResponse struct {
@@ -55,14 +55,14 @@ func Upload(ctx context.Context, req UploadRequest) (UploadResponse, error) {
 	if req.Endpoint == "" {
 		return UploadResponse{}, fmt.Errorf("endpoint is required")
 	}
-	if req.ChainSessionToken == "" {
-		return UploadResponse{}, errNotInitialized()
+	if req.UploadToken == "" {
+		return UploadResponse{}, fmt.Errorf("upload token is required; set CONTEXT_DROP_UPLOAD_TOKEN or upload_token in config")
 	}
 	if len(req.Data) == 0 {
 		return UploadResponse{}, fmt.Errorf("upload data is empty")
 	}
 
-	httpReq, err := newAPIRequest(ctx, http.MethodPost, req.Endpoint, "/v1/drops", req.ChainSessionToken, bytes.NewReader(req.Data))
+	httpReq, err := newAPIRequest(ctx, http.MethodPost, req.Endpoint, "/v1/drops", req.UploadToken, bytes.NewReader(req.Data))
 	if err != nil {
 		return UploadResponse{}, err
 	}

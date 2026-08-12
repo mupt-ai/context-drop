@@ -238,12 +238,12 @@ func sendBody(cmd *cobra.Command, cfg config.CLIConfig, args []string) (string, 
 		return "", UploadResponse{}, err
 	}
 	resp, err := Upload(cmd.Context(), UploadRequest{
-		Endpoint:          cfg.Endpoint,
-		ChainSessionToken: cfg.ChainSessionToken,
-		Filename:          drop.SafeFilename(filename),
-		ContentType:       contentType,
-		TTL:               cfg.DefaultTTL,
-		Data:              data,
+		Endpoint:    cfg.Endpoint,
+		UploadToken: cfg.UploadToken,
+		Filename:    drop.SafeFilename(filename),
+		ContentType: contentType,
+		TTL:         cfg.DefaultTTL,
+		Data:        data,
 	})
 	if err != nil {
 		return "", UploadResponse{}, err

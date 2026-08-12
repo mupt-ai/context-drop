@@ -57,7 +57,7 @@ func TestRootUploadListPullAndLinkPassthrough(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	if err := config.SaveCLIConfig(config.CLIConfig{Endpoint: server.URL, ChainSessionToken: "session", DefaultTTL: time.Hour}); err != nil {
+	if err := config.SaveCLIConfig(config.CLIConfig{Endpoint: server.URL, UploadToken: "session", ChainSessionToken: "session", DefaultTTL: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -106,15 +106,15 @@ func TestRootUploadListPullAndLinkPassthrough(t *testing.T) {
 	}
 }
 
-func TestRootUploadRequiresChain(t *testing.T) {
+func TestRootUploadRequiresToken(t *testing.T) {
 	useTempCLIConfig(t)
 	file := filepath.Join(t.TempDir(), "hello.txt")
 	if err := os.WriteFile(file, []byte("hello"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, _, err := executeRoot(t, file)
-	if err == nil || !strings.Contains(err.Error(), "not initialized") {
-		t.Fatalf("upload error = %v, want not initialized", err)
+	if err == nil || !strings.Contains(err.Error(), "upload token is required") {
+		t.Fatalf("upload error = %v, want upload token is required", err)
 	}
 }
 
@@ -179,7 +179,7 @@ func TestInitJoinTokenMachinesMessagesAndSendFileCommands(t *testing.T) {
 		t.Fatalf("join stdout=%q err=%v", stdout, err)
 	}
 
-	if err := config.SaveCLIConfig(config.CLIConfig{Endpoint: server.URL, ChainID: "chain-1", MachineID: "mach-1", MachineName: "laptop", ChainSessionToken: "session-1", DefaultTTL: time.Hour}); err != nil {
+	if err := config.SaveCLIConfig(config.CLIConfig{Endpoint: server.URL, ChainID: "chain-1", MachineID: "mach-1", MachineName: "laptop", UploadToken: "session-1", ChainSessionToken: "session-1", DefaultTTL: time.Hour}); err != nil {
 		t.Fatal(err)
 	}
 	stdout, _, err = executeRoot(t, "machines", "list")

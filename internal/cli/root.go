@@ -129,11 +129,11 @@ func runUpload(ctx context.Context, cmd *cobra.Command, opts *options, args []st
 	if err != nil {
 		return err
 	}
-	if cfg.ChainSessionToken == "" {
+	if cfg.UploadToken == "" {
 		if link, ok := linkOnlyInput(args); ok {
 			return writeLinkOnly(cmd, clipboardEnabled, opts.json, link)
 		}
-		return errNotInitialized()
+		return fmt.Errorf("upload token is required; set CONTEXT_DROP_UPLOAD_TOKEN or upload_token in config")
 	}
 
 	data, filename, contentType, err := inputData(args, clipboardEnabled)
@@ -148,12 +148,12 @@ func runUpload(ctx context.Context, cmd *cobra.Command, opts *options, args []st
 	}
 
 	resp, err := Upload(ctx, UploadRequest{
-		Endpoint:          cfg.Endpoint,
-		ChainSessionToken: cfg.ChainSessionToken,
-		Filename:          drop.SafeFilename(filename),
-		ContentType:       contentType,
-		TTL:               cfg.DefaultTTL,
-		Data:              data,
+		Endpoint:    cfg.Endpoint,
+		UploadToken: cfg.UploadToken,
+		Filename:    drop.SafeFilename(filename),
+		ContentType: contentType,
+		TTL:         cfg.DefaultTTL,
+		Data:        data,
 	})
 	if err != nil {
 		return err
@@ -512,13 +512,14 @@ func newConfigCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			cfg.UploadToken = redact(cfg.UploadToken)
 			cfg.ChainSessionToken = redact(cfg.ChainSessionToken)
 			return json.NewEncoder(cmd.OutOrStdout()).Encode(cfg)
 		},
 	})
 	cmd.AddCommand(&cobra.Command{
 		Use:   "set <key> <value>",
-		Short: "Set endpoint, default_ttl, clipboard, or machine_name",
+		Short: "Set endpoint, upload_token, default_ttl, clipboard, or machine_name",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.LoadCLIConfig()
@@ -528,6 +529,11 @@ func newConfigCommand() *cobra.Command {
 			switch args[0] {
 			case "endpoint":
 				cfg.Endpoint = args[1]
+			case "upload_token":
+				if strings.TrimSpace(args[1]) == "" {
+					return fmt.Errorf("upload_token must not be empty")
+				}
+				cfg.UploadToken = args[1]
 			case "default_ttl", "ttl":
 				d, err := time.ParseDuration(args[1])
 				if err != nil {
