@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -17,31 +18,27 @@ import (
 	"time"
 
 	"contextdrop.dev/context-drop/internal/drop"
-	"contextdrop.dev/context-drop/internal/pairing"
 	"contextdrop.dev/context-drop/internal/storage"
 )
 
 type Server struct {
-	baseURL      string
-	store        storage.Store
-	pairingStore pairing.Store
-	handoffStore pairing.HandoffStore
-	defaultTTL   time.Duration
-	joinTokenTTL time.Duration
-	maxTTL       time.Duration
-	maxBytes     int64
-	log          *slog.Logger
+	baseURL     string
+	store       storage.Store
+	uploadToken string
+	defaultTTL  time.Duration
+	maxTTL      time.Duration
+	maxBytes    int64
+	log         *slog.Logger
 }
 
 type Options struct {
-	BaseURL      string
-	Store        storage.Store
-	PairingStore pairing.Store
-	DefaultTTL   time.Duration
-	JoinTokenTTL time.Duration
-	MaxTTL       time.Duration
-	MaxBytes     int64
-	Logger       *slog.Logger
+	BaseURL     string
+	Store       storage.Store
+	UploadToken string
+	DefaultTTL  time.Duration
+	MaxTTL      time.Duration
+	MaxBytes    int64
+	Logger      *slog.Logger
 }
 
 func NewServer(opts Options) *Server {
@@ -49,62 +46,34 @@ func NewServer(opts Options) *Server {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	pairingStore := opts.PairingStore
-	if pairingStore == nil {
-		pairingStore = pairing.NewMemory()
-	}
-	joinTokenTTL := opts.JoinTokenTTL
-	if joinTokenTTL == 0 {
-		joinTokenTTL = pairing.DefaultInviteTTL
-	}
-	handoffStore, _ := pairingStore.(pairing.HandoffStore)
 	return &Server{
-		baseURL:      strings.TrimRight(opts.BaseURL, "/"),
-		store:        opts.Store,
-		pairingStore: pairingStore,
-		handoffStore: handoffStore,
-		defaultTTL:   opts.DefaultTTL,
-		joinTokenTTL: joinTokenTTL,
-		maxTTL:       opts.MaxTTL,
-		maxBytes:     opts.MaxBytes,
-		log:          logger,
+		baseURL:     strings.TrimRight(opts.BaseURL, "/"),
+		store:       opts.Store,
+		uploadToken: opts.UploadToken,
+		defaultTTL:  opts.DefaultTTL,
+		maxTTL:      opts.MaxTTL,
+		maxBytes:    opts.MaxBytes,
+		log:         logger,
 	}
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", handleRoot)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /health", s.handleHealth)
-	mux.HandleFunc("POST /v1/chains", s.handleCreateChain)
-	mux.HandleFunc("POST /v1/invites", s.handleCreateInvite)
-	mux.HandleFunc("POST /v1/join", s.handleJoin)
-	mux.HandleFunc("GET /v1/machines", s.handleListMachines)
-	mux.HandleFunc("POST /v1/messages", s.handleSendMessage)
-	mux.HandleFunc("GET /v1/messages", s.handleListMessages)
-	mux.HandleFunc("POST /v1/handoffs", s.handleCreateHandoff)
-	mux.HandleFunc("GET /v1/handoffs", s.handleListHandoffs)
-	mux.HandleFunc("GET /v1/handoffs/{id}", s.handleGetHandoff)
-	mux.HandleFunc("POST /v1/handoffs/{id}/state", s.handleHandoffState)
-	mux.HandleFunc("GET /v1/drops", s.handleListDrops)
 	mux.HandleFunc("POST /v1/drops", s.handleCreateDrop)
-	mux.HandleFunc("GET /v1/drops/", s.handleAuthenticatedDrop)
-	mux.HandleFunc("DELETE /v1/drops/", s.handleDeleteDrop)
-	mux.HandleFunc("GET /d/", s.handleGetDrop)
+	mux.HandleFunc("GET /d/{id}", s.handleGetDrop)
 	return secureHeaders(mux)
 }
 
-func handleRoot(w http.ResponseWriter, r *http.Request) {
-	http.Redirect(w, r, "https://github.com/mupt-ai/context-drop", http.StatusFound)
-}
-
-func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte("ok\n"))
 }
 
 func (s *Server) handleCreateDrop(w http.ResponseWriter, r *http.Request) {
-	principal, ok := s.requirePairingSession(w, r, time.Now().UTC())
-	if !ok {
+	if !s.authorizeUpload(r) {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="context-drop-upload"`)
+		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
@@ -164,11 +133,10 @@ func (s *Server) handleCreateDrop(w http.ResponseWriter, r *http.Request) {
 		SHA256:      hex.EncodeToString(digest[:]),
 		CreatedAt:   now,
 		ExpiresAt:   now.Add(ttl),
-		ChainID:     principal.ChainID,
 	}
 
 	if err := s.store.Put(r.Context(), meta, bytes.NewReader(data)); err != nil {
-		s.log.Error("store drop", "err", err, "chain_id", principal.ChainID)
+		s.log.Error("store drop", "err", err)
 		writeError(w, http.StatusInternalServerError, "failed to store drop")
 		return
 	}
@@ -180,57 +148,22 @@ func (s *Server) handleCreateDrop(w http.ResponseWriter, r *http.Request) {
 		ContentType: meta.ContentType,
 		Size:        meta.Size,
 	}
-	s.log.Info("created drop", "id", id, "chain_id", principal.ChainID, "size", meta.Size, "expires_at", meta.ExpiresAt)
+	s.log.Info("created drop", "id", id, "size", meta.Size, "expires_at", meta.ExpiresAt)
 	writeJSON(w, http.StatusCreated, resp)
 }
 
-func (s *Server) handleListDrops(w http.ResponseWriter, r *http.Request) {
-	principal, ok := s.requirePairingSession(w, r, time.Now().UTC())
-	if !ok {
-		return
+func (s *Server) authorizeUpload(r *http.Request) bool {
+	const prefix = "Bearer "
+	authorization := r.Header.Get("Authorization")
+	if !strings.HasPrefix(authorization, prefix) || s.uploadToken == "" {
+		return false
 	}
-
-	metas, err := s.store.List(r.Context(), principal.ChainID)
-	if err != nil {
-		s.log.Error("list drops", "err", err, "chain_id", principal.ChainID)
-		writeError(w, http.StatusInternalServerError, "failed to list drops")
-		return
-	}
-
-	now := time.Now().UTC()
-	out := make([]dropResponse, 0, len(metas))
-	for _, meta := range metas {
-		if now.After(meta.ExpiresAt) {
-			continue
-		}
-		out = append(out, s.dropResponse(meta))
-	}
-	writeJSON(w, http.StatusOK, listDropsResponse{Drops: out})
-}
-
-func (s *Server) handleAuthenticatedDrop(w http.ResponseWriter, r *http.Request) {
-	if !strings.HasSuffix(r.URL.Path, "/blob") {
-		writeError(w, http.StatusNotFound, "not found")
-		return
-	}
-
-	principal, ok := s.requirePairingSession(w, r, time.Now().UTC())
-	if !ok {
-		return
-	}
-	id := strings.TrimPrefix(r.URL.Path, "/v1/drops/")
-	id = strings.TrimSuffix(id, "/blob")
-	id = strings.Trim(id, "/")
-	meta, ok := s.loadOwnedDrop(w, r, id, principal.ChainID)
-	if !ok {
-		return
-	}
-	s.serveBlob(w, r, meta)
+	provided := strings.TrimSpace(strings.TrimPrefix(authorization, prefix))
+	return subtle.ConstantTimeCompare([]byte(provided), []byte(s.uploadToken)) == 1
 }
 
 func (s *Server) handleGetDrop(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/d/")
-	id, _, _ = strings.Cut(id, "/")
+	id := r.PathValue("id")
 	if !drop.ValidID(id) {
 		writeError(w, http.StatusNotFound, "not found")
 		return
@@ -250,51 +183,6 @@ func (s *Server) handleGetDrop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.serveBlob(w, r, meta)
-}
-
-func (s *Server) handleDeleteDrop(w http.ResponseWriter, r *http.Request) {
-	principal, ok := s.requirePairingSession(w, r, time.Now().UTC())
-	if !ok {
-		return
-	}
-	id := strings.TrimPrefix(r.URL.Path, "/v1/drops/")
-	id = strings.Trim(id, "/")
-	_, ok = s.loadOwnedDrop(w, r, id, principal.ChainID)
-	if !ok {
-		return
-	}
-	if err := s.store.Delete(r.Context(), id); err != nil {
-		s.log.Error("delete drop", "err", err, "id", id, "chain_id", principal.ChainID)
-		writeError(w, http.StatusInternalServerError, "failed to delete drop")
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (s *Server) loadOwnedDrop(w http.ResponseWriter, r *http.Request, id, chainID string) (drop.Metadata, bool) {
-	if !drop.ValidID(id) {
-		writeError(w, http.StatusNotFound, "not found")
-		return drop.Metadata{}, false
-	}
-	meta, err := s.store.GetMeta(r.Context(), id)
-	if err != nil {
-		if errors.Is(err, storage.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "not found")
-			return drop.Metadata{}, false
-		}
-		s.log.Error("get metadata", "err", err, "id", id)
-		writeError(w, http.StatusInternalServerError, "failed to load drop")
-		return drop.Metadata{}, false
-	}
-	if meta.ChainID != chainID {
-		writeError(w, http.StatusNotFound, "not found")
-		return drop.Metadata{}, false
-	}
-	if time.Now().UTC().After(meta.ExpiresAt) {
-		writeError(w, http.StatusGone, "drop expired")
-		return drop.Metadata{}, false
-	}
-	return meta, true
 }
 
 func (s *Server) serveBlob(w http.ResponseWriter, r *http.Request, meta drop.Metadata) {
@@ -334,18 +222,6 @@ func (s *Server) parseTTL(raw string) (time.Duration, error) {
 		return 0, fmt.Errorf("ttl exceeds max of %s", s.maxTTL)
 	}
 	return ttl, nil
-}
-
-func (s *Server) dropResponse(meta drop.Metadata) dropResponse {
-	return dropResponse{
-		ID:          meta.ID,
-		URL:         s.dropURL(meta.ID),
-		Filename:    meta.Filename,
-		ContentType: meta.ContentType,
-		Size:        meta.Size,
-		CreatedAt:   meta.CreatedAt,
-		ExpiresAt:   meta.ExpiresAt,
-	}
 }
 
 func (s *Server) dropURL(id string) string {
@@ -388,20 +264,6 @@ type createDropResponse struct {
 	Size        int64     `json:"size"`
 }
 
-type listDropsResponse struct {
-	Drops []dropResponse `json:"drops"`
-}
-
-type dropResponse struct {
-	ID          string    `json:"id"`
-	URL         string    `json:"url"`
-	Filename    string    `json:"filename"`
-	ContentType string    `json:"content_type"`
-	Size        int64     `json:"size"`
-	CreatedAt   time.Time `json:"created_at"`
-	ExpiresAt   time.Time `json:"expires_at"`
-}
-
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -410,22 +272,4 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
-}
-
-func decodeOptionalJSON(r *http.Request, v any) error {
-	if r.Body == nil || r.Body == http.NoBody {
-		return nil
-	}
-	defer r.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(r.Body, 64*1024+1))
-	if err != nil {
-		return err
-	}
-	if len(data) > 64*1024 {
-		return fmt.Errorf("request body too large")
-	}
-	if len(strings.TrimSpace(string(data))) == 0 {
-		return nil
-	}
-	return json.Unmarshal(data, v)
 }

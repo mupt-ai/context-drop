@@ -17,16 +17,18 @@ type AgentConfig struct {
 	PromptMode string   `json:"promptMode"`
 }
 type RuntimeConfig struct {
-	Host           string                 `json:"host"`
-	Port           int                    `json:"port"`
-	StateDir       string                 `json:"stateDir"`
-	TokenFile      string                 `json:"tokenFile"`
-	NodePath       string                 `json:"nodePath"`
-	DefaultBackend string                 `json:"defaultBackend"`
-	TmuxSession    string                 `json:"tmuxSession"`
-	HerdrPath      string                 `json:"herdrPath,omitempty"`
-	HerdrSession   string                 `json:"herdrSession"`
-	Agents         map[string]AgentConfig `json:"agents"`
+	Host                      string                 `json:"host"`
+	Port                      int                    `json:"port"`
+	StateDir                  string                 `json:"stateDir"`
+	TokenFile                 string                 `json:"tokenFile"`
+	NodePath                  string                 `json:"nodePath"`
+	DefaultBackend            string                 `json:"defaultBackend"`
+	TmuxSession               string                 `json:"tmuxSession"`
+	HerdrPath                 string                 `json:"herdrPath,omitempty"`
+	HerdrSession              string                 `json:"herdrSession"`
+	FullAIHerdrWorkspaceLabel string                 `json:"fullAIHerdrWorkspaceLabel"`
+	Agents                    map[string]AgentConfig `json:"agents"`
+	DelegateAgent             string                 `json:"delegateAgent,omitempty"`
 }
 
 func Initialize() ([]string, error) {
@@ -54,9 +56,19 @@ func Initialize() ([]string, error) {
 	if err := os.Chmod(tokenPath, 0o600); err != nil {
 		return nil, err
 	}
-	nodePath, err := ResolveExecutable("node")
-	if err != nil {
-		return nil, fmt.Errorf("Node 20+ is required for the local runtime: %w", err)
+	var existing RuntimeConfig
+	hasExisting := false
+	if current, readErr := os.ReadFile(configPath); readErr == nil && json.Unmarshal(current, &existing) == nil {
+		hasExisting = true
+	}
+	nodePath := ""
+	if hasExisting && validExecutable(existing.NodePath) == nil {
+		nodePath = existing.NodePath
+	} else {
+		nodePath, err = ResolveExecutable("node")
+		if err != nil {
+			return nil, fmt.Errorf("Node 20+ is required for the local runtime: %w", err)
+		}
 	}
 	agents := map[string]AgentConfig{}
 	detected := []string{}
@@ -89,40 +101,58 @@ func Initialize() ([]string, error) {
 	if value := os.Getenv("CONTEXT_DROP_HERDR_SESSION"); value != "" {
 		herdrSession = value
 	}
+	fullAIHerdrWorkspaceLabel := "ContextDropManaged"
+	if value := os.Getenv("CONTEXT_DROP_FULL_AI_HERDR_WORKSPACE_LABEL"); value != "" {
+		fullAIHerdrWorkspaceLabel = value
+	}
 	herdrPath, _ := ResolveExecutable("herdr")
-	cfg := RuntimeConfig{Host: "127.0.0.1", Port: port, StateDir: dir, TokenFile: tokenPath, NodePath: nodePath, DefaultBackend: backend, TmuxSession: "context-drop", HerdrPath: herdrPath, HerdrSession: herdrSession, Agents: agents}
-	if current, err := os.ReadFile(configPath); err == nil {
-		var existing RuntimeConfig
-		if json.Unmarshal(current, &existing) == nil {
-			if validExecutable(existing.NodePath) == nil {
-				cfg.NodePath = existing.NodePath
+	delegateAgent := ""
+	if _, ok := agents["pi"]; ok {
+		delegateAgent = "pi"
+	}
+	cfg := RuntimeConfig{Host: "127.0.0.1", Port: port, StateDir: dir, TokenFile: tokenPath, NodePath: nodePath, DefaultBackend: backend, TmuxSession: "context-drop", HerdrPath: herdrPath, HerdrSession: herdrSession, FullAIHerdrWorkspaceLabel: fullAIHerdrWorkspaceLabel, Agents: agents, DelegateAgent: delegateAgent}
+	if hasExisting {
+		if existing.Host == "127.0.0.1" || existing.Host == "::1" {
+			cfg.Host = existing.Host
+		}
+		if os.Getenv("CONTEXT_DROP_RUNTIME_PORT") == "" && existing.Port > 0 && existing.Port < 65536 {
+			cfg.Port = existing.Port
+		}
+		if os.Getenv("CONTEXT_DROP_BACKEND") == "" && (existing.DefaultBackend == "tmux" || existing.DefaultBackend == "herdr") {
+			cfg.DefaultBackend = existing.DefaultBackend
+		}
+		if existing.TmuxSession != "" {
+			cfg.TmuxSession = existing.TmuxSession
+		}
+		if validExecutable(existing.HerdrPath) == nil {
+			cfg.HerdrPath = existing.HerdrPath
+		}
+		if os.Getenv("CONTEXT_DROP_HERDR_SESSION") == "" && existing.HerdrSession != "" {
+			cfg.HerdrSession = existing.HerdrSession
+		}
+		if os.Getenv("CONTEXT_DROP_FULL_AI_HERDR_WORKSPACE_LABEL") == "" && existing.FullAIHerdrWorkspaceLabel != "" {
+			cfg.FullAIHerdrWorkspaceLabel = existing.FullAIHerdrWorkspaceLabel
+		}
+		if existing.DelegateAgent != "" {
+			cfg.DelegateAgent = existing.DelegateAgent
+		}
+		for k, v := range existing.Agents {
+			// Older auto-detected Pi configs passed the prompt path as plain text.
+			// Pi loads file content only when the argument uses its @file syntax.
+			if k == "pi" && len(v.Command) == 2 && v.Command[1] == "{prompt_file}" {
+				v.Command[1] = "@{prompt_file}"
 			}
-			if existing.Host == "127.0.0.1" || existing.Host == "::1" {
-				cfg.Host = existing.Host
-			}
-			if os.Getenv("CONTEXT_DROP_RUNTIME_PORT") == "" && existing.Port > 0 && existing.Port < 65536 {
-				cfg.Port = existing.Port
-			}
-			if os.Getenv("CONTEXT_DROP_BACKEND") == "" && (existing.DefaultBackend == "tmux" || existing.DefaultBackend == "herdr") {
-				cfg.DefaultBackend = existing.DefaultBackend
-			}
-			if existing.TmuxSession != "" {
-				cfg.TmuxSession = existing.TmuxSession
-			}
-			if validExecutable(existing.HerdrPath) == nil {
-				cfg.HerdrPath = existing.HerdrPath
-			}
-			if os.Getenv("CONTEXT_DROP_HERDR_SESSION") == "" && existing.HerdrSession != "" {
-				cfg.HerdrSession = existing.HerdrSession
-			}
-			for k, v := range existing.Agents {
-				// Older auto-detected Pi configs passed the prompt path as plain text.
-				// Pi loads file content only when the argument uses its @file syntax.
-				if k == "pi" && len(v.Command) == 2 && v.Command[1] == "{prompt_file}" {
-					v.Command[1] = "@{prompt_file}"
-				}
-				cfg.Agents[k] = v
-			}
+			cfg.Agents[k] = v
+		}
+	}
+	if cfg.DelegateAgent == "" {
+		if _, ok := cfg.Agents["pi"]; ok {
+			cfg.DelegateAgent = "pi"
+		}
+	}
+	if cfg.DelegateAgent != "" {
+		if _, ok := cfg.Agents[cfg.DelegateAgent]; !ok {
+			return nil, fmt.Errorf("delegateAgent %q is not configured", cfg.DelegateAgent)
 		}
 	}
 	data, err := json.MarshalIndent(cfg, "", "  ")
@@ -230,8 +260,8 @@ func LoadConfig() (RuntimeConfig, error) {
 	if cfg.DefaultBackend != "tmux" && cfg.DefaultBackend != "herdr" {
 		return RuntimeConfig{}, fmt.Errorf("runtime defaultBackend must be tmux or herdr")
 	}
-	// Herdr is optional. Keep the runtime usable for pairing, handoffs, and
-	// tmux launches when it is not installed; a Herdr launch will report the
+	// Herdr is optional. Keep the runtime usable with tmux when it is not
+	// installed; a Herdr launch will report the
 	// missing executable when it is actually requested.
 	if cfg.HerdrPath != "" {
 		if err := validExecutable(cfg.HerdrPath); err != nil {

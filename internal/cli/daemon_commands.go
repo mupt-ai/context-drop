@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"contextdrop.dev/context-drop/internal/daemon"
+	"contextdrop.dev/context-drop/internal/imessage"
 	"contextdrop.dev/context-drop/internal/orchestrator"
 	"contextdrop.dev/context-drop/internal/runtimeclient"
 	"github.com/spf13/cobra"
@@ -48,7 +49,7 @@ func newDaemonCommand() *cobra.Command {
 		return err
 	}}
 	var jsonOut bool
-	status := &cobra.Command{Use: "status", Short: "Show daemon, runtime, schedules, inbox poll, and runs", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
+	status := &cobra.Command{Use: "status", Short: "Show daemon, runtime, schedules, messaging, and runs", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		st, err := daemon.CurrentStatus(cmd.Context())
 		if err != nil {
 			return err
@@ -58,12 +59,6 @@ func newDaemonCommand() *cobra.Command {
 		}
 		fmt.Fprintf(cmd.OutOrStdout(), "Daemon: %t (pid %d)\nRuntime: %t\nService: installed=%t loaded=%t\nSchedules: %d enabled, %d total; jobs: %d\n", st.Alive, st.PID, st.RuntimeHealthy, st.Installed, st.Loaded, st.EnabledScheduleCount, st.ScheduleCount, st.JobCount)
 		fmt.Fprintf(cmd.OutOrStdout(), "iMessage: configured=%t enabled=%t initialized=%t\n", st.IMessageConfigured, st.IMessageEnabled, st.IMessageInitialized)
-		if st.LastInboxPollAt != nil {
-			fmt.Fprintf(cmd.OutOrStdout(), "Last inbox poll: %s\n", st.LastInboxPollAt.Format(time.RFC3339))
-		}
-		if st.LastInboxError != "" {
-			fmt.Fprintf(cmd.OutOrStdout(), "Inbox error: %s\n", st.LastInboxError)
-		}
 		if st.LastMessagePollAt != nil {
 			fmt.Fprintf(cmd.OutOrStdout(), "Last iMessage poll: %s\n", st.LastMessagePollAt.Format(time.RFC3339))
 		}
@@ -151,7 +146,7 @@ func newScheduleCommand() *cobra.Command {
 		}
 		cfg, err := runtimeclient.LoadConfig()
 		if err != nil {
-			return fmt.Errorf("load local runtime configuration (run context-drop init first): %w", err)
+			return fmt.Errorf("load local runtime configuration: %w", err)
 		}
 		_, found := cfg.Agents[agent]
 		if !found {
@@ -252,16 +247,24 @@ func runScheduleOnce(ctx context.Context, cmd *cobra.Command, name string) error
 	}
 	client, err := runtimeclient.New()
 	if err == nil {
-		var run runtimeclient.Run
-		run, err = client.Launch(ctx, selected.Agent, selected.Repo, selected.Prompt, "schedule-"+selected.Name, selected.Backend, "")
+		var imsgCfg imessage.Config
+		imsgCfg, err = imessage.Load()
 		if err == nil {
-			err = store.Update(func(st *orchestrator.State) error {
-				return orchestrator.CompleteJob(st, job.ID, "launched", run.ID, "")
-			})
+			var routerID, chatID string
+			routerID, chatID, err = daemon.ScheduleReportOwner(imsgCfg)
 			if err == nil {
-				fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\n", run.ID, run.Status)
+				var task runtimeclient.ManagedTask
+				task, err = client.LaunchManagedSchedule(ctx, selected.Agent, selected.Repo, selected.Prompt, "schedule-"+selected.Name, selected.Backend, routerID, chatID)
+				if err == nil {
+					err = store.Update(func(st *orchestrator.State) error {
+						return orchestrator.CompleteJob(st, job.ID, "launched", task.RunID, "")
+					})
+					if err == nil {
+						fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\n", task.RunID, task.Status)
+					}
+					return err
+				}
 			}
-			return err
 		}
 	}
 	launchErr := err

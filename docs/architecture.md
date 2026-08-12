@@ -1,11 +1,27 @@
-# Architecture and trust boundary
+# Architecture
 
-Context Drop has two local processes and an optional hosted relay:
+Context Drop has three intentionally separate boundaries.
 
-- **Go CLI/server/daemon:** pairing, machine-chain auth, artifact storage, handoff manifests, inbox APIs, safe staging, durable local schedules, OS notifications, and background-service supervision.
-- **Node runtime:** loopback-only authenticated API for configured local agents, visible tmux or Herdr launches, and local run records. The Go daemon normally supervises it.
-- **Relay:** routes authenticated chain requests and stores short-lived artifacts. It does not run agents or access local repositories.
+## Messaging daemon
 
-A handoff crosses machines as data. The recipient must inspect and accept it. Only a separate local `context-drop launch`, `context-drop schedule run`, or previously configured explicit schedule can start an agent. Inbound handoffs are only notified and never automatically opened/downloaded/accepted/launched.
+The Go daemon owns transport credentials, durable conversation cursors, schedule state, report delivery, and runtime supervision. The current transport adapter is one explicitly configured private iMessage chat on macOS. Telegram is not yet implemented.
 
-The runtime uses argv arrays and writes prompts to private files; it never builds shell command strings from handoff content.
+The daemon starts or connects to a loopback-only Node runtime and rotates a capability scoped to the immutable conversation owner. Workers never receive messaging credentials or the runtime's general credential.
+
+## Orchestrator runtime
+
+A persistent orchestrator responds to conversation turns and has exactly three task tools: `list_tasks`, `delegate_task`, and `continue_task`. Live status comes only from the configured Herdr or tmux backend and fails visibly when that backend is unavailable.
+
+Delegated tasks are fully managed: Context Drop injects scoped reporting context, records their pane, and monitors their lifecycle. Public task identity is the backend pane ID, not a private run ID, prompt path, terminal title, or daemon envelope. Continuation targets any exact live pane, including an unmanaged pane.
+
+Worker `context-drop report` messages are natural language. They enter the owning orchestrator as ordinary untrusted messages. Separately marked daemon lifecycle events cover crashes and disappearing managed panes.
+
+## TTL upload service
+
+The optional HTTP server is only a file store:
+
+- authenticated `POST /v1/drops`
+- opaque public `GET /d/<id>` until expiry
+- health endpoints
+
+Upload credentials are independent from runtime and report capabilities. The service has no accounts, pairing, machine graph, inbox, messages, handoffs, task state, or remote execution.

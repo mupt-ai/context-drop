@@ -27,78 +27,89 @@ func TestCLIConfigPathDefault(t *testing.T) {
 }
 
 func TestLoadCLIConfigDefaults(t *testing.T) {
-	path := useTempConfig(t)
+	useTempConfig(t)
 	cfg, err := LoadCLIConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if cfg.Endpoint != "https://contextdrop.dev" || cfg.DefaultTTL != 24*time.Hour || cfg.Clipboard {
-		t.Fatalf("LoadCLIConfig defaults from %s = %+v", path, cfg)
+		t.Fatalf("defaults = %+v", cfg)
 	}
 }
 
 func TestLoadCLIConfigFileAndEnvOverrides(t *testing.T) {
 	path := useTempConfig(t)
-	content := strings.Join([]string{
-		``,
-		`# comment`,
-		`endpoint = "https://file.example"`,
-		`chain_id = "chain-file"`,
-		`machine_id = "mach-file"`,
-		`machine_name = "file-machine"`,
-		`chain_session_token = "session-file"`,
-		`default_ttl = "1h"`,
-		`clipboard = true`,
-	}, "\n") + "\n"
+	content := "endpoint = \"https://file.example\"\nupload_token = \"upload-file\"\ndefault_ttl = \"1h\"\nclipboard = true\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
-
 	t.Setenv("CONTEXT_DROP_ENDPOINT", "https://env.example")
-	t.Setenv("CONTEXT_DROP_CHAIN_ID", "chain-env")
-	t.Setenv("CONTEXT_DROP_MACHINE_ID", "mach-env")
-	t.Setenv("CONTEXT_DROP_MACHINE_NAME", "env-machine")
-	t.Setenv("CONTEXT_DROP_CHAIN_SESSION_TOKEN", "session-env")
+	t.Setenv("CONTEXT_DROP_UPLOAD_TOKEN", "upload-env")
 	t.Setenv("CONTEXT_DROP_TTL", "30m")
-
 	cfg, err := LoadCLIConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Endpoint != "https://env.example" || cfg.ChainID != "chain-env" || cfg.MachineID != "mach-env" || cfg.MachineName != "env-machine" || cfg.ChainSessionToken != "session-env" || cfg.DefaultTTL != 30*time.Minute || !cfg.Clipboard {
-		t.Fatalf("LoadCLIConfig() = %+v", cfg)
+	if cfg.Endpoint != "https://env.example" || cfg.UploadToken != "upload-env" || cfg.DefaultTTL != 30*time.Minute || !cfg.Clipboard {
+		t.Fatalf("config = %+v", cfg)
 	}
 }
 
-func TestLoadCLIConfigEnvDurationError(t *testing.T) {
-	useTempConfig(t)
-	t.Setenv("CONTEXT_DROP_TTL", "bad")
-	if _, err := LoadCLIConfig(); err == nil || !strings.Contains(err.Error(), "CONTEXT_DROP_TTL") {
-		t.Fatalf("LoadCLIConfig(env ttl) error = %v, want env ttl error", err)
+func TestLoadCLIConfigIgnoresRemovedKeys(t *testing.T) {
+	path := useTempConfig(t)
+	if err := os.WriteFile(path, []byte("chain_id = \"old\"\nmachine_id = \"old\"\nchain_session_token = \"old\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadCLIConfig(); err != nil {
+		t.Fatalf("old keys should be harmless during migration: %v", err)
 	}
 }
 
 func TestLoadCLIConfigValidationErrors(t *testing.T) {
 	path := useTempConfig(t)
-	if err := os.WriteFile(path, []byte("default_ttl = \"bad\"\n"), 0o600); err != nil {
+	for content, want := range map[string]string{
+		"default_ttl = \"bad\"\n": "parse default_ttl",
+		"clipboard = \"maybe\"\n": "parse clipboard",
+		"not a config line\n":     "invalid config line",
+	} {
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadCLIConfig(); err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("content %q error = %v", content, err)
+		}
+	}
+	if err := os.WriteFile(path, []byte(""), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadCLIConfig(); err == nil || !strings.Contains(err.Error(), "parse default_ttl") {
-		t.Fatalf("LoadCLIConfig(default_ttl) error = %v, want parse default_ttl", err)
+	t.Setenv("CONTEXT_DROP_TTL", "bad")
+	if _, err := LoadCLIConfig(); err == nil || !strings.Contains(err.Error(), "CONTEXT_DROP_TTL") {
+		t.Fatalf("env ttl error = %v", err)
 	}
+}
 
-	if err := os.WriteFile(path, []byte("clipboard = \"maybe\"\n"), 0o600); err != nil {
+func TestSaveCLIConfigPreservesRuntimeEnvOverrides(t *testing.T) {
+	path := useTempConfig(t)
+	persisted := CLIConfig{Endpoint: "https://file.example", UploadToken: "upload-file", DefaultTTL: time.Hour, Clipboard: true}
+	if err := SaveCLIConfig(persisted); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadCLIConfig(); err == nil || !strings.Contains(err.Error(), "parse clipboard") {
-		t.Fatalf("LoadCLIConfig(clipboard) error = %v, want parse clipboard", err)
-	}
-
-	if err := os.WriteFile(path, []byte("not a config line\n"), 0o600); err != nil {
+	t.Setenv("CONTEXT_DROP_ENDPOINT", "https://env.example")
+	t.Setenv("CONTEXT_DROP_UPLOAD_TOKEN", "upload-env")
+	runtimeCfg, err := LoadCLIConfig()
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadCLIConfig(); err == nil || !strings.Contains(err.Error(), "invalid config line") {
-		t.Fatalf("LoadCLIConfig(line) error = %v, want invalid config line", err)
+	runtimeCfg.Clipboard = false
+	if err := SaveCLIConfig(runtimeCfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded := DefaultCLIConfig()
+	if err := loadCLIConfigFile(path, &loaded); err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Endpoint != persisted.Endpoint || loaded.UploadToken != persisted.UploadToken || loaded.Clipboard {
+		t.Fatalf("persisted config = %+v", loaded)
 	}
 }
 
@@ -109,46 +120,10 @@ func TestSaveCLIConfigErrors(t *testing.T) {
 	}
 	t.Setenv("CONTEXT_DROP_CONFIG", filepath.Join(parentFile, "config.toml"))
 	if err := SaveCLIConfig(DefaultCLIConfig()); err == nil {
-		t.Fatal("SaveCLIConfig(parent file) error = nil, want error")
+		t.Fatal("expected parent error")
 	}
-
 	if _, err := withoutRuntimeEnvOverrides(t.TempDir(), DefaultCLIConfig()); err == nil {
-		t.Fatal("withoutRuntimeEnvOverrides(directory) error = nil, want error")
-	}
-}
-
-func TestSaveCLIConfigPreservesRuntimeEnvOverrides(t *testing.T) {
-	path := useTempConfig(t)
-	persisted := CLIConfig{
-		Endpoint:          "https://file.example",
-		ChainID:           "chain-file",
-		MachineID:         "mach-file",
-		MachineName:       "file-machine",
-		ChainSessionToken: "session-file",
-		DefaultTTL:        time.Hour,
-		Clipboard:         true,
-	}
-	if err := SaveCLIConfig(persisted); err != nil {
-		t.Fatal(err)
-	}
-
-	t.Setenv("CONTEXT_DROP_ENDPOINT", "https://env.example")
-	t.Setenv("CONTEXT_DROP_CHAIN_SESSION_TOKEN", "session-env")
-	runtimeCfg, err := LoadCLIConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	runtimeCfg.MachineName = "updated"
-	if err := SaveCLIConfig(runtimeCfg); err != nil {
-		t.Fatal(err)
-	}
-
-	loaded := DefaultCLIConfig()
-	if err := loadCLIConfigFile(path, &loaded); err != nil {
-		t.Fatal(err)
-	}
-	if loaded.Endpoint != persisted.Endpoint || loaded.ChainSessionToken != persisted.ChainSessionToken || loaded.MachineName != "updated" {
-		t.Fatalf("persisted config = %+v", loaded)
+		t.Fatal("expected directory error")
 	}
 }
 
@@ -159,60 +134,40 @@ func TestLoadServerConfig(t *testing.T) {
 	t.Setenv("CONTEXT_DROP_DATA_DIR", ".data-test")
 	t.Setenv("CONTEXT_DROP_GCS_BUCKET", "bucket")
 	t.Setenv("CONTEXT_DROP_GCS_PREFIX", "/prefix/")
+	t.Setenv("CONTEXT_DROP_UPLOAD_TOKEN", "upload-secret")
 	t.Setenv("CONTEXT_DROP_DEFAULT_TTL", "2h")
-	t.Setenv("CONTEXT_DROP_JOIN_TOKEN_TTL", "5m")
 	t.Setenv("CONTEXT_DROP_MAX_TTL", "24h")
 	t.Setenv("CONTEXT_DROP_MAX_BYTES", "1234")
-
 	cfg, err := LoadServerConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Addr != ":9999" || cfg.BaseURL != "https://drop.example.com" || cfg.Storage != "gcs" || cfg.DataDir != ".data-test" || cfg.GCSBucket != "bucket" || cfg.GCSPrefix != "prefix" || cfg.DefaultTTL != 2*time.Hour || cfg.JoinTokenTTL != 5*time.Minute || cfg.MaxTTL != 24*time.Hour || cfg.MaxBytes != 1234 {
-		t.Fatalf("LoadServerConfig() = %+v", cfg)
+	if cfg.Addr != ":9999" || cfg.BaseURL != "https://drop.example.com" || cfg.Storage != "gcs" || cfg.DataDir != ".data-test" || cfg.GCSBucket != "bucket" || cfg.GCSPrefix != "prefix" || cfg.UploadToken != "upload-secret" || cfg.DefaultTTL != 2*time.Hour || cfg.MaxTTL != 24*time.Hour || cfg.MaxBytes != 1234 {
+		t.Fatalf("server config = %+v", cfg)
 	}
 }
 
-func TestPreserveAndEnvHelpers(t *testing.T) {
+func TestConfigHelpersAndServerErrors(t *testing.T) {
 	if got := preserveEnvDuration(time.Hour, 2*time.Hour, "MISSING_ENV"); got != time.Hour {
-		t.Fatalf("preserveEnvDuration(missing) = %s", got)
+		t.Fatalf("duration = %s", got)
 	}
 	t.Setenv("DURATION_ENV", "1h")
 	if got := preserveEnvDuration(time.Hour, 2*time.Hour, "DURATION_ENV"); got != 2*time.Hour {
-		t.Fatalf("preserveEnvDuration(match) = %s", got)
-	}
-	t.Setenv("DURATION_ENV", "bad")
-	if got := preserveEnvDuration(time.Hour, 2*time.Hour, "DURATION_ENV"); got != time.Hour {
-		t.Fatalf("preserveEnvDuration(bad) = %s", got)
+		t.Fatalf("duration = %s", got)
 	}
 	if got := envString("MISSING_STRING_ENV", "fallback"); got != "fallback" {
-		t.Fatalf("envString fallback = %q", got)
+		t.Fatalf("string = %q", got)
 	}
 	if got := envInt64("MISSING_INT_ENV", 42); got != 42 {
-		t.Fatalf("envInt64 fallback = %d", got)
+		t.Fatalf("int = %d", got)
 	}
-	t.Setenv("BAD_INT_ENV", "bad")
-	if got := envInt64("BAD_INT_ENV", 42); got != 42 {
-		t.Fatalf("envInt64 bad = %d", got)
+	t.Setenv("CONTEXT_DROP_UPLOAD_TOKEN", "")
+	if _, err := LoadServerConfig(); err == nil || !strings.Contains(err.Error(), "CONTEXT_DROP_UPLOAD_TOKEN is required") {
+		t.Fatalf("missing token error = %v", err)
 	}
-	if got, err := envDuration("MISSING_DURATION_ENV", time.Minute); err != nil || got != time.Minute {
-		t.Fatalf("envDuration fallback = %s, %v", got, err)
-	}
-}
-
-func TestLoadServerConfigDurationError(t *testing.T) {
+	t.Setenv("CONTEXT_DROP_UPLOAD_TOKEN", "secret")
 	t.Setenv("CONTEXT_DROP_DEFAULT_TTL", "bad")
 	if _, err := LoadServerConfig(); err == nil || !strings.Contains(err.Error(), "CONTEXT_DROP_DEFAULT_TTL") {
-		t.Fatalf("LoadServerConfig() error = %v, want duration error", err)
-	}
-	t.Setenv("CONTEXT_DROP_DEFAULT_TTL", "1h")
-	t.Setenv("CONTEXT_DROP_JOIN_TOKEN_TTL", "bad")
-	if _, err := LoadServerConfig(); err == nil || !strings.Contains(err.Error(), "CONTEXT_DROP_JOIN_TOKEN_TTL") {
-		t.Fatalf("LoadServerConfig() join ttl error = %v", err)
-	}
-	t.Setenv("CONTEXT_DROP_JOIN_TOKEN_TTL", "1m")
-	t.Setenv("CONTEXT_DROP_MAX_TTL", "bad")
-	if _, err := LoadServerConfig(); err == nil || !strings.Contains(err.Error(), "CONTEXT_DROP_MAX_TTL") {
-		t.Fatalf("LoadServerConfig() max ttl error = %v", err)
+		t.Fatalf("duration error = %v", err)
 	}
 }

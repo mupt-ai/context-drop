@@ -1,7 +1,10 @@
 package runtimeclient
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -18,7 +21,7 @@ func TestInitializeHonorsPortAndPrivateModes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Port != 49123 || cfg.Host != "127.0.0.1" || cfg.DefaultBackend != "herdr" || cfg.HerdrSession != "default" {
+	if cfg.Port != 49123 || cfg.Host != "127.0.0.1" || cfg.DefaultBackend != "herdr" || cfg.HerdrSession != "default" || cfg.FullAIHerdrWorkspaceLabel != "ContextDropManaged" {
 		t.Fatalf("config = %#v", cfg)
 	}
 	if cfg.NodePath == "" || !filepath.IsAbs(cfg.NodePath) {
@@ -85,6 +88,40 @@ func TestInitializeRejectsInvalidPort(t *testing.T) {
 	}
 }
 
+func TestInitializeUsesPersistedNodePathWhenPATHHasNoNode(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CONTEXT_DROP_HOME", home)
+	nodePath, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, configPath, _, err := Paths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(RuntimeConfig{Host: "127.0.0.1", Port: 47762, NodePath: nodePath, DefaultBackend: "tmux", TmuxSession: "context-drop", Agents: map[string]AgentConfig{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", t.TempDir())
+	if _, err := Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.NodePath != nodePath {
+		t.Fatalf("NodePath = %q, want %q", cfg.NodePath, nodePath)
+	}
+}
+
 func TestInitializeHonorsBackendEnvOverrides(t *testing.T) {
 	home := t.TempDir()
 	nodePath, err := ResolveExecutable("node")
@@ -102,6 +139,7 @@ func TestInitializeHonorsBackendEnvOverrides(t *testing.T) {
 	t.Setenv("CONTEXT_DROP_HOME", home)
 	t.Setenv("CONTEXT_DROP_BACKEND", "herdr")
 	t.Setenv("CONTEXT_DROP_HERDR_SESSION", "cdx")
+	t.Setenv("CONTEXT_DROP_FULL_AI_HERDR_WORKSPACE_LABEL", "ManagedAI")
 	if _, err := Initialize(); err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +147,7 @@ func TestInitializeHonorsBackendEnvOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.DefaultBackend != "herdr" || cfg.HerdrSession != "cdx" {
+	if cfg.DefaultBackend != "herdr" || cfg.HerdrSession != "cdx" || cfg.FullAIHerdrWorkspaceLabel != "ManagedAI" {
 		t.Fatalf("config = %#v", cfg)
 	}
 	if cfg.HerdrPath != "" {
@@ -232,5 +270,32 @@ func TestLoadConfigRejectsNonLoopback(t *testing.T) {
 	}
 	if _, err := LoadConfig(); err == nil {
 		t.Fatal("expected loopback error")
+	}
+}
+
+func TestLaunchManagedScheduleCallsManagedEndpointWithOwner(t *testing.T) {
+	var seenPath, seenMethod string
+	var seenBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		seenPath, seenMethod = req.URL.Path, req.Method
+		_ = json.NewDecoder(req.Body).Decode(&seenBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"runId":"run_1","task":{"paneId":"w1:p2","agent":"pi","name":"schedule-x","status":"running","selected":false,"fullyManaged":true}}`))
+	}))
+	defer server.Close()
+	client := &Client{Address: server.URL, Token: "secret", HTTP: server.Client()}
+	task, err := client.LaunchManagedSchedule(context.Background(), "pi", "/repo", "check", "schedule-x", "herdr", "scheduler", "chat-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seenPath != "/v1/tasks/schedule" || seenMethod != http.MethodPost {
+		t.Fatalf("unexpected call: %s %s", seenMethod, seenPath)
+	}
+	if seenBody["routerId"] != "scheduler" || seenBody["chatId"] != "chat-a" || seenBody["backend"] != "herdr" || seenBody["agent"] != "pi" {
+		t.Fatalf("unexpected body: %#v", seenBody)
+	}
+	if task.RunID != "run_1" || task.PaneID != "w1:p2" || !task.FullyManaged || task.Status != "running" {
+		t.Fatalf("unexpected task: %#v", task)
 	}
 }

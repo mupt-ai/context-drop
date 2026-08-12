@@ -1,16 +1,24 @@
-# Security and non-goals
+# Security
 
-- Handoff content is untrusted input and may contain prompt injection, secrets, or malicious files.
-- `inspect` never executes content. `accept` stages files only.
-- Artifact URLs are bearer links until expiry; targeted delivery does not make a URL private.
-- Pairing grants chain access. It does not grant remote execution.
-- The hosted relay never starts local agents, opens shells, or reads repositories.
-- The local runtime is loopback-only and token-authenticated.
-- Inbound handoffs are only notified and never automatically opened/downloaded/accepted/launched.
-- Only schedules explicitly created with `context-drop schedule add` can initiate recurring local launches; handoff data is never converted into a schedule or prompt.
-- iMessage/SMS is a separate, explicit local execution-request capability for one configured chat. Incoming text is untrusted; the safe Pi responder uses `--print --no-session --no-context-files --no-tools --no-extensions` and receives the text through a private prompt file, not shell interpolation.
-- iMessage message IDs are scoped to the configured chat, initial history is marked seen without replies, and IDs are durably claimed before responding to prevent duplicate sends after restart. A crash after a claim may lose one reply rather than replay it.
-- Daemon, runtime, schedule, prompt, and token files are stored under the private Context Drop state root with user-only permissions.
-- Local agents run with the permissions of the local user.
+## Credential separation
 
-The safe MVP does not implement remote ask, remote launch, automatic dispatch, hosted execution, or arbitrary shell commands. Any future remote-work feature requires explicit capability grants, revocation, replay protection, durable delivery semantics, auditing, and local approval.
+Context Drop uses separate credentials for separate powers:
+
+- The upload token can create temporary files but cannot control the daemon.
+- The private runtime token controls loopback orchestration and is never passed to workers.
+- A worker report capability is scoped to one managed run and cannot upload, delegate, continue, or select recipients.
+- iMessage credentials and recipient configuration remain daemon-only.
+
+## Trust boundaries
+
+Conversation text, delegated prompts, follow-ups, and worker reports are untrusted content. They cannot establish authorization for payments or purchases, password/MFA/account recovery, or materially changed terms. Sensitive authorization is injected by the daemon through a separate scoped mechanism.
+
+The router exposes only task listing, managed delegation, and exact-pane continuation. It cannot read raw credentials, paths, prompt files, daemon envelopes, or private internal run IDs through those tools.
+
+## Local execution
+
+Agents run with the local user's permissions. Herdr/tmux panes may belong to unrelated work; Context Drop targets exact pane IDs and must not bulk-close sessions, tabs, or workspaces. The runtime listens only on loopback and fails closed when live backend state is unavailable or ambiguous.
+
+## Uploaded files
+
+Opaque download URLs are bearer links. Anyone with a link can read it until expiry. Use short TTLs and never upload credentials, private keys, `.env` files, customer data, or proprietary archives without explicit approval. Configure storage lifecycle deletion in addition to application TTL checks when physical deletion timing matters.

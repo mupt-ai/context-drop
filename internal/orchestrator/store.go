@@ -17,7 +17,6 @@ import (
 
 const (
 	MaxJobs         = 1000
-	MaxSeenHandoffs = 5000
 	MaxSeenMessages = 5000
 	MaxMessageJobs  = 1000
 	MaxPromptBytes  = 64 * 1024
@@ -51,23 +50,49 @@ type Job struct {
 }
 
 type MessageJob struct {
-	MessageID string     `json:"message_id"`
-	Status    string     `json:"status"`
-	ClaimedAt time.Time  `json:"claimed_at"`
-	UpdatedAt time.Time  `json:"updated_at"`
-	SentAt    *time.Time `json:"sent_at,omitempty"`
-	Error     string     `json:"error,omitempty"`
+	MessageID           string         `json:"message_id"`
+	Status              string         `json:"status"`
+	ClaimedAt           time.Time      `json:"claimed_at"`
+	ProcessingStartedAt *time.Time     `json:"processing_started_at,omitempty"`
+	UpdatedAt           time.Time      `json:"updated_at"`
+	SentAt              *time.Time     `json:"sent_at,omitempty"`
+	Error               string         `json:"error,omitempty"`
+	Latency             MessageLatency `json:"latency"`
+}
+
+type MessageLatency struct {
+	MessageCreatedAt   *time.Time          `json:"message_created_at,omitempty"`
+	HistoryMS          int64               `json:"history_ms"`
+	QueueMS            int64               `json:"queue_ms"`
+	WorkerQueueMS      int64               `json:"worker_queue_ms"`
+	PromptBuildMS      int64               `json:"prompt_build_ms"`
+	ResponderStartupMS int64               `json:"responder_startup_ms"`
+	ResponderMS        int64               `json:"responder_ms"`
+	FirstOutputMS      int64               `json:"first_output_ms"`
+	ToolExecutionMS    int64               `json:"tool_execution_ms"`
+	CompactionMS       int64               `json:"compaction_ms"`
+	SendMS             int64               `json:"send_ms"`
+	ServiceMS          int64               `json:"service_ms"`
+	EndToEndMS         int64               `json:"end_to_end_ms"`
+	PromptBytes        int                 `json:"prompt_bytes"`
+	ColdStart          bool                `json:"cold_start"`
+	ModelRounds        []ModelRoundLatency `json:"model_rounds,omitempty"`
+}
+
+type ModelRoundLatency struct {
+	DurationMS  int64  `json:"duration_ms"`
+	Model       string `json:"model,omitempty"`
+	ResponseID  string `json:"response_id,omitempty"`
+	TotalTokens int64  `json:"total_tokens,omitempty"`
 }
 
 type State struct {
 	Schedules           []Schedule            `json:"schedules"`
 	Jobs                []Job                 `json:"jobs"`
-	SeenHandoffIDs      map[string]string     `json:"seen_handoff_ids,omitempty"`
-	LastInboxPollAt     *time.Time            `json:"last_inbox_poll_at,omitempty"`
-	LastInboxError      string                `json:"last_inbox_error,omitempty"`
 	LastRuntimeError    string                `json:"last_runtime_error,omitempty"`
 	IMessageInitialized bool                  `json:"imessage_initialized,omitempty"`
 	IMessageChatID      string                `json:"imessage_chat_id,omitempty"`
+	IMessageCursor      int64                 `json:"imessage_cursor,omitempty"`
 	SeenMessageIDs      map[string]string     `json:"seen_message_ids,omitempty"`
 	MessageJobs         map[string]MessageJob `json:"message_jobs,omitempty"`
 	LastMessagePollAt   *time.Time            `json:"last_message_poll_at,omitempty"`
@@ -91,7 +116,7 @@ func NewStore() (Store, error) {
 }
 
 func (s Store) Load() (State, error) {
-	st := State{SeenHandoffIDs: map[string]string{}, SeenMessageIDs: map[string]string{}, MessageJobs: map[string]MessageJob{}}
+	st := State{SeenMessageIDs: map[string]string{}, MessageJobs: map[string]MessageJob{}}
 	data, err := os.ReadFile(s.Path)
 	if errors.Is(err, os.ErrNotExist) {
 		return st, nil
@@ -101,9 +126,6 @@ func (s Store) Load() (State, error) {
 	}
 	if err := json.Unmarshal(data, &st); err != nil {
 		return st, fmt.Errorf("read daemon state: %w", err)
-	}
-	if st.SeenHandoffIDs == nil {
-		st.SeenHandoffIDs = map[string]string{}
 	}
 	if st.SeenMessageIDs == nil {
 		st.SeenMessageIDs = map[string]string{}
@@ -178,12 +200,6 @@ func (s Store) save(st State) error {
 func pruneState(st *State) {
 	if len(st.Jobs) > MaxJobs {
 		st.Jobs = st.Jobs[len(st.Jobs)-MaxJobs:]
-	}
-	if st.SeenHandoffIDs == nil {
-		st.SeenHandoffIDs = map[string]string{}
-	}
-	if len(st.SeenHandoffIDs) > MaxSeenHandoffs {
-		st.SeenHandoffIDs = newestEntries(st.SeenHandoffIDs, MaxSeenHandoffs)
 	}
 	if st.SeenMessageIDs == nil {
 		st.SeenMessageIDs = map[string]string{}

@@ -12,8 +12,8 @@ func TestRunReturnsCommandError(t *testing.T) {
 	t.Setenv("CONTEXT_DROP_CONFIG", filepath.Join(t.TempDir(), "config.toml"))
 	var stdout, stderr bytes.Buffer
 	err := run([]string{"token", "create"}, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "not initialized") {
-		t.Fatalf("run(token create) error = %v, want not initialized", err)
+	if err == nil || !strings.Contains(err.Error(), "unknown command") {
+		t.Fatalf("run(token create) error = %v, want unknown command", err)
 	}
 }
 

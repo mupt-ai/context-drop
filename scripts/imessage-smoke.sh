@@ -27,7 +27,7 @@ case "$1" in
     printf '{"chat":%s,"text":%s}\n' "$(printf '%s' "$3" | sed 's/.*/"&"/')" "$(printf '%s' "$5" | sed 's/.*/"&"/')" >> "$FAKE_IMSG_SENDS"
     printf '{"ok":true}\n'
     ;;
-  *) exit 2 ;;
+  *) echo "Error: unknown command $1" >&2; exit 2 ;;
 esac
 SCRIPT
 cat >"$home/fake-responder" <<'SCRIPT'
