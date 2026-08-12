@@ -23,7 +23,7 @@ type ParentReport struct {
 	RunID              string `json:"runId"`
 	RouterID           string `json:"routerId"`
 	ChatID             string `json:"chatId"`
-	Kind               string `json:"kind"`
+	Kind               string `json:"kind,omitempty"`
 	Message            string `json:"message"`
 	SensitiveAction    string `json:"sensitiveAction,omitempty"`
 	ChallengeToken     string `json:"challengeToken,omitempty"`
@@ -46,6 +46,7 @@ type Run struct {
 	Backend        string `json:"backend"`
 	TmuxSession    string `json:"tmuxSession,omitempty"`
 	TmuxWindow     string `json:"tmuxWindow,omitempty"`
+	TmuxPane       string `json:"tmuxPane,omitempty"`
 	HerdrSession   string `json:"herdrSession,omitempty"`
 	HerdrWorkspace string `json:"herdrWorkspace,omitempty"`
 	HerdrTab       string `json:"herdrTab,omitempty"`

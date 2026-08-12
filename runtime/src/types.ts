@@ -28,6 +28,7 @@ export interface RunRecord {
   backend?: SessionBackend;
   tmuxSession?: string;
   tmuxWindow?: string;
+  tmuxPane?: string;
   herdrSession?: string;
   herdrWorkspace?: string;
   herdrTab?: string;
@@ -56,7 +57,7 @@ export interface ParentReport {
   runId: string;
   routerId: string;
   chatId: string;
-  kind: ParentReportKind;
+  kind?: ParentReportKind;
   message: string;
   sensitiveAction?: SensitiveAction;
   challengeToken?: string;

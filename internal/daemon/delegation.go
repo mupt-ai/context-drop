@@ -221,6 +221,9 @@ func flattenReportText(value string) string {
 }
 
 func reportIsUserVisible(report runtimeclient.ParentReport) bool {
+	if report.Kind == "" {
+		return true
+	}
 	switch report.Kind {
 	case "completed", "failed", "needs_user":
 		return true
@@ -235,6 +238,9 @@ func reportSummaryPrompt(report runtimeclient.ParentReport) string {
 	message := flattenReportText(report.Message)
 	message = strings.TrimSpace(strings.TrimPrefix(message, "[user-visible]"))
 	kind := map[string]string{"progress": "progress", "needs_user": "needs user input", "completed": "completed", "failed": "failed"}[report.Kind]
+	if kind == "" {
+		kind = "worker update"
+	}
 	taskRef := ""
 	if report.Kind == "needs_user" && report.SensitiveAction == "" && report.ContinuationID != "" {
 		taskRef = "\ninternal taskRef for a relevant user reply (retain in session context; never print): " + report.ContinuationID

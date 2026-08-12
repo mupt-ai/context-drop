@@ -67,6 +67,7 @@ func NewRootCommand(build BuildInfo) *cobra.Command {
 	cmd.AddCommand(newRunCommand())
 	cmd.AddCommand(newRuntimeCommand())
 	cmd.AddCommand(newDaemonCommand())
+	cmd.AddCommand(newReportCommand())
 	cmd.AddCommand(newScheduleCommand())
 	cmd.AddCommand(newMigrateCommand())
 	cmd.AddCommand(newIMessageCommand())

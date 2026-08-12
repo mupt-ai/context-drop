@@ -1,0 +1,13 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createRuntimeServer } from "../src/server.js";
+import type { CommandRunner } from "../src/launch.js";
+import type { RuntimeConfig } from "../src/types.js";
+
+test("natural-language worker reports are capability scoped and durably queued without a kind", async () => {
+  const stateDir=mkdtempSync(join(tmpdir(),"cd-report-"));const config:RuntimeConfig={host:"127.0.0.1",port:0,stateDir,tokenFile:"token",defaultBackend:"herdr",tmuxSession:"cd",herdrSession:"default",agents:{mock:{command:["mock","{prompt_file}"]}},delegateAgent:"mock"};const runner:CommandRunner={run(_command,args){if(args[2]==="workspace"&&args[3]==="list")return{status:0,stdout:JSON.stringify({result:{workspaces:[{workspace_id:"w1",label:"ContextDropManaged",focused:false}]}})};if(args[2]==="tab"&&args[3]==="create")return{status:0,stdout:JSON.stringify({result:{tab:{tab_id:"w1:t1"},root_pane:{pane_id:"w1:p1"}}})};return{status:0}}};const server=createRuntimeServer(config,"secret",runner);await new Promise<void>(resolve=>server.listen(0,"127.0.0.1",resolve));const address=server.address();assert.ok(address&&typeof address==="object");const base=`http://127.0.0.1:${address.port}`,general={authorization:"Bearer secret","content-type":"application/json"};
+  try{const capability=(await(await fetch(base+"/v1/router-capabilities",{method:"POST",headers:general,body:JSON.stringify({routerId:"r",chatId:"c"})})).json() as any).capability;const delegated=await fetch(base+"/v1/tasks/delegate",{method:"POST",headers:{authorization:`Bearer ${capability}`,"content-type":"application/json"},body:JSON.stringify({prompt:"work"})});assert.equal(delegated.status,201);const task=JSON.parse(readFileSync(join(stateDir,"parent-tasks.jsonl"),"utf8"));const report=await fetch(base+"/v1/reports",{method:"POST",headers:{authorization:`Bearer ${task.reportCapability}`,"content-type":"application/json"},body:JSON.stringify({runId:task.runId,message:"Finished analysis; here are the results."})});assert.equal(report.status,201);const queued=JSON.parse(readFileSync(join(stateDir,"parent-reports.jsonl"),"utf8"));assert.equal(queued.message,"Finished analysis; here are the results.");assert.equal(queued.kind,undefined);assert.equal(queued.routerId,"r");assert.equal(queued.chatId,"c");const denied=await fetch(base+"/v1/reports",{method:"POST",headers:{authorization:"Bearer wrong","content-type":"application/json"},body:JSON.stringify({runId:task.runId,message:"spoof"})});assert.equal(denied.status,401);}finally{await new Promise<void>(resolve=>server.close(()=>resolve()))}
+});
