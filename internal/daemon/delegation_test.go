@@ -249,18 +249,15 @@ func TestReportVisibilityPolicyAndSensitiveInstruction(t *testing.T) {
 	}
 }
 
-func TestReportSummaryTaskRefOnlyForContinuableNeedsUser(t *testing.T) {
-	prompt := reportSummaryPrompt(runtimeclient.ParentReport{Kind: "needs_user", Message: "which branch", ContinuationID: "ref_123"})
-	if !strings.Contains(prompt, "internal taskRef") || !strings.Contains(prompt, "ref_123") || !strings.Contains(prompt, "never print") {
-		t.Fatalf("continuable prompt missing taskRef: %q", prompt)
-	}
+func TestReportSummaryNeverExposesInternalTaskRef(t *testing.T) {
 	for _, report := range []runtimeclient.ParentReport{
-		{Kind: "needs_user", Message: "confirm purchase", SensitiveAction: "payment_or_purchase", ChallengedAction: "buy A", ChallengeToken: "TOKEN", ContinuationID: "ref_123"},
-		{Kind: "completed", Message: "done", ContinuationID: "ref_123"},
 		{Kind: "needs_user", Message: "which branch"},
+		{Kind: "needs_user", Message: "confirm purchase", SensitiveAction: "payment_or_purchase", ChallengedAction: "buy A", ChallengeToken: "TOKEN"},
+		{Kind: "completed", Message: "done"},
+		{Kind: "", Message: "natural update without a kind"},
 	} {
-		if strings.Contains(reportSummaryPrompt(report), "internal taskRef") {
-			t.Fatalf("taskRef leaked for %+v: %q", report, reportSummaryPrompt(report))
+		if strings.Contains(reportSummaryPrompt(report), "internal taskRef") || strings.Contains(reportSummaryPrompt(report), "paneId") {
+			t.Fatalf("taskRef or paneId leaked for %+v: %q", report, reportSummaryPrompt(report))
 		}
 	}
 }
@@ -386,7 +383,7 @@ func TestConfigureRouterHealthGatesAndRotatesOverHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	url, first := responder.DelegationEnv()
-	if !strings.HasSuffix(url, "/v1/delegate") || first != "cap-1" {
+	if !strings.HasSuffix(url, "/v1/tasks/delegate") || first != "cap-1" {
 		t.Fatalf("url=%q cap=%q", url, first)
 	}
 	if err := runner.configureRouter(context.Background()); err != nil {

@@ -2,7 +2,7 @@ import { Type } from "typebox";
 
 const endpoint = process.env.CONTEXT_DROP_DELEGATE_URL;
 const capability = process.env.CONTEXT_DROP_DELEGATE_CAPABILITY;
-const base = endpoint?.replace(/\/v1\/delegate$/, "");
+const base = endpoint?.replace(/\/v1\/tasks\/delegate$/, "");
 export const REPORT_SUMMARY_MARKER = "CONTEXT_DROP_INTERNAL_REPORT_SUMMARY_V1";
 
 async function request(path, method, body, signal) {

@@ -71,6 +71,4 @@ export interface ParentReport {
   challengeConsumedAt?: string;
   challengeReservationId?: string;
   challengeReservationUntil?: string;
-  continuedAt?: string;
-  continuationId?: string;
 }

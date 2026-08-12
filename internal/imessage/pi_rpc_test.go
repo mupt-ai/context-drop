@@ -43,7 +43,7 @@ func TestRouterModeStructurallyRestrictsPiAndPreservesPinnedSession(t *testing.T
 			t.Fatalf("router lost required/tuning flag %q: %q", preserved, joined)
 		}
 	}
-	responder.SetDelegationEnv("http://127.0.0.1:1/v1/delegate", "scoped-cap")
+	responder.SetDelegationEnv("http://127.0.0.1:1/v1/tasks/delegate", "scoped-cap")
 	if strings.Contains(strings.Join(responder.argv, " "), "scoped-cap") {
 		t.Fatal("capability leaked into model-visible argv")
 	}
