@@ -184,15 +184,12 @@ func TestValidateSchedule(t *testing.T) {
 	}
 }
 
-func TestStorePermissionsRetentionAndSeenBound(t *testing.T) {
+func TestStorePermissionsAndRetention(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "state.json")
 	store := Store{Path: path}
-	st := State{SeenHandoffIDs: map[string]string{}}
+	st := State{SeenMessageIDs: map[string]string{}}
 	for i := 0; i < MaxJobs+20; i++ {
 		st.Jobs = append(st.Jobs, Job{ID: fmt.Sprint(i)})
-	}
-	for i := 0; i < MaxSeenHandoffs+20; i++ {
-		st.SeenHandoffIDs[fmt.Sprint(i)] = time.Unix(int64(i), 0).UTC().Format(time.RFC3339Nano)
 	}
 	if err := store.Save(st); err != nil {
 		t.Fatal(err)
@@ -203,9 +200,6 @@ func TestStorePermissionsRetentionAndSeenBound(t *testing.T) {
 	}
 	if len(loaded.Jobs) != MaxJobs {
 		t.Fatalf("jobs = %d", len(loaded.Jobs))
-	}
-	if len(loaded.SeenHandoffIDs) != MaxSeenHandoffs {
-		t.Fatalf("seen = %d", len(loaded.SeenHandoffIDs))
 	}
 	info, err := os.Stat(path)
 	if err != nil {

@@ -1,11 +1,27 @@
-# Architecture and trust boundary
+# Architecture
 
-Context Drop has two local processes and an optional hosted relay:
+Context Drop has three intentionally separate boundaries.
 
-- **Go CLI/server/daemon:** pairing, machine-chain auth, artifact storage, handoff manifests, inbox APIs, safe staging, durable local schedules, OS notifications, and background-service supervision.
-- **Node runtime:** loopback-only authenticated API for configured local agents, visible tmux or Herdr launches, local run records, and router/task-worker delegation. The Go daemon normally supervises it; per-task report capabilities are separate from the general runtime token.
-- **Relay:** routes authenticated chain requests and stores short-lived artifacts. It does not run agents or access local repositories.
+## Messaging daemon
 
-A handoff crosses machines as data. The recipient must inspect and accept it. Only a separate local `context-drop launch`, `context-drop schedule run`, or previously configured explicit schedule can start an agent. Inbound handoffs are only notified and never automatically opened/downloaded/accepted/launched.
+The Go daemon owns transport credentials, durable conversation cursors, schedule state, report delivery, and runtime supervision. The current transport adapter is one explicitly configured private iMessage chat on macOS. Telegram is not yet implemented.
 
-The runtime uses argv arrays and writes prompts to private files; it never builds shell command strings from handoff content. Herdr placement uses opaque workspace IDs returned by validated discovery: ordinary delegated work defaults to full-AI and opens a no-focus tab in the reusable `ContextDropManaged` workspace in session `default`; human-copilot is explicit and opens a privacy-safe tab in an applicable explicit workspace, the uniquely focused workspace, or a reusable meaningfully labeled fallback workspace. Visible Herdr labels never expose task text or secrets. The iMessage router receives only `delegate(task, lane)` through a rotating capability bound server-side to its exact chat. Workers receive a per-run extension-scoped `report_to_parent` capability and reports preserve immutable router/chat ownership through lease/ack delivery. Sensitive action reports normally require a daemon-issued exact-chat confirmation challenge with a 10-minute expiry and a short immutable exact-action scope; TASK prose cannot mint authorization, and one token authorizes one scope once. Explicit private-config `yolo_mode` lets the daemon auto-authorize only a currently leased exact report/scope using the general runtime credential; ambiguous launches are consumed and surfaced for audit rather than retried. The launch environment carries opaque authorization ID/scope/expiry, while workers are instructed that all other sensitive actions remain prohibited; this is a worker-boundary control, not mechanical enforcement in external systems. Follow-ups always reach the router, which may choose a new-worker fallback because active-run steering is not supported by the runtime API. Runtime state has a single-writer lock to prevent overlapping runtime processes from racing durable report/task updates. Recovery marks launches stale after 2 minutes and running workers idle after 24 hours, revoking their report capabilities; recent workers remain protected. Admission is bounded to 32 active workers per router/chat and 256 globally. Confirmation reservations last 2 minutes and are released after failed/abandoned launches, while successful launches consume their 10-minute challenge exactly once and supersede the unauthorized source worker. Source-worker cleanup is best effort after the authorized replacement is durably running (Herdr pane or tmux window); cleanup failure is recorded on the source task and cannot downgrade the replacement to launch-unknown. Compaction removes expired challenges, pending reports older than 24 hours for inactive workers, and orphan run directories while retaining recent active tasks plus pending/leased delivery data; delivered task/report/run history is bounded to 500 records (and revoked router capability history to 20). This deliberately trades recovery from indefinitely hung workers for finite local state.
+The daemon starts or connects to a loopback-only Node runtime and rotates a capability scoped to the immutable conversation owner. Workers never receive messaging credentials or the runtime's general credential.
+
+## Orchestrator runtime
+
+A persistent orchestrator responds to conversation turns and has exactly three task tools: `list_tasks`, `delegate_task`, and `continue_task`. Live status comes only from the configured Herdr or tmux backend and fails visibly when that backend is unavailable.
+
+Delegated tasks are fully managed: Context Drop injects scoped reporting context, records their pane, and monitors their lifecycle. Public task identity is the backend pane ID, not a private run ID, prompt path, terminal title, or daemon envelope. Continuation targets any exact live pane, including an unmanaged pane.
+
+Worker `context-drop report` messages are natural language. They enter the owning orchestrator as ordinary untrusted messages. Separately marked daemon lifecycle events cover crashes and disappearing managed panes.
+
+## TTL upload service
+
+The optional HTTP server is only a file store:
+
+- authenticated `POST /v1/drops`
+- opaque public `GET /d/<id>` until expiry
+- health endpoints
+
+Upload credentials are independent from runtime and report capabilities. The service has no accounts, pairing, machine graph, inbox, messages, handoffs, task state, or remote execution.

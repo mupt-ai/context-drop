@@ -260,8 +260,8 @@ func LoadConfig() (RuntimeConfig, error) {
 	if cfg.DefaultBackend != "tmux" && cfg.DefaultBackend != "herdr" {
 		return RuntimeConfig{}, fmt.Errorf("runtime defaultBackend must be tmux or herdr")
 	}
-	// Herdr is optional. Keep the runtime usable for pairing, handoffs, and
-	// tmux launches when it is not installed; a Herdr launch will report the
+	// Herdr is optional. Keep the runtime usable with tmux when it is not
+	// installed; a Herdr launch will report the
 	// missing executable when it is actually requested.
 	if cfg.HerdrPath != "" {
 		if err := validExecutable(cfg.HerdrPath); err != nil {

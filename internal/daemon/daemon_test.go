@@ -10,8 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"contextdrop.dev/context-drop/internal/config"
-	"contextdrop.dev/context-drop/internal/handoff"
 	"contextdrop.dev/context-drop/internal/orchestrator"
 	"contextdrop.dev/context-drop/internal/runtimeclient"
 )
@@ -65,7 +63,7 @@ func TestRunnerClaimsDueBeforeLaunchAndRecordsJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime := &fakeRuntime{}
-	r := &Runner{Store: store, Runtime: runtime, Notifier: &fakeNotifier{}, Now: func() time.Time { return now }, InboxInterval: time.Minute}
+	r := &Runner{Store: store, Runtime: runtime, Notifier: &fakeNotifier{}, Now: func() time.Time { return now }}
 	if err := r.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -81,60 +79,6 @@ func TestRunnerClaimsDueBeforeLaunchAndRecordsJob(t *testing.T) {
 	}
 	if len(st.Jobs) != 1 || st.Jobs[0].Outcome != "launched" {
 		t.Fatalf("jobs = %#v", st.Jobs)
-	}
-}
-
-func TestInboxOnlyNotifiesAndNeverLaunches(t *testing.T) {
-	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
-	store := orchestrator.Store{Path: filepath.Join(t.TempDir(), "state.json")}
-	runtime := &fakeRuntime{}
-	notifier := &fakeNotifier{}
-	polls := 0
-	r := &Runner{
-		Store: store, Runtime: runtime, Notifier: notifier, Now: func() time.Time { return now }, InboxInterval: time.Minute,
-		CLIConfig: config.CLIConfig{ChainSessionToken: "token"},
-		Inbox: func(context.Context, config.CLIConfig) ([]handoff.Handoff, error) {
-			polls++
-			return []handoff.Handoff{{ID: "hnd_1", RecipientState: handoff.StateAvailable}}, nil
-		},
-	}
-	if err := r.Tick(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.Tick(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if polls != 1 {
-		t.Fatalf("polls = %d", polls)
-	}
-	if len(runtime.launches) != 0 {
-		t.Fatalf("inbox launched runtime: %#v", runtime.launches)
-	}
-	if len(notifier.messages) != 1 {
-		t.Fatalf("notifications = %#v", notifier.messages)
-	}
-	st, _ := store.Load()
-	if _, ok := st.SeenHandoffIDs["hnd_1"]; !ok {
-		t.Fatal("handoff was not marked seen")
-	}
-}
-
-func TestInboxErrorRecordedWithoutLaunch(t *testing.T) {
-	now := time.Now().UTC()
-	store := orchestrator.Store{Path: filepath.Join(t.TempDir(), "state.json")}
-	runtime := &fakeRuntime{}
-	r := &Runner{Store: store, Runtime: runtime, Notifier: &fakeNotifier{}, Now: func() time.Time { return now }, InboxInterval: time.Minute, CLIConfig: config.CLIConfig{ChainSessionToken: "token"}, Inbox: func(context.Context, config.CLIConfig) ([]handoff.Handoff, error) {
-		return nil, errors.New("no network")
-	}}
-	if err := r.Tick(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	st, _ := store.Load()
-	if st.LastInboxError != "no network" {
-		t.Fatalf("error = %q", st.LastInboxError)
-	}
-	if len(runtime.launches) != 0 {
-		t.Fatal("poll error launched runtime")
 	}
 }
 

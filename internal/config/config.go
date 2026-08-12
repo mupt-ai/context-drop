@@ -15,14 +15,10 @@ import (
 const AppName = "context-drop"
 
 type CLIConfig struct {
-	Endpoint          string
-	UploadToken       string
-	ChainID           string
-	MachineID         string
-	MachineName       string
-	ChainSessionToken string
-	DefaultTTL        time.Duration
-	Clipboard         bool
+	Endpoint    string
+	UploadToken string
+	DefaultTTL  time.Duration
+	Clipboard   bool
 }
 
 func DefaultCLIConfig() CLIConfig {
@@ -67,18 +63,6 @@ func LoadCLIConfig() (CLIConfig, error) {
 		}
 		cfg.DefaultTTL = d
 	}
-	if v := os.Getenv("CONTEXT_DROP_CHAIN_ID"); v != "" {
-		cfg.ChainID = v
-	}
-	if v := os.Getenv("CONTEXT_DROP_MACHINE_ID"); v != "" {
-		cfg.MachineID = v
-	}
-	if v := os.Getenv("CONTEXT_DROP_MACHINE_NAME"); v != "" {
-		cfg.MachineName = v
-	}
-	if v := os.Getenv("CONTEXT_DROP_CHAIN_SESSION_TOKEN"); v != "" {
-		cfg.ChainSessionToken = v
-	}
 	return cfg, nil
 }
 
@@ -109,14 +93,6 @@ func loadCLIConfigFile(path string, cfg *CLIConfig) error {
 			cfg.Endpoint = value
 		case "upload_token":
 			cfg.UploadToken = value
-		case "chain_id":
-			cfg.ChainID = value
-		case "machine_id":
-			cfg.MachineID = value
-		case "machine_name":
-			cfg.MachineName = value
-		case "chain_session_token":
-			cfg.ChainSessionToken = value
 		case "default_ttl":
 			d, err := time.ParseDuration(value)
 			if err != nil {
@@ -147,13 +123,9 @@ func SaveCLIConfig(cfg CLIConfig) error {
 		return err
 	}
 	content := fmt.Sprintf(
-		"endpoint = %q\nupload_token = %q\nchain_id = %q\nmachine_id = %q\nmachine_name = %q\nchain_session_token = %q\ndefault_ttl = %q\nclipboard = %t\n",
+		"endpoint = %q\nupload_token = %q\ndefault_ttl = %q\nclipboard = %t\n",
 		cfg.Endpoint,
 		cfg.UploadToken,
-		cfg.ChainID,
-		cfg.MachineID,
-		cfg.MachineName,
-		cfg.ChainSessionToken,
 		cfg.DefaultTTL.String(),
 		cfg.Clipboard,
 	)
@@ -168,14 +140,6 @@ func withoutRuntimeEnvOverrides(path string, cfg CLIConfig) (CLIConfig, error) {
 	cfg.Endpoint = preserveEnvString(cfg.Endpoint, persisted.Endpoint, "CONTEXT_DROP_ENDPOINT")
 	cfg.UploadToken = preserveEnvString(cfg.UploadToken, persisted.UploadToken, "CONTEXT_DROP_UPLOAD_TOKEN")
 	cfg.DefaultTTL = preserveEnvDuration(cfg.DefaultTTL, persisted.DefaultTTL, "CONTEXT_DROP_TTL")
-	cfg.ChainID = preserveEnvString(cfg.ChainID, persisted.ChainID, "CONTEXT_DROP_CHAIN_ID")
-	cfg.MachineID = preserveEnvString(cfg.MachineID, persisted.MachineID, "CONTEXT_DROP_MACHINE_ID")
-	cfg.MachineName = preserveEnvString(cfg.MachineName, persisted.MachineName, "CONTEXT_DROP_MACHINE_NAME")
-	cfg.ChainSessionToken = preserveEnvString(
-		cfg.ChainSessionToken,
-		persisted.ChainSessionToken,
-		"CONTEXT_DROP_CHAIN_SESSION_TOKEN",
-	)
 	return cfg, nil
 }
 

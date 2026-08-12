@@ -1,12 +1,11 @@
 # Context Drop documentation
 
-- [Architecture and trust boundary](architecture.md)
-- [Getting started](getting-started.md)
-- [First handoff](first-handoff.md)
-- [Machine pairing](pairing.md)
-- [Local visible agent launch](local-launch.md)
+Context Drop is a local-first message orchestrator with managed agent delegation, natural-language worker reports, durable schedules, and an optional TTL file service.
+
 - [CLI reference](cli.md)
-- [Security and non-goals](security.md)
 - [Configuration](configuration.md)
-- [Self-hosted relay](server.md)
+- [Local daemon, delegation, and schedules](local-launch.md)
+- [Architecture](architecture.md)
+- [Security](security.md)
+- [Server and self-hosting](server.md)
 - [Troubleshooting](troubleshooting.md)

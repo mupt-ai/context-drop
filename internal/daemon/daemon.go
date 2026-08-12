@@ -6,10 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,8 +17,6 @@ import (
 	"syscall"
 	"time"
 
-	"contextdrop.dev/context-drop/internal/config"
-	"contextdrop.dev/context-drop/internal/handoff"
 	"contextdrop.dev/context-drop/internal/imessage"
 	"contextdrop.dev/context-drop/internal/localhome"
 	"contextdrop.dev/context-drop/internal/orchestrator"
@@ -29,7 +25,6 @@ import (
 
 const (
 	TickInterval                    = 10 * time.Second
-	DefaultInboxInterval            = time.Minute
 	DefaultMessageWatchRetryMin     = time.Second
 	DefaultMessageWatchRetryMax     = 30 * time.Second
 	DefaultMessageWatchFailureLimit = 3
@@ -50,8 +45,6 @@ type Status struct {
 	ScheduleCount        int                 `json:"schedule_count"`
 	EnabledScheduleCount int                 `json:"enabled_schedule_count"`
 	JobCount             int                 `json:"job_count"`
-	LastInboxPollAt      *time.Time          `json:"last_inbox_poll_at,omitempty"`
-	LastInboxError       string              `json:"last_inbox_error,omitempty"`
 	LastRuntimeError     string              `json:"last_runtime_error,omitempty"`
 	IMessageConfigured   bool                `json:"imessage_configured"`
 	IMessageEnabled      bool                `json:"imessage_enabled"`
@@ -78,11 +71,8 @@ type Runner struct {
 	Store                    orchestrator.Store
 	Notifier                 orchestrator.Notifier
 	Now                      func() time.Time
-	InboxInterval            time.Duration
 	Runtime                  RuntimeLauncher
 	Delegation               DelegationRuntime
-	CLIConfig                config.CLIConfig
-	Inbox                    func(context.Context, config.CLIConfig) ([]handoff.Handoff, error)
 	IMessage                 *imessage.Adapter
 	MessagePollInterval      time.Duration
 	MessageWatchRetryMin     time.Duration
@@ -244,19 +234,7 @@ func NewRunner() (*Runner, error) {
 	if err != nil {
 		return nil, err
 	}
-	cfg, err := config.LoadCLIConfig()
-	if err != nil {
-		return nil, err
-	}
-	interval := DefaultInboxInterval
-	if value := os.Getenv("CONTEXT_DROP_INBOX_INTERVAL"); value != "" {
-		parsed, parseErr := time.ParseDuration(value)
-		if parseErr != nil || parsed < 10*time.Second {
-			return nil, fmt.Errorf("CONTEXT_DROP_INBOX_INTERVAL must be at least 10s")
-		}
-		interval = parsed
-	}
-	runner := &Runner{Store: store, Notifier: orchestrator.LocalNotifier{}, Now: func() time.Time { return time.Now().UTC() }, InboxInterval: interval, Runtime: client, Delegation: client, CLIConfig: cfg, Inbox: listInbox}
+	runner := &Runner{Store: store, Notifier: orchestrator.LocalNotifier{}, Now: func() time.Time { return time.Now().UTC() }, Runtime: client, Delegation: client}
 	messageConfig, messageErr := imessage.Load()
 	if messageErr == nil {
 		adapter := &imessage.Adapter{Config: messageConfig}
@@ -950,16 +928,11 @@ func (r *Runner) Tick(ctx context.Context) error {
 	defer r.mu.Unlock()
 	now := r.Now()
 	var due []orchestrator.Schedule
-	pollInbox := false
 	if err := r.Store.Update(func(st *orchestrator.State) error {
 		// Due advances NextRunAt inside the same locked transaction. The claim is
 		// durable before any launch, so a restart or overlapping tick cannot launch
 		// the same occurrence twice.
 		due = orchestrator.Due(st, now)
-		if r.CLIConfig.ChainSessionToken != "" && (st.LastInboxPollAt == nil || now.Sub(*st.LastInboxPollAt) >= r.InboxInterval) {
-			st.LastInboxPollAt = &now
-			pollInbox = true
-		}
 		return nil
 	}); err != nil {
 		return err
@@ -984,67 +957,7 @@ func (r *Runner) Tick(ctx context.Context) error {
 			return err
 		}
 	}
-	if pollInbox {
-		return r.pollInbox(ctx, now)
-	}
 	return nil
-}
-
-func (r *Runner) pollInbox(ctx context.Context, now time.Time) error {
-	inbox := r.Inbox
-	if inbox == nil {
-		inbox = listInbox
-	}
-	pollCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	handoffs, pollErr := inbox(pollCtx, r.CLIConfig)
-	var notifications int
-	if err := r.Store.Update(func(st *orchestrator.State) error {
-		if pollErr != nil {
-			st.LastInboxError = pollErr.Error()
-			return nil
-		}
-		st.LastInboxError = ""
-		for _, item := range handoffs {
-			if _, seen := st.SeenHandoffIDs[item.ID]; seen {
-				continue
-			}
-			st.SeenHandoffIDs[item.ID] = now.Format(time.RFC3339Nano)
-			notifications++
-		}
-		return nil
-	}); err != nil {
-		return err
-	}
-	for i := 0; i < notifications; i++ {
-		_ = r.Notifier.Notify("New Context Drop handoff", "A new handoff is waiting. Inspect it explicitly; it was not opened or executed.")
-	}
-	return nil
-}
-
-func listInbox(ctx context.Context, cfg config.CLIConfig) ([]handoff.Handoff, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(cfg.Endpoint, "/")+"/v1/handoffs", nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", "Bearer "+cfg.ChainSessionToken)
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("inbox poll failed: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("inbox poll returned %s", resp.Status)
-	}
-	var out struct {
-		Handoffs []handoff.Handoff `json:"handoffs"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return nil, fmt.Errorf("decode inbox response: %w", err)
-	}
-	return out.Handoffs, nil
 }
 
 func Start() (PIDInfo, error) {
@@ -1146,8 +1059,6 @@ func CurrentStatus(ctx context.Context) (Status, error) {
 		}
 	}
 	out.JobCount = len(st.Jobs)
-	out.LastInboxPollAt = st.LastInboxPollAt
-	out.LastInboxError = st.LastInboxError
 	out.LastRuntimeError = st.LastRuntimeError
 	out.IMessageInitialized = st.IMessageInitialized
 	out.LastMessagePollAt = st.LastMessagePollAt
