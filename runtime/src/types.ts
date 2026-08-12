@@ -35,6 +35,7 @@ export interface RunRecord {
   herdrPane?: string;
   lane?: DelegationLane;
   status: "running" | "exited" | "unknown";
+  ownsPane?: boolean;
   createdAt: string;
 }
 
