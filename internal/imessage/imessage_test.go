@@ -93,13 +93,13 @@ func testConfig(t *testing.T) Config {
 	return cfg
 }
 
-func TestSummarizeWorkerReportPreparesColdResponderBeforeResponding(t *testing.T) {
+func TestRespondToWorkerReportPreparesColdResponderBeforeResponding(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.RouterMode = true
 	responder := &fakePersistentResponder{state: PersistentResponderState{ColdStart: true}}
 	adapter := Adapter{Config: cfg, PersistentResponder: responder}
 
-	message, err := adapter.SummarizeWorkerReport(context.Background(), "worker status", 100)
+	message, err := adapter.RespondToWorkerReport(context.Background(), "worker status", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,13 +108,13 @@ func TestSummarizeWorkerReportPreparesColdResponderBeforeResponding(t *testing.T
 	}
 }
 
-func TestSummarizeWorkerReportPreparesWarmResponderBeforeResponding(t *testing.T) {
+func TestRespondToWorkerReportPreparesWarmResponderBeforeResponding(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.RouterMode = true
 	responder := &fakePersistentResponder{}
 	adapter := Adapter{Config: cfg, PersistentResponder: responder}
 
-	if _, err := adapter.SummarizeWorkerReport(context.Background(), "worker status", 100); err != nil {
+	if _, err := adapter.RespondToWorkerReport(context.Background(), "worker status", 100); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(responder.calls, []string{"prepare", "respond"}) {
@@ -122,14 +122,14 @@ func TestSummarizeWorkerReportPreparesWarmResponderBeforeResponding(t *testing.T
 	}
 }
 
-func TestSummarizeWorkerReportReturnsPrepareFailureWithoutResponding(t *testing.T) {
+func TestRespondToWorkerReportReturnsPrepareFailureWithoutResponding(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.RouterMode = true
 	responder := &fakePersistentResponder{prepareErr: errors.New("prepare failed")}
 	adapter := Adapter{Config: cfg, PersistentResponder: responder}
 
-	_, err := adapter.SummarizeWorkerReport(context.Background(), "worker status", 100)
-	if err == nil || !strings.Contains(err.Error(), "prepare worker report summary responder") {
+	_, err := adapter.RespondToWorkerReport(context.Background(), "worker status", 100)
+	if err == nil || !strings.Contains(err.Error(), "prepare worker report responder") {
 		t.Fatalf("err=%v", err)
 	}
 	if !reflect.DeepEqual(responder.calls, []string{"prepare"}) {

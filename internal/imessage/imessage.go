@@ -564,31 +564,21 @@ func (a Adapter) buildPrompt(message Message, includeDurableContext bool) (strin
 	return prompt, nil
 }
 
-// SummarizeWorkerReport runs an internal no-delegation turn through the same
-// persistent router so its reply follows the configured persona. The router
-// extension recognizes the marker and structurally removes every active tool.
-func (a Adapter) SummarizeWorkerReport(ctx context.Context, prompt string, maxOutput int) (string, error) {
+// RespondToWorkerReport delivers an untrusted worker report as a normal turn to
+// the persistent orchestrator. Unlike the former summary path, this keeps the
+// router tools available so the orchestrator can decide whether to reply,
+// delegate follow-up work, continue a pane, ask the user, or take no action.
+func (a Adapter) RespondToWorkerReport(ctx context.Context, prompt string, maxOutput int) (string, error) {
 	if !a.Config.RouterMode || a.PersistentResponder == nil {
-		return "", fmt.Errorf("worker report summary requires the persistent router")
+		return "", fmt.Errorf("worker report delivery requires the persistent router")
 	}
 	if maxOutput <= 0 || maxOutput > a.Config.MaxReplyBytes {
-		return "", fmt.Errorf("invalid worker report summary limit")
-	}
-	persona := ""
-	if a.Config.PersonaFile != "" {
-		body, err := os.ReadFile(a.Config.PersonaFile)
-		if err != nil {
-			return "", fmt.Errorf("read persona file for worker report: %w", err)
-		}
-		if len(body) > DefaultMaxPersonaBytes {
-			body = body[:DefaultMaxPersonaBytes]
-		}
-		persona = "\nTrusted persona and voice:\n" + string(body) + "\n"
+		return "", fmt.Errorf("invalid worker report response limit")
 	}
 	if _, err := a.PersistentResponder.Prepare(ctx); err != nil {
-		return "", fmt.Errorf("prepare worker report summary responder: %w", err)
+		return "", fmt.Errorf("prepare worker report responder: %w", err)
 	}
-	response, err := a.PersistentResponder.Respond(ctx, "CONTEXT_DROP_INTERNAL_REPORT_SUMMARY_V1\n"+persona+"\n"+prompt, maxOutput)
+	response, err := a.PersistentResponder.Respond(ctx, prompt, maxOutput)
 	if err != nil {
 		return "", err
 	}

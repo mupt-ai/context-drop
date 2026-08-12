@@ -5,11 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"contextdrop.dev/context-drop/internal/imessage"
 	"contextdrop.dev/context-drop/internal/orchestrator"
 	"contextdrop.dev/context-drop/internal/runtimeclient"
 )
@@ -17,14 +19,16 @@ import (
 type fakeRuntime struct {
 	mu       sync.Mutex
 	launches []string
+	owners   [][2]string
 	err      error
 }
 
-func (f *fakeRuntime) Launch(_ context.Context, _, _, _, name, backend, _ string) (runtimeclient.Run, error) {
+func (f *fakeRuntime) LaunchManagedSchedule(_ context.Context, _, _, _, name, _, routerID, chatID string) (runtimeclient.ManagedTask, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.launches = append(f.launches, name)
-	return runtimeclient.Run{ID: "run_test", Backend: backend, Status: "running"}, f.err
+	f.owners = append(f.owners, [2]string{routerID, chatID})
+	return runtimeclient.ManagedTask{RunID: "run_test", PaneID: "w1:p2", Status: "running", FullyManaged: true}, f.err
 }
 
 type fakeNotifier struct {
@@ -63,15 +67,17 @@ func TestRunnerClaimsDueBeforeLaunchAndRecordsJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtime := &fakeRuntime{}
-	r := &Runner{Store: store, Runtime: runtime, Notifier: &fakeNotifier{}, Now: func() time.Time { return now }}
+	messageConfig := imessage.Defaults()
+	messageConfig.Enabled, messageConfig.RouterMode, messageConfig.ChatID = true, true, "chat"
+	r := &Runner{Store: store, Runtime: runtime, Notifier: &fakeNotifier{}, Now: func() time.Time { return now }, IMessage: &imessage.Adapter{Config: messageConfig}}
 	if err := r.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if err := r.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(runtime.launches) != 1 {
-		t.Fatalf("launches = %#v", runtime.launches)
+	if len(runtime.launches) != 1 || !reflect.DeepEqual(runtime.owners, [][2]string{{scheduleRouterID, "chat"}}) {
+		t.Fatalf("launches=%#v owners=%#v", runtime.launches, runtime.owners)
 	}
 	st, err := store.Load()
 	if err != nil {

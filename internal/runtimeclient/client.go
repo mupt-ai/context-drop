@@ -37,6 +37,16 @@ type Agent struct {
 	Command    string `json:"command"`
 	PromptMode string `json:"prompt_mode"`
 }
+type ManagedTask struct {
+	RunID        string `json:"runId"`
+	PaneID       string `json:"paneId"`
+	Agent        string `json:"agent"`
+	Name         string `json:"name"`
+	Status       string `json:"status"`
+	Selected     bool   `json:"selected"`
+	FullyManaged bool   `json:"fullyManaged"`
+}
+
 type Run struct {
 	ID             string `json:"id"`
 	Name           string `json:"name"`
@@ -195,6 +205,20 @@ func (c *Client) Agents(ctx context.Context) ([]Agent, error) {
 	err := c.do(ctx, http.MethodGet, "/v1/agents", nil, &out, http.StatusOK)
 	return out.Agents, err
 }
+func (c *Client) LaunchManagedSchedule(ctx context.Context, agent, repo, prompt, name, backend, routerID, chatID string) (ManagedTask, error) {
+	var out struct {
+		RunID string      `json:"runId"`
+		Task  ManagedTask `json:"task"`
+	}
+	request := map[string]string{"agent": agent, "repo": repo, "prompt": prompt, "name": name, "routerId": routerID, "chatId": chatID}
+	if backend != "" {
+		request["backend"] = backend
+	}
+	err := c.do(ctx, http.MethodPost, "/v1/tasks/schedule", request, &out, http.StatusCreated)
+	out.Task.RunID = out.RunID
+	return out.Task, err
+}
+
 func (c *Client) Launch(ctx context.Context, agent, repo, prompt, name, backend, workspace string) (Run, error) {
 	var out Run
 	request := map[string]string{"agent": agent, "repo": repo, "prompt": prompt, "name": name}

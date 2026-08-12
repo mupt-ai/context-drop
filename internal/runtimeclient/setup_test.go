@@ -1,7 +1,10 @@
 package runtimeclient
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -267,5 +270,32 @@ func TestLoadConfigRejectsNonLoopback(t *testing.T) {
 	}
 	if _, err := LoadConfig(); err == nil {
 		t.Fatal("expected loopback error")
+	}
+}
+
+func TestLaunchManagedScheduleCallsManagedEndpointWithOwner(t *testing.T) {
+	var seenPath, seenMethod string
+	var seenBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		seenPath, seenMethod = req.URL.Path, req.Method
+		_ = json.NewDecoder(req.Body).Decode(&seenBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"runId":"run_1","task":{"paneId":"w1:p2","agent":"pi","name":"schedule-x","status":"running","selected":false,"fullyManaged":true}}`))
+	}))
+	defer server.Close()
+	client := &Client{Address: server.URL, Token: "secret", HTTP: server.Client()}
+	task, err := client.LaunchManagedSchedule(context.Background(), "pi", "/repo", "check", "schedule-x", "herdr", "scheduler", "chat-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seenPath != "/v1/tasks/schedule" || seenMethod != http.MethodPost {
+		t.Fatalf("unexpected call: %s %s", seenMethod, seenPath)
+	}
+	if seenBody["routerId"] != "scheduler" || seenBody["chatId"] != "chat-a" || seenBody["backend"] != "herdr" || seenBody["agent"] != "pi" {
+		t.Fatalf("unexpected body: %#v", seenBody)
+	}
+	if task.RunID != "run_1" || task.PaneID != "w1:p2" || !task.FullyManaged || task.Status != "running" {
+		t.Fatalf("unexpected task: %#v", task)
 	}
 }

@@ -55,7 +55,7 @@ type Status struct {
 }
 
 type RuntimeLauncher interface {
-	Launch(context.Context, string, string, string, string, string, string) (runtimeclient.Run, error)
+	LaunchManagedSchedule(context.Context, string, string, string, string, string, string, string) (runtimeclient.ManagedTask, error)
 }
 
 type DelegationRuntime interface {
@@ -923,6 +923,15 @@ func (r *Runner) recordMessagePoll(now time.Time, pollErr error) error {
 	})
 }
 
+// ScheduleReportOwner binds managed schedule reports to the configured
+// orchestrator destination while keeping a stable scheduler source identity.
+func ScheduleReportOwner(cfg imessage.Config) (routerID, chatID string, err error) {
+	if !cfg.Enabled || !cfg.RouterMode || strings.TrimSpace(cfg.ChatID) == "" {
+		return "", "", fmt.Errorf("managed schedules require an enabled router-mode iMessage destination")
+	}
+	return scheduleRouterID, cfg.ChatID, nil
+}
+
 func (r *Runner) Tick(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -938,17 +947,24 @@ func (r *Runner) Tick(ctx context.Context) error {
 		return err
 	}
 	for _, schedule := range due {
-		run, launchErr := r.Runtime.Launch(ctx, schedule.Agent, schedule.Repo, schedule.Prompt, "schedule-"+schedule.Name, schedule.Backend, "")
-		job := orchestrator.NewJob(schedule, "launched", run.ID, "", now)
+		var routerID, chatID string
+		var ownerErr error
+		if r.IMessage == nil {
+			ownerErr = fmt.Errorf("managed schedules require a configured orchestrator destination")
+		} else {
+			routerID, chatID, ownerErr = ScheduleReportOwner(r.IMessage.Config)
+		}
+		var task runtimeclient.ManagedTask
+		launchErr := ownerErr
+		if launchErr == nil {
+			task, launchErr = r.Runtime.LaunchManagedSchedule(ctx, schedule.Agent, schedule.Repo, schedule.Prompt, "schedule-"+schedule.Name, schedule.Backend, routerID, chatID)
+		}
+		job := orchestrator.NewJob(schedule, "launched", task.RunID, "", now)
 		if launchErr != nil {
 			job = orchestrator.NewJob(schedule, "launch_error", "", launchErr.Error(), now)
 			_ = r.Notifier.Notify("Context Drop schedule failed", schedule.Name+" could not launch. Check daemon status.")
 		} else if schedule.NotifyOnInitiate {
-			backend := run.Backend
-			if backend == "" {
-				backend = "tmux"
-			}
-			_ = r.Notifier.Notify("Context Drop schedule launched", schedule.Name+" started locally in "+backend+".")
+			_ = r.Notifier.Notify("Context Drop schedule launched", schedule.Name+" started locally in managed pane "+task.PaneID+".")
 		}
 		if err := r.Store.Update(func(st *orchestrator.State) error {
 			st.Jobs = append(st.Jobs, job)
