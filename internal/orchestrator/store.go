@@ -19,7 +19,7 @@ const (
 	MaxJobs         = 1000
 	MaxSeenMessages = 5000
 	MaxMessageJobs  = 1000
-	MaxPromptBytes  = 64 * 1024
+	MaxPromptBytes  = 16000
 )
 
 const (
@@ -64,6 +64,7 @@ type Job struct {
 	ScheduleType  string     `json:"schedule_type"`
 	Agent         string     `json:"agent,omitempty"`
 	Repo          string     `json:"repo,omitempty"`
+	Backend       string     `json:"backend,omitempty"`
 	RuntimeRunID  string     `json:"runtime_run_id,omitempty"`
 	Status        string     `json:"status"`
 	Outcome       string     `json:"outcome,omitempty"` // legacy compatibility
@@ -272,7 +273,23 @@ func (s Store) save(st State) error {
 
 func pruneState(st *State) {
 	if len(st.Jobs) > MaxJobs {
-		st.Jobs = st.Jobs[len(st.Jobs)-MaxJobs:]
+		active := make([]Job, 0)
+		terminal := make([]Job, 0, len(st.Jobs))
+		for _, job := range st.Jobs {
+			if job.Status == "queued" || job.Status == "running" {
+				active = append(active, job)
+			} else {
+				terminal = append(terminal, job)
+			}
+		}
+		terminalLimit := MaxJobs - len(active)
+		if terminalLimit < 0 {
+			terminalLimit = 0
+		}
+		if len(terminal) > terminalLimit {
+			terminal = terminal[len(terminal)-terminalLimit:]
+		}
+		st.Jobs = append(terminal, active...)
 	}
 	if st.SeenMessageIDs == nil {
 		st.SeenMessageIDs = map[string]string{}
@@ -524,7 +541,7 @@ func ClaimManual(st *State, name string, now time.Time) (Schedule, Job, error) {
 }
 
 func SetJobStatus(st *State, id, status, runtimeID, errorText string, now time.Time) error {
-	valid := map[string]bool{"queued": true, "running": true, "completed": true, "failed": true, "timed_out": true, "skipped": true}
+	valid := map[string]bool{"queued": true, "running": true, "completed": true, "failed": true, "unknown": true, "timed_out": true, "skipped": true}
 	if !valid[status] {
 		return fmt.Errorf("invalid job status %q", status)
 	}
@@ -538,7 +555,7 @@ func SetJobStatus(st *State, id, status, runtimeID, errorText string, now time.T
 			at := now
 			j.StartedAt = &at
 		}
-		if status == "completed" || status == "failed" || status == "timed_out" || status == "skipped" {
+		if status == "completed" || status == "failed" || status == "unknown" || status == "timed_out" || status == "skipped" {
 			at := now
 			j.FinishedAt = &at
 		}
@@ -558,7 +575,7 @@ func CompleteJob(st *State, id, outcome, runtimeID, errorText string) error {
 func NewJobWithOccurrence(schedule Schedule, status, occurrence string, now time.Time) Job {
 	var b [8]byte
 	_, _ = rand.Read(b[:])
-	job := Job{ID: "job_" + hex.EncodeToString(b[:]), OccurrenceKey: schedule.Name + ":" + occurrence, ScheduleName: schedule.Name, ScheduleType: schedule.Type, Agent: schedule.Agent, Repo: schedule.Repo, Status: status, Outcome: status, CreatedAt: now}
+	job := Job{ID: "job_" + hex.EncodeToString(b[:]), OccurrenceKey: schedule.Name + ":" + occurrence, ScheduleName: schedule.Name, ScheduleType: schedule.Type, Agent: schedule.Agent, Repo: schedule.Repo, Backend: schedule.Backend, Status: status, Outcome: status, CreatedAt: now}
 	if status == "running" {
 		at := now
 		job.StartedAt = &at

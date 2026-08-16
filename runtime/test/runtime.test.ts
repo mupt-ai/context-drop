@@ -59,6 +59,7 @@ test("buildAgentArgv preserves argv boundaries", () => assert.deepEqual(buildAge
 test("live task status uses only the configured backend", () => {
   const herdr=liveTaskStatus({...config(),defaultBackend:"herdr"},{run(command,args){assert.equal(command,"herdr");assert.deepEqual(args,["--session","default","agent","list"]);return{status:0,stdout:JSON.stringify({result:{agents:[{pane_id:"w1:p2",agent:"codex",agent_status:"blocked",foreground_cwd:"/repo",focused:false,terminal_title_stripped:"Fix parser"}]}})}}});assert.deepEqual(herdr,{backend:"herdr",tasks:[{paneId:"w1:p2",agent:"codex",name:"repo",status:"blocked",selected:false,fullyManaged:false}]});
   const tmux=liveTaskStatus({...config(),defaultBackend:"tmux"},{run(command,args){assert.equal(command,"tmux");assert.equal(args[0],"list-panes");return{status:0,stdout:"%7\u001fpi\u001f/repo\u001f0\u001f1\n"}}});assert.deepEqual(tmux,{backend:"tmux",tasks:[{paneId:"%7",name:"repo",agent:"pi",status:"running",selected:true,fullyManaged:false}]});
+  const override=liveTaskStatus({...config(),defaultBackend:"tmux"},{run(command){assert.equal(command,"herdr");return{status:0,stdout:JSON.stringify({result:{agents:[]}})}}},"herdr");assert.equal(override.backend,"herdr");
 });
 
 test("live task status fails instead of falling back to stored state", () => {

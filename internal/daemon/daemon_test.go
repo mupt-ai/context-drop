@@ -17,13 +17,17 @@ import (
 )
 
 type fakeRuntime struct {
-	mu       sync.Mutex
-	launches []string
-	owners   [][2]string
-	err      error
+	mu        sync.Mutex
+	launches  []string
+	owners    [][2]string
+	err       error
+	taskErr   error
+	taskTasks []runtimeclient.ManagedTask
 }
 
-func (f *fakeRuntime) Tasks(context.Context) ([]runtimeclient.ManagedTask, error) { return nil, nil }
+func (f *fakeRuntime) Tasks(context.Context, string) ([]runtimeclient.ManagedTask, error) {
+	return f.taskTasks, f.taskErr
+}
 
 func (f *fakeRuntime) LaunchManagedSchedule(_ context.Context, _, _, _, name, _, routerID, chatID string) (runtimeclient.ManagedTask, error) {
 	f.mu.Lock()
@@ -85,7 +89,7 @@ func TestRunnerClaimsDueBeforeLaunchAndRecordsJob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(st.Jobs) != 1 || st.Jobs[0].Status != "completed" {
+	if len(st.Jobs) != 1 || st.Jobs[0].Status != "unknown" {
 		t.Fatalf("jobs = %#v", st.Jobs)
 	}
 }

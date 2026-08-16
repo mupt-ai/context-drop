@@ -217,6 +217,36 @@ func TestStorePermissionsAndRetention(t *testing.T) {
 	}
 }
 
+func TestStoreRetentionPreservesActiveJobsBeyondMaxJobs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	store := Store{Path: path}
+	st := State{}
+	for i := 0; i < MaxJobs+20; i++ {
+		st.Jobs = append(st.Jobs, Job{ID: fmt.Sprintf("terminal-%d", i), Status: "completed"})
+	}
+	st.Jobs = append(st.Jobs, Job{ID: "queued", ScheduleName: "active", Status: "queued"}, Job{ID: "running", ScheduleName: "active", Status: "running"})
+	if err := store.Save(st); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Jobs) != MaxJobs {
+		t.Fatalf("jobs = %d", len(loaded.Jobs))
+	}
+	if !hasActiveJob(loaded, "active") {
+		t.Fatalf("active jobs were pruned: %#v", loaded.Jobs[len(loaded.Jobs)-2:])
+	}
+	now := time.Now().UTC()
+	s := testSchedule(t, "active")
+	s.NextRunAt = now
+	loaded.Schedules = []Schedule{s}
+	if claims := ClaimDue(&loaded, now); len(claims) != 0 || loaded.Jobs[len(loaded.Jobs)-1].Status != "skipped" {
+		t.Fatalf("overlap was not skipped with >MaxJobs history: claims=%#v tail=%#v", claims, loaded.Jobs[len(loaded.Jobs)-1])
+	}
+}
+
 func TestManualClaimSnapshotsScheduleBeforeConcurrentMutation(t *testing.T) {
 	now := time.Now().UTC()
 	st := State{}

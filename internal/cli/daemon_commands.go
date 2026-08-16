@@ -297,7 +297,10 @@ func runScheduleOnce(ctx context.Context, cmd *cobra.Command, name string) error
 			return failReserved(clientErr)
 		}
 		runner.Runtime = client
-		tasks, _ = client.Tasks(ctx)
+		tasks, clientErr = client.Tasks(ctx, selected.Backend)
+		if clientErr != nil {
+			return failReserved(fmt.Errorf("live task status unavailable: %w", clientErr))
+		}
 		if selected.Type == orchestrator.ScheduleAgent {
 			imsgCfg, loadErr := imessage.Load()
 			if loadErr != nil {

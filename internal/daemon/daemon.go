@@ -56,7 +56,7 @@ type Status struct {
 
 type RuntimeLauncher interface {
 	LaunchManagedSchedule(context.Context, string, string, string, string, string, string, string) (runtimeclient.ManagedTask, error)
-	Tasks(context.Context) ([]runtimeclient.ManagedTask, error)
+	Tasks(context.Context, string) ([]runtimeclient.ManagedTask, error)
 }
 
 type DelegationRuntime interface {
@@ -937,10 +937,34 @@ func (r *Runner) Tick(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := r.Now()
-	tasks, taskErr := r.Runtime.Tasks(ctx)
-	if taskErr == nil {
-		_ = r.reconcile(tasks, now)
+	current, loadErr := r.Store.Load()
+	if loadErr != nil {
+		return loadErr
 	}
+	backends := map[string]bool{}
+	for _, schedule := range current.Schedules {
+		if schedule.Enabled {
+			backends[schedule.Backend] = true
+		}
+	}
+	for _, job := range current.Jobs {
+		if job.ScheduleType == orchestrator.ScheduleAgent && job.Status == "running" {
+			backends[job.Backend] = true
+		}
+	}
+	var tasks []runtimeclient.ManagedTask
+	taskErrors := map[string]error{}
+	inspected := map[string]bool{}
+	for backend := range backends {
+		found, err := r.Runtime.Tasks(ctx, backend)
+		if err != nil {
+			taskErrors[backend] = err
+			continue
+		}
+		inspected[backend] = true
+		tasks = append(tasks, found...)
+	}
+	_ = r.reconcile(tasks, inspected, now)
 	var claims []orchestrator.Claim
 	if err := r.Store.Update(func(st *orchestrator.State) error {
 		orchestrator.RecoverStaleLocalJobs(st, now)
@@ -950,7 +974,7 @@ func (r *Runner) Tick(ctx context.Context) error {
 		return err
 	}
 	for _, claim := range claims {
-		if claim.Schedule.Type == orchestrator.ScheduleWatch && taskErr != nil {
+		if claim.Schedule.Type == orchestrator.ScheduleWatch && taskErrors[claim.Schedule.Backend] != nil {
 			_ = r.Store.Update(func(st *orchestrator.State) error {
 				return orchestrator.SetJobStatus(st, claim.Job.ID, "failed", "", "live task status unavailable", now)
 			})
@@ -1011,7 +1035,7 @@ func (r *Runner) ExecuteClaim(ctx context.Context, claim orchestrator.Claim, tas
 				if s.Type == orchestrator.ScheduleWatch {
 					previous := st.Schedules[i].LastWatchState
 					st.Schedules[i].LastWatchState = errText
-					if previous != errText && (errText == "missing" || errText == "blocked" || errText == "exited" || errText == "failed") {
+					if previous != errText && (errText == "done" || errText == "missing" || errText == "blocked" || errText == "exited" || errText == "failed") {
 						_ = r.Notifier.Notify("Context Drop watch changed", s.Name+": "+errText)
 					}
 				}
@@ -1049,7 +1073,7 @@ func (r *Runner) executeCommand(parent context.Context, s orchestrator.Schedule)
 		if err == nil {
 			return "completed", "", attempt + 1
 		}
-		if timed {
+		if timed && attempt == attempts-1 {
 			return "timed_out", "command exceeded timeout", attempt + 1
 		}
 		if attempt == attempts-1 {
@@ -1075,7 +1099,7 @@ func (r *Runner) executeWatch(s orchestrator.Schedule, tasks []runtimeclient.Man
 	return "completed", "missing"
 }
 
-func (r *Runner) reconcile(tasks []runtimeclient.ManagedTask, now time.Time) error {
+func (r *Runner) reconcile(tasks []runtimeclient.ManagedTask, inspected map[string]bool, now time.Time) error {
 	live := map[string]string{}
 	for _, t := range tasks {
 		live[t.RunID] = t.Status
@@ -1086,13 +1110,17 @@ func (r *Runner) reconcile(tasks []runtimeclient.ManagedTask, now time.Time) err
 			if j.ScheduleType != orchestrator.ScheduleAgent || j.Status != "running" || j.RuntimeRunID == "" {
 				continue
 			}
+			backend := j.Backend
+			if !inspected[backend] {
+				continue
+			}
 			state, ok := live[j.RuntimeRunID]
-			if !ok || state == "exited" || state == "failed" {
-				status := "completed"
-				if state == "failed" {
-					status = "failed"
-				}
-				_ = orchestrator.SetJobStatus(st, j.ID, status, j.RuntimeRunID, "", now)
+			if !ok {
+				_ = orchestrator.SetJobStatus(st, j.ID, "unknown", j.RuntimeRunID, "live task disappeared", now)
+			} else if state == "failed" || state == "exited" {
+				_ = orchestrator.SetJobStatus(st, j.ID, "failed", j.RuntimeRunID, "live task "+state, now)
+			} else if state == "done" || state == "completed" {
+				_ = orchestrator.SetJobStatus(st, j.ID, "completed", j.RuntimeRunID, "", now)
 			}
 		}
 		return nil

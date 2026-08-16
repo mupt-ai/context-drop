@@ -121,7 +121,9 @@ function observeManagedLiveTasks(config: RuntimeConfig, current: Date, runner: C
   let changed = false, runsChanged = false;
   for (const task of tasks) {
     if (task.status !== "running") continue;
-    const run = runs.find(item => item.id === task.runId), paneId = run?.backend === "herdr" ? run.herdrPane : run?.tmuxPane;
+    const run = runs.find(item => item.id === task.runId);
+    if (!run || run.backend !== snapshot.backend) continue;
+    const paneId = run.backend === "herdr" ? run.herdrPane : run.tmuxPane;
     const live = paneId ? liveByPane.get(paneId) : undefined;
     if (!live) { if(run&&current.getTime()-Date.parse(task.createdAt)>=AGENT_REGISTRATION_GRACE_MS){task.status="failed";task.launchError="worker absent from reachable agent list";task.reportCapability="";task.updatedAt=current.toISOString();if(run.status!=="exited"){run.status="exited";runsChanged=true;}queueLifecycleReport(reports,task,"The worker is absent from the reachable agent list and did not send a final report.",current);changed=true;} continue; }
     if (live.status === task.lastObservedStatus) continue;
@@ -222,7 +224,7 @@ export function createRuntimeServer(config: RuntimeConfig, token: string, runner
       }
 
       if (req.method === "GET" && url.pathname === "/v1/live-tasks") {
-        if (!general) return json(res, 401, { error: "unauthorized" }); const live = liveTaskStatus(config, runner); observeManagedLiveTasks(config, current, runner, live); const runs = loadRuns(config); const saved = records<TaskRecord>(pathFor(config, "parent-tasks.jsonl")); const managed = new Map(runs.map(run => [run.backend === "herdr" ? run.herdrPane : run.tmuxPane, run])); for (const task of live.tasks) { const run = managed.get(task.paneId); if (run) { task.fullyManaged = true; task.runId = run.id; task.name = saved.find(item => item.runId === run.id)?.label ?? task.name; } } return json(res, 200, { backend: live.backend, tasks: live.tasks });
+        if (!general) return json(res, 401, { error: "unauthorized" }); const requestedBackend=url.searchParams.get("backend");if(requestedBackend!==null&&requestedBackend!=="tmux"&&requestedBackend!=="herdr")throw new Error("backend must be tmux or herdr");const live = liveTaskStatus(config, runner, requestedBackend??undefined); observeManagedLiveTasks(config, current, runner, live); const runs = loadRuns(config); const saved = records<TaskRecord>(pathFor(config, "parent-tasks.jsonl")); const managed = new Map(runs.filter(run=>run.backend===live.backend).map(run => [run.backend === "herdr" ? run.herdrPane : run.tmuxPane, run])); for (const task of live.tasks) { const run = managed.get(task.paneId); if (run) { task.fullyManaged = true; task.runId = run.id; task.name = saved.find(item => item.runId === run.id)?.label ?? task.name; } } return json(res, 200, { backend: live.backend, tasks: live.tasks });
       }
       if (req.method === "GET" && url.pathname === "/v1/tasks") {
         const owner = routerFor(config, auth(req)); if (!owner) return json(res, 401, { error: "unauthorized" }); const live = liveTaskStatus(config, runner); observeManagedLiveTasks(config, current, runner, live); const saved = records<TaskRecord>(pathFor(config, "parent-tasks.jsonl")); const runs = loadRuns(config); const managed = new Map(runs.map(run => [run.backend === "herdr" ? run.herdrPane : run.tmuxPane, run])); for (const task of live.tasks) { const run = managed.get(task.paneId); const record = run && saved.find(item => item.runId === run.id && item.chatId === owner.chatId && (item.routerId === owner.routerId || item.routerId === SCHEDULE_ROUTER_ID)); if (record) { task.fullyManaged = true; task.name = record.label ?? task.name; } } let topology; if (live.backend === "herdr") { try { topology = herdrTopology(config, runner); } catch { /* legacy Herdr/mocks may expose only agent list */ } } return json(res, 200, { tasks: live.tasks, ...(topology ? { topology } : {}) });

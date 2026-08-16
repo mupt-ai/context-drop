@@ -206,12 +206,16 @@ func (c *Client) Agents(ctx context.Context) ([]Agent, error) {
 	err := c.do(ctx, http.MethodGet, "/v1/agents", nil, &out, http.StatusOK)
 	return out.Agents, err
 }
-func (c *Client) Tasks(ctx context.Context) ([]ManagedTask, error) {
+func (c *Client) Tasks(ctx context.Context, backend string) ([]ManagedTask, error) {
 	var out struct {
 		Backend string        `json:"backend"`
 		Tasks   []ManagedTask `json:"tasks"`
 	}
-	err := c.do(ctx, http.MethodGet, "/v1/live-tasks", nil, &out, http.StatusOK)
+	endpoint := "/v1/live-tasks"
+	if backend != "" {
+		endpoint += "?backend=" + url.QueryEscape(backend)
+	}
+	err := c.do(ctx, http.MethodGet, endpoint, nil, &out, http.StatusOK)
 	for i := range out.Tasks {
 		out.Tasks[i].Backend = out.Backend
 	}
