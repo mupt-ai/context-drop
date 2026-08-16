@@ -130,6 +130,27 @@ func TestAgentReconciliationIsConservative(t *testing.T) {
 	}
 }
 
+func TestReconcileDoesNotTerminateJobWhenRuntimeRunIDHasNoMatchingLiveTask(t *testing.T) {
+	dir := t.TempDir()
+	store := orchestrator.Store{Path: filepath.Join(dir, "state.json")}
+	now := time.Now().UTC()
+	s := orchestrator.Schedule{Name: "agent", Type: orchestrator.ScheduleAgent, Backend: "herdr", Agent: "mock", Repo: dir, Prompt: "work", Every: time.Minute, Enabled: true, Overlap: orchestrator.OverlapSkip, MissedRunPolicy: "latest"}
+	job := orchestrator.NewJobWithOccurrence(s, "running", "run-old-session", now)
+	job.RuntimeRunID = "run-old-session"
+	store.Update(func(st *orchestrator.State) error { st.Jobs = append(st.Jobs, job); return nil })
+	r := Runner{Store: store}
+	// The live task list comes from the configured session and does not include
+	// tasks persisted under a different herdrSession. Reconcile must mark the
+	// job "unknown" (conservative), not "failed" (which would falsely terminate it).
+	if err := r.reconcile([]runtimeclient.ManagedTask{{Backend: "herdr", RunID: "run-current", Status: "working"}}, map[string]bool{"herdr": true}, now); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := store.Load()
+	if st.Jobs[0].Status != "unknown" {
+		t.Fatalf("expected unknown, got %s", st.Jobs[0].Status)
+	}
+}
+
 func TestManualWatchFailsWhenLiveStatusUnavailable(t *testing.T) {
 	dir := t.TempDir()
 	store := orchestrator.Store{Path: filepath.Join(dir, "state.json")}

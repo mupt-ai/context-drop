@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -106,7 +107,41 @@ func TestConfigureRepoAliasAddsAndRemovesCanonicalDirectory(t *testing.T) {
 	}
 }
 
+func TestInitializeWritesAtomicallyAndConcurrentAliasIsPreserved(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CONTEXT_DROP_HOME", home)
+	if _, err := Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	repo := t.TempDir()
+	if err := ConfigureRepoAlias("context-drop", repo, false); err != nil {
+		t.Fatal(err)
+	}
+	// Re-running Initialize must not lose the alias written concurrently.
+	if _, err := Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.RepoAliases["context-drop"] == "" {
+		t.Fatalf("repo alias was lost after Initialize: %#v", cfg.RepoAliases)
+	}
+	// Verify no leftover temp files in the config directory.
+	entries, err := os.ReadDir(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".config-") && strings.HasSuffix(e.Name(), ".tmp") {
+			t.Fatalf("leftover temp file: %s", e.Name())
+		}
+	}
+}
+
 func TestConfigureRepoAliasRejectsInvalidInput(t *testing.T) {
+
 	t.Setenv("CONTEXT_DROP_HOME", t.TempDir())
 	if _, err := Initialize(); err != nil {
 		t.Fatal(err)

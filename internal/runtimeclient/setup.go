@@ -43,6 +43,11 @@ func Initialize() ([]string, error) {
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return nil, err
 	}
+	lock, err := lockConfig(configPath + ".lock")
+	if err != nil {
+		return nil, err
+	}
+	defer lock.Close()
 	if _, err := os.Stat(tokenPath); os.IsNotExist(err) {
 		b := make([]byte, 32)
 		if _, err := rand.Read(b); err != nil {
@@ -159,18 +164,45 @@ func Initialize() ([]string, error) {
 			return nil, fmt.Errorf("delegateAgent %q is not configured", cfg.DelegateAgent)
 		}
 	}
-	data, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	data = append(data, '\n')
-	if err := os.WriteFile(configPath, data, 0o600); err != nil {
-		return nil, err
-	}
-	if err := os.Chmod(configPath, 0o600); err != nil {
+	if err := writeRuntimeConfig(configPath, cfg); err != nil {
 		return nil, err
 	}
 	return detected, nil
+}
+
+func writeRuntimeConfig(configPath string, cfg RuntimeConfig) error {
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	tmp, err := os.CreateTemp(filepath.Dir(configPath), ".config-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err = tmp.Chmod(0o600); err == nil {
+		_, err = tmp.Write(data)
+	}
+	if err == nil {
+		err = tmp.Sync()
+	}
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	if err = os.Rename(tmpPath, configPath); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(configPath))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
 }
 
 func ConfigureRepoAlias(alias, path string, remove bool) error {
@@ -213,30 +245,7 @@ func ConfigureRepoAlias(alias, path string, remove bool) error {
 		}
 		cfg.RepoAliases[alias] = resolved
 	}
-	data, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
-	tmp, err := os.CreateTemp(filepath.Dir(configPath), ".config-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-	if err = tmp.Chmod(0o600); err == nil {
-		_, err = tmp.Write(data)
-	}
-	if err == nil {
-		err = tmp.Sync()
-	}
-	if closeErr := tmp.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return err
-	}
-	return os.Rename(tmpPath, configPath)
+	return writeRuntimeConfig(configPath, cfg)
 }
 
 func ConfigureAgent(name string, agent AgentConfig, replace bool) error {
@@ -279,30 +288,7 @@ func ConfigureAgent(name string, agent AgentConfig, replace bool) error {
 		return fmt.Errorf("agent %q is already configured; pass --replace to overwrite it", name)
 	}
 	cfg.Agents[name] = agent
-	data, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
-	tmp, err := os.CreateTemp(filepath.Dir(configPath), ".config-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-	if err = tmp.Chmod(0o600); err == nil {
-		_, err = tmp.Write(data)
-	}
-	if err == nil {
-		err = tmp.Sync()
-	}
-	if closeErr := tmp.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return err
-	}
-	return os.Rename(tmpPath, configPath)
+	return writeRuntimeConfig(configPath, cfg)
 }
 
 func LoadConfig() (RuntimeConfig, error) {

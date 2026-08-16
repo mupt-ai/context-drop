@@ -79,5 +79,3 @@ imsg send --chat-id 1 --text "$site_message" --json
 ```
 
 If the digest fails before the website can be generated, send a concise blocker with `imsg send --chat-id 1 --text "Context Drop digest failed before site generation." --json`. Do not send duplicate notifications.
-
-
