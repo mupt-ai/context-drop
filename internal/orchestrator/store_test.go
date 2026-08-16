@@ -240,7 +240,7 @@ func TestManualClaimSnapshotsScheduleBeforeConcurrentMutation(t *testing.T) {
 	if err := CompleteJob(&st, job.ID, "launched", "run_1", ""); err != nil {
 		t.Fatal(err)
 	}
-	if st.Jobs[0].Outcome != "launched" || st.Jobs[0].RuntimeRunID != "run_1" {
+	if st.Jobs[0].RuntimeRunID != "run_1" || (st.Jobs[0].Status != "running" && st.Jobs[0].Status != "launched") {
 		t.Fatalf("job = %#v", st.Jobs[0])
 	}
 }

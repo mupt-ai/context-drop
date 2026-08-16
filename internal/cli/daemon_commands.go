@@ -130,8 +130,10 @@ func newWatchdogCommand() *cobra.Command {
 
 func newScheduleCommand() *cobra.Command {
 	root := &cobra.Command{Use: "schedule", Short: "Manage durable local agent schedules"}
-	var name, agent, backend, repo, prompt, promptFile, cron, timezone string
-	var every time.Duration
+	var name, scheduleType, agent, backend, repo, prompt, promptFile, cron, timezone, cwd, watchPane, watchTarget, overlap string
+	var command []string
+	var every, timeout time.Duration
+	var retries, autoPause int
 	var notify, disabled bool
 	add := &cobra.Command{Use: "add", Short: "Add or update an interval or calendar schedule", Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, _ []string) error {
 		if prompt != "" && promptFile != "" {
@@ -144,13 +146,17 @@ func newScheduleCommand() *cobra.Command {
 			}
 			prompt = string(data)
 		}
-		cfg, err := runtimeclient.LoadConfig()
-		if err != nil {
-			return fmt.Errorf("load local runtime configuration: %w", err)
+		if scheduleType == "" {
+			scheduleType = orchestrator.ScheduleAgent
 		}
-		_, found := cfg.Agents[agent]
-		if !found {
-			return fmt.Errorf("agent %q is not configured in the local runtime", agent)
+		if scheduleType == orchestrator.ScheduleAgent {
+			cfg, err := runtimeclient.LoadConfig()
+			if err != nil {
+				return fmt.Errorf("load local runtime configuration: %w", err)
+			}
+			if _, found := cfg.Agents[agent]; !found {
+				return fmt.Errorf("agent %q is not configured in the local runtime", agent)
+			}
 		}
 		if backend != "" && backend != "tmux" && backend != "herdr" {
 			return fmt.Errorf("--backend must be tmux or herdr")
@@ -159,7 +165,7 @@ func newScheduleCommand() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		s := orchestrator.Schedule{Name: name, Agent: agent, Backend: backend, Repo: repo, Prompt: prompt, Every: every, Cron: cron, Timezone: timezone, Enabled: !disabled, NotifyOnInitiate: notify}
+		s := orchestrator.Schedule{Name: name, Type: scheduleType, Agent: agent, Backend: backend, Repo: repo, Prompt: prompt, Command: command, Cwd: cwd, WatchPane: watchPane, WatchTarget: watchTarget, Every: every, Cron: cron, Timezone: timezone, Enabled: !disabled, NotifyOnInitiate: notify, Overlap: overlap, MissedRunPolicy: "latest", Timeout: timeout, MaxRetries: retries, AutoPauseAfter: autoPause}
 		if err := store.Update(func(st *orchestrator.State) error {
 			return orchestrator.Upsert(st, s, time.Now().UTC())
 		}); err != nil {
@@ -173,6 +179,7 @@ func newScheduleCommand() *cobra.Command {
 		return nil
 	}}
 	add.Flags().StringVar(&name, "name", "", "stable schedule name")
+	add.Flags().StringVar(&scheduleType, "type", "agent", "schedule type: agent, command, or watch")
 	add.Flags().StringVar(&agent, "agent", "", "configured local agent")
 	add.Flags().StringVar(&backend, "backend", "", "session backend: tmux or herdr (default from runtime config)")
 	add.Flags().StringVar(&repo, "repo", "", "absolute local repository path")
@@ -181,6 +188,14 @@ func newScheduleCommand() *cobra.Command {
 	add.Flags().DurationVar(&every, "every", 0, "interval such as 15m or 2h (minimum 1m)")
 	add.Flags().StringVar(&cron, "cron", "", "exact five-field calendar schedule")
 	add.Flags().StringVar(&timezone, "timezone", "", "IANA timezone for --cron, such as America/Los_Angeles")
+	add.Flags().StringArrayVar(&command, "command", nil, "one exact argv entry; repeat for each argument (no shell)")
+	add.Flags().StringVar(&cwd, "cwd", "", "absolute command working directory")
+	add.Flags().StringVar(&watchPane, "watch-pane", "", "explicit backend pane ID")
+	add.Flags().StringVar(&watchTarget, "watch-target", "", "stable live task name")
+	add.Flags().StringVar(&overlap, "overlap", "skip", "overlap policy (skip supported)")
+	add.Flags().DurationVar(&timeout, "timeout", 0, "execution timeout")
+	add.Flags().IntVar(&retries, "retries", 0, "bounded command retries (0-10)")
+	add.Flags().IntVar(&autoPause, "auto-pause-after", 0, "pause after this many consecutive failures")
 	add.MarkFlagsMutuallyExclusive("every", "cron")
 	add.Flags().BoolVar(&notify, "notify", false, "send a local notification when a run is initiated")
 	add.Flags().BoolVar(&disabled, "disabled", false, "save disabled")
@@ -197,12 +212,20 @@ func newScheduleCommand() *cobra.Command {
 		if jsonOut {
 			return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{"schedules": st.Schedules, "jobs": st.Jobs})
 		}
+		latest := map[string]orchestrator.Job{}
+		for _, job := range st.Jobs {
+			latest[job.ScheduleName] = job
+		}
 		for _, s := range st.Schedules {
 			cadence := s.Every.String()
 			if s.Cron != "" {
 				cadence = fmt.Sprintf("%s (%s)", s.Cron, s.Timezone)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\t%s\t%s\t%s\tenabled=%t\tnext=%s\n", s.Name, cadence, s.Backend, s.Agent, s.Repo, s.Enabled, s.NextRunAt.Format(time.RFC3339))
+			jobStatus := "none"
+			if job, ok := latest[s.Name]; ok {
+				jobStatus = job.Status
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\ttype=%s\toverlap=%s\tbackend=%s\tagent=%s\ttarget=%s\tenabled=%t\tfailures=%d\tjob=%s\tnext=%s\n", s.Name, cadence, s.Type, s.Overlap, s.Backend, s.Agent, s.WatchPane+s.WatchTarget, s.Enabled, s.ConsecutiveFailures, jobStatus, s.NextRunAt.Format(time.RFC3339))
 		}
 		return nil
 	}}
@@ -223,8 +246,23 @@ func newScheduleCommand() *cobra.Command {
 		}
 		return e
 	}}
-	run := &cobra.Command{Use: "run <name>", Short: "Launch one configured schedule immediately", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error { return runScheduleOnce(cmd.Context(), cmd, args[0]) }}
-	root.AddCommand(add, list, remove, run)
+	run := &cobra.Command{Use: "run-now <name>", Aliases: []string{"run"}, Short: "Run one configured schedule immediately", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error { return runScheduleOnce(cmd.Context(), cmd, args[0]) }}
+	setEnabled := func(enabled bool) *cobra.Command {
+		verb := "pause"
+		if enabled {
+			verb = "resume"
+		}
+		return &cobra.Command{Use: verb + " <name>", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+			store, e := orchestrator.NewStore()
+			if e != nil {
+				return e
+			}
+			return store.Update(func(st *orchestrator.State) error {
+				return orchestrator.SetEnabled(st, args[0], enabled, time.Now().UTC())
+			})
+		}}
+	}
+	root.AddCommand(add, list, remove, run, setEnabled(false), setEnabled(true))
 	return root
 }
 
@@ -245,33 +283,42 @@ func runScheduleOnce(ctx context.Context, cmd *cobra.Command, name string) error
 	}); err != nil {
 		return err
 	}
-	client, err := runtimeclient.New()
-	if err == nil {
-		var imsgCfg imessage.Config
-		imsgCfg, err = imessage.Load()
-		if err == nil {
-			var routerID, chatID string
-			routerID, chatID, err = daemon.ScheduleReportOwner(imsgCfg)
-			if err == nil {
-				var task runtimeclient.ManagedTask
-				task, err = client.LaunchManagedSchedule(ctx, selected.Agent, selected.Repo, selected.Prompt, "schedule-"+selected.Name, selected.Backend, routerID, chatID)
-				if err == nil {
-					err = store.Update(func(st *orchestrator.State) error {
-						return orchestrator.CompleteJob(st, job.ID, "launched", task.RunID, "")
-					})
-					if err == nil {
-						fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\n", task.RunID, task.Status)
-					}
-					return err
-				}
+	runner := daemon.Runner{Store: store, Notifier: orchestrator.LocalNotifier{}, Now: func() time.Time { return time.Now().UTC() }}
+	var tasks []runtimeclient.ManagedTask
+	failReserved := func(runErr error) error {
+		_ = store.Update(func(st *orchestrator.State) error {
+			return orchestrator.SetJobStatus(st, job.ID, "failed", "", runErr.Error(), time.Now().UTC())
+		})
+		return runErr
+	}
+	if selected.Type != orchestrator.ScheduleCommand {
+		client, clientErr := runtimeclient.New()
+		if clientErr != nil {
+			return failReserved(clientErr)
+		}
+		runner.Runtime = client
+		tasks, _ = client.Tasks(ctx)
+		if selected.Type == orchestrator.ScheduleAgent {
+			imsgCfg, loadErr := imessage.Load()
+			if loadErr != nil {
+				return failReserved(loadErr)
 			}
+			runner.IMessage = &imessage.Adapter{Config: imsgCfg}
 		}
 	}
-	launchErr := err
-	if updateErr := store.Update(func(st *orchestrator.State) error {
-		return orchestrator.CompleteJob(st, job.ID, "launch_error", "", launchErr.Error())
-	}); updateErr != nil {
-		return updateErr
+	runner.ExecuteClaim(ctx, orchestrator.Claim{Schedule: selected, Job: job}, tasks, time.Now().UTC())
+	st, err := store.Load()
+	if err != nil {
+		return err
 	}
-	return launchErr
+	for _, j := range st.Jobs {
+		if j.ID == job.ID {
+			fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\n", j.ID, j.Status)
+			if j.Status == "failed" || j.Status == "timed_out" {
+				return fmt.Errorf("schedule %s: %s", selected.Name, j.Error)
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("job %s disappeared", job.ID)
 }

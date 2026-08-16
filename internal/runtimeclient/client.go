@@ -38,6 +38,7 @@ type Agent struct {
 	PromptMode string `json:"prompt_mode"`
 }
 type ManagedTask struct {
+	Backend      string `json:"backend,omitempty"`
 	RunID        string `json:"runId"`
 	PaneID       string `json:"paneId"`
 	Agent        string `json:"agent"`
@@ -205,6 +206,18 @@ func (c *Client) Agents(ctx context.Context) ([]Agent, error) {
 	err := c.do(ctx, http.MethodGet, "/v1/agents", nil, &out, http.StatusOK)
 	return out.Agents, err
 }
+func (c *Client) Tasks(ctx context.Context) ([]ManagedTask, error) {
+	var out struct {
+		Backend string        `json:"backend"`
+		Tasks   []ManagedTask `json:"tasks"`
+	}
+	err := c.do(ctx, http.MethodGet, "/v1/live-tasks", nil, &out, http.StatusOK)
+	for i := range out.Tasks {
+		out.Tasks[i].Backend = out.Backend
+	}
+	return out.Tasks, err
+}
+
 func (c *Client) LaunchManagedSchedule(ctx context.Context, agent, repo, prompt, name, backend, routerID, chatID string) (ManagedTask, error) {
 	var out struct {
 		RunID string      `json:"runId"`

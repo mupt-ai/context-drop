@@ -23,6 +23,8 @@ type fakeRuntime struct {
 	err      error
 }
 
+func (f *fakeRuntime) Tasks(context.Context) ([]runtimeclient.ManagedTask, error) { return nil, nil }
+
 func (f *fakeRuntime) LaunchManagedSchedule(_ context.Context, _, _, _, name, _, routerID, chatID string) (runtimeclient.ManagedTask, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -83,7 +85,7 @@ func TestRunnerClaimsDueBeforeLaunchAndRecordsJob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(st.Jobs) != 1 || st.Jobs[0].Outcome != "launched" {
+	if len(st.Jobs) != 1 || st.Jobs[0].Status != "completed" {
 		t.Fatalf("jobs = %#v", st.Jobs)
 	}
 }

@@ -56,6 +56,7 @@ type Status struct {
 
 type RuntimeLauncher interface {
 	LaunchManagedSchedule(context.Context, string, string, string, string, string, string, string) (runtimeclient.ManagedTask, error)
+	Tasks(context.Context) ([]runtimeclient.ManagedTask, error)
 }
 
 type DelegationRuntime interface {
@@ -936,44 +937,166 @@ func (r *Runner) Tick(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := r.Now()
-	var due []orchestrator.Schedule
+	tasks, taskErr := r.Runtime.Tasks(ctx)
+	if taskErr == nil {
+		_ = r.reconcile(tasks, now)
+	}
+	var claims []orchestrator.Claim
 	if err := r.Store.Update(func(st *orchestrator.State) error {
-		// Due advances NextRunAt inside the same locked transaction. The claim is
-		// durable before any launch, so a restart or overlapping tick cannot launch
-		// the same occurrence twice.
-		due = orchestrator.Due(st, now)
+		orchestrator.RecoverStaleLocalJobs(st, now)
+		claims = orchestrator.ClaimDue(st, now)
 		return nil
 	}); err != nil {
 		return err
 	}
-	for _, schedule := range due {
-		var routerID, chatID string
+	for _, claim := range claims {
+		if claim.Schedule.Type == orchestrator.ScheduleWatch && taskErr != nil {
+			_ = r.Store.Update(func(st *orchestrator.State) error {
+				return orchestrator.SetJobStatus(st, claim.Job.ID, "failed", "", "live task status unavailable", now)
+			})
+			_ = r.Notifier.Notify("Context Drop schedule failed", claim.Schedule.Name+" could not read live task status")
+			continue
+		}
+		r.ExecuteClaim(ctx, claim, tasks, now)
+	}
+	return nil
+}
+
+// ExecuteClaim runs one already-durably-reserved schedule occurrence.
+func (r *Runner) ExecuteClaim(ctx context.Context, claim orchestrator.Claim, tasks []runtimeclient.ManagedTask, now time.Time) {
+	s, job := claim.Schedule, claim.Job
+	_ = r.Store.Update(func(st *orchestrator.State) error {
+		return orchestrator.SetJobStatus(st, job.ID, "running", "", "", now)
+	})
+	status, runtimeID, errText, attempt := "completed", "", "", 1
+	switch s.Type {
+	case orchestrator.ScheduleCommand:
+		status, errText, attempt = r.executeCommand(ctx, s)
+	case orchestrator.ScheduleWatch:
+		status, errText = r.executeWatch(s, tasks)
+	default:
+		status = "running"
 		var ownerErr error
+		var routerID, chatID string
 		if r.IMessage == nil {
 			ownerErr = fmt.Errorf("managed schedules require a configured orchestrator destination")
 		} else {
 			routerID, chatID, ownerErr = ScheduleReportOwner(r.IMessage.Config)
 		}
 		var task runtimeclient.ManagedTask
-		launchErr := ownerErr
-		if launchErr == nil {
-			task, launchErr = r.Runtime.LaunchManagedSchedule(ctx, schedule.Agent, schedule.Repo, schedule.Prompt, "schedule-"+schedule.Name, schedule.Backend, routerID, chatID)
+		if ownerErr == nil {
+			task, ownerErr = r.Runtime.LaunchManagedSchedule(ctx, s.Agent, s.Repo, s.Prompt, "schedule-"+s.Name, s.Backend, routerID, chatID)
 		}
-		job := orchestrator.NewJob(schedule, "launched", task.RunID, "", now)
-		if launchErr != nil {
-			job = orchestrator.NewJob(schedule, "launch_error", "", launchErr.Error(), now)
-			_ = r.Notifier.Notify("Context Drop schedule failed", schedule.Name+" could not launch. Check daemon status.")
-		} else if schedule.NotifyOnInitiate {
-			_ = r.Notifier.Notify("Context Drop schedule launched", schedule.Name+" started locally in managed pane "+task.PaneID+".")
-		}
-		if err := r.Store.Update(func(st *orchestrator.State) error {
-			st.Jobs = append(st.Jobs, job)
-			return nil
-		}); err != nil {
-			return err
+		if ownerErr != nil {
+			status, errText = "failed", ownerErr.Error()
+		} else {
+			runtimeID = task.RunID
+			if s.NotifyOnInitiate {
+				_ = r.Notifier.Notify("Context Drop schedule launched", s.Name+" started locally in managed pane "+task.PaneID+".")
+			}
 		}
 	}
-	return nil
+	_ = r.Store.Update(func(st *orchestrator.State) error {
+		if err := orchestrator.SetJobStatus(st, job.ID, status, runtimeID, errText, now); err != nil {
+			return err
+		}
+		for i := range st.Jobs {
+			if st.Jobs[i].ID == job.ID {
+				st.Jobs[i].Attempt = attempt
+				break
+			}
+		}
+		for i := range st.Schedules {
+			if st.Schedules[i].Name == s.Name {
+				if s.Type == orchestrator.ScheduleWatch {
+					previous := st.Schedules[i].LastWatchState
+					st.Schedules[i].LastWatchState = errText
+					if previous != errText && (errText == "missing" || errText == "blocked" || errText == "exited" || errText == "failed") {
+						_ = r.Notifier.Notify("Context Drop watch changed", s.Name+": "+errText)
+					}
+				}
+				if status == "failed" || status == "timed_out" {
+					st.Schedules[i].ConsecutiveFailures++
+					if st.Schedules[i].AutoPauseAfter > 0 && st.Schedules[i].ConsecutiveFailures >= st.Schedules[i].AutoPauseAfter {
+						st.Schedules[i].Enabled = false
+					}
+				} else if status == "completed" {
+					st.Schedules[i].ConsecutiveFailures = 0
+				}
+				break
+			}
+		}
+		return nil
+	})
+	if status == "failed" || status == "timed_out" {
+		_ = r.Notifier.Notify("Context Drop schedule failed", s.Name+" failed: "+errText)
+	}
+}
+
+func (r *Runner) executeCommand(parent context.Context, s orchestrator.Schedule) (string, string, int) {
+	attempts := s.MaxRetries + 1
+	for attempt := 0; attempt < attempts; attempt++ {
+		ctx := parent
+		cancel := func() {}
+		if s.Timeout > 0 {
+			ctx, cancel = context.WithTimeout(parent, s.Timeout)
+		}
+		cmd := exec.CommandContext(ctx, s.Command[0], s.Command[1:]...)
+		cmd.Dir = s.Cwd
+		output, err := cmd.CombinedOutput()
+		timed := ctx.Err() == context.DeadlineExceeded
+		cancel()
+		if err == nil {
+			return "completed", "", attempt + 1
+		}
+		if timed {
+			return "timed_out", "command exceeded timeout", attempt + 1
+		}
+		if attempt == attempts-1 {
+			return "failed", strings.TrimSpace(string(output)) + ": " + err.Error(), attempt + 1
+		}
+	}
+	return "failed", "command failed", attempts
+}
+
+func (r *Runner) executeWatch(s orchestrator.Schedule, tasks []runtimeclient.ManagedTask) (string, string) {
+	matches := make([]runtimeclient.ManagedTask, 0, 1)
+	for _, task := range tasks {
+		if (task.Backend == "" || task.Backend == s.Backend) && ((s.WatchPane != "" && task.PaneID == s.WatchPane) || (s.WatchTarget != "" && task.Name == s.WatchTarget)) {
+			matches = append(matches, task)
+		}
+	}
+	if len(matches) > 1 {
+		return "failed", "ambiguous watch target"
+	}
+	if len(matches) == 1 {
+		return "completed", matches[0].Status
+	}
+	return "completed", "missing"
+}
+
+func (r *Runner) reconcile(tasks []runtimeclient.ManagedTask, now time.Time) error {
+	live := map[string]string{}
+	for _, t := range tasks {
+		live[t.RunID] = t.Status
+	}
+	return r.Store.Update(func(st *orchestrator.State) error {
+		for i := range st.Jobs {
+			j := &st.Jobs[i]
+			if j.ScheduleType != orchestrator.ScheduleAgent || j.Status != "running" || j.RuntimeRunID == "" {
+				continue
+			}
+			state, ok := live[j.RuntimeRunID]
+			if !ok || state == "exited" || state == "failed" {
+				status := "completed"
+				if state == "failed" {
+					status = "failed"
+				}
+				_ = orchestrator.SetJobStatus(st, j.ID, status, j.RuntimeRunID, "", now)
+			}
+		}
+		return nil
+	})
 }
 
 func Start() (PIDInfo, error) {

@@ -4,6 +4,7 @@ import { systemRunner } from "./launch.js";
 import type { RuntimeConfig, SessionBackend } from "./types.js";
 
 export interface LiveTaskStatus {
+  runId?: string;
   paneId: string;
   agent: string;
   name: string;
