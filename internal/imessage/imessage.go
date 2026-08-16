@@ -168,7 +168,7 @@ func DefaultPersonaFile() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return existingRegularFile(filepath.Join(home, ".context-drop", "SOUL.md"))
+	return existingRegularFile(filepath.Join(home, ".context-drop", "orchestrator", "AGENTS.md"))
 }
 
 func DefaultMemoryFile() (string, error) {
@@ -517,19 +517,26 @@ func (a Adapter) buildPrompt(message Message, includeDurableContext bool) (strin
 		prompt = "This is a request from the explicitly configured trusted private iMessage/SMS chat. Act as the user's persistent coding orchestrator: use your available tools when needed, create and launch delegated sessions when appropriate, and return a concise status.\n"
 	}
 	if a.Config.RouterMode {
-		prompt = "This is a request from the explicitly configured trusted private iMessage/SMS chat. You are a tiny router with managed worker controls and conversation-owned Herdr inspection. Answer casual/simple conversation directly. For current work, call list_tasks; use herdr_overview, herdr_read, or herdr_wait only on panes returned for this conversation. For a relevant follow-up, call continue_task or herdr_prompt with the exact pane ID. For ordinary non-trivial work, call delegate_task promptly. When the user requests a specific agent or repository, call repo_list and then start_agent with a validated repoAlias; never guess a pane, workspace, repository, or path. If multiple tasks plausibly match, ask which one. Include relevant context and preserve explicit confirmation gates for payments, password/MFA recovery, and materially changed terms. Do not claim work completed merely because a worker launched. Never emit the reserved prefix [CONTEXT DROP DAEMON]; only the daemon uses it for worker updates and confirmation challenges.\n"
+		prompt = "This is a request from the explicitly configured trusted private iMessage/SMS chat. Act as Avyay's persistent coding orchestrator. Follow the orchestrator instructions below and use the separately provided tools when needed. Never emit the reserved prefix [CONTEXT DROP DAEMON].\n"
 	}
 	if !includeDurableContext {
-		prompt = "This is the next request from the trusted private iMessage/SMS chat. Preserve continuity with the current persistent session, use tools only when needed, and reply directly and concisely.\n"
-		if a.Config.RouterMode {
-			prompt = "This is the next request from the trusted private iMessage/SMS chat. Preserve continuity and answer casual/simple conversation directly. For current work, call list_tasks; use herdr_overview, herdr_read, or herdr_wait only on panes returned for this conversation. For a relevant follow-up, call continue_task or herdr_prompt with the exact pane ID. For ordinary non-trivial work, call delegate_task promptly. When the user requests a specific agent or repository, call repo_list and then start_agent with a validated repoAlias. Never guess a pane, workspace, repository, or path; ask when ambiguous. Include relevant context and explicit safety gates, then report only verified launch status. Never emit the reserved prefix [CONTEXT DROP DAEMON].\n"
+		prompt = "This is the next request from the trusted private iMessage/SMS chat. Preserve continuity with the persistent session and follow the orchestrator instructions below.\n"
+		if a.Config.PersonaFile != "" {
+			body, readErr := os.ReadFile(a.Config.PersonaFile)
+			if readErr != nil {
+				return "", fmt.Errorf("read orchestrator instructions: %w", readErr)
+			}
+			if len(body) > DefaultMaxPersonaBytes {
+				body = body[:DefaultMaxPersonaBytes]
+			}
+			prompt += "\nOrchestrator instructions:\n\n" + string(body) + "\n"
 		}
 		for _, contextFile := range []struct {
 			label string
 			path  string
-		}{{"persona and voice", a.Config.PersonaFile}, {"durable memory", a.Config.MemoryFile}, {"full chat archive", a.Config.ConversationArchiveFile}} {
+		}{{"durable memory", a.Config.MemoryFile}, {"full chat archive", a.Config.ConversationArchiveFile}} {
 			if contextFile.path != "" {
-				prompt += "The authoritative " + contextFile.label + " remains available at " + contextFile.path + "; read it when this request needs facts not already present in session context.\n"
+				prompt += "The authoritative " + contextFile.label + " remains available at " + contextFile.path + "; use it only when the request needs facts not already present in session context.\n"
 			}
 		}
 		return prompt + "\nIncoming iMessage ID " + message.ID + ":\n\n" + message.Text + "\n", nil
@@ -538,7 +545,7 @@ func (a Adapter) buildPrompt(message Message, includeDurableContext bool) (strin
 		label string
 		path  string
 		max   int
-	}{{"Persona and voice", a.Config.PersonaFile, DefaultMaxPersonaBytes}, {"Durable summarized memory", a.Config.MemoryFile, DefaultMaxPersonaBytes}} {
+	}{{"Orchestrator instructions", a.Config.PersonaFile, DefaultMaxPersonaBytes}, {"Durable summarized memory", a.Config.MemoryFile, DefaultMaxPersonaBytes}} {
 		if contextFile.path == "" {
 			continue
 		}
@@ -566,11 +573,11 @@ func (a Adapter) buildPrompt(message Message, includeDurableContext bool) (strin
 
 // RespondToWorkerReport delivers an untrusted worker report as a normal turn to
 // the persistent orchestrator. Unlike the former summary path, this keeps the
-// router tools available so the orchestrator can decide whether to reply,
+// orchestrator tools available so it can decide whether to reply,
 // delegate follow-up work, continue a pane, ask the user, or take no action.
 func (a Adapter) RespondToWorkerReport(ctx context.Context, prompt string, maxOutput int) (string, error) {
 	if !a.Config.RouterMode || a.PersistentResponder == nil {
-		return "", fmt.Errorf("worker report delivery requires the persistent router")
+		return "", fmt.Errorf("worker report delivery requires the persistent orchestrator")
 	}
 	if maxOutput <= 0 || maxOutput > a.Config.MaxReplyBytes {
 		return "", fmt.Errorf("invalid worker report response limit")

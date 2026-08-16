@@ -87,6 +87,10 @@ func testConfig(t *testing.T) Config {
 	}
 	cfg := Defaults()
 	cfg.Enabled = true
+	cfg.PersonaFile = filepath.Join(t.TempDir(), "AGENTS.md")
+	if err := os.WriteFile(cfg.PersonaFile, []byte("orchestrator instructions: use list_tasks, delegate_task, continue_task, herdr_prompt, herdr_overview, herdr_read, herdr_wait, repo_list, and start_agent; never guess identifiers"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	cfg.ChatID = "chat;$(nope)"
 	cfg.ImsgPath = executable
 	cfg.ResponderCommand = []string{executable, "--prompt", "{prompt_file}"}
@@ -219,7 +223,7 @@ func TestWarmPersistentResponderUsesIncrementalPromptAndKeepsMemoryAvailable(t *
 	}
 }
 
-func TestRouterModePromptNamesAllManagedToolsAndGuardsGuessing(t *testing.T) {
+func TestRouterModePromptInjectsOrchestratorInstructions(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Trusted = true
 	cfg.RouterMode = true
@@ -228,14 +232,14 @@ func TestRouterModePromptNamesAllManagedToolsAndGuardsGuessing(t *testing.T) {
 	if _, err := adapter.RespondMeasured(context.Background(), Message{ID: "7", Text: "status"}); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"list_tasks", "delegate_task", "continue_task", "herdr_prompt", "herdr_overview", "herdr_read", "herdr_wait", "repo_list", "start_agent", "Never guess"} {
+	for _, want := range []string{"Orchestrator instructions", "use list_tasks", "never guess identifiers"} {
 		if !strings.Contains(responder.prompt, want) {
 			t.Fatalf("router prompt missing %q: %q", want, responder.prompt)
 		}
 	}
 }
 
-func TestRouterModeIncrementalPromptNamesAllManagedToolsAndGuardsGuessing(t *testing.T) {
+func TestRouterModeIncrementalPromptInjectsOrchestratorInstructions(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Trusted = true
 	cfg.RouterMode = true
@@ -244,7 +248,7 @@ func TestRouterModeIncrementalPromptNamesAllManagedToolsAndGuardsGuessing(t *tes
 	if _, err := adapter.RespondMeasured(context.Background(), Message{ID: "8", Text: "status"}); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"list_tasks", "delegate_task", "continue_task", "herdr_prompt", "herdr_overview", "herdr_read", "herdr_wait", "repo_list", "start_agent", "Never guess"} {
+	for _, want := range []string{"Orchestrator instructions", "use list_tasks", "never guess identifiers"} {
 		if !strings.Contains(responder.prompt, want) {
 			t.Fatalf("incremental router prompt missing %q: %q", want, responder.prompt)
 		}

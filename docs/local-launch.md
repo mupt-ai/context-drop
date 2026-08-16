@@ -15,7 +15,7 @@ On macOS the installer uses a per-user LaunchAgent. On Linux it uses a systemd u
 
 ## Orchestrator task tools
 
-The trusted conversation router exposes managed task controls and constrained Herdr inspection:
+The trusted conversation orchestrator exposes managed task controls and constrained Herdr inspection:
 
 - `list_tasks`: query the selected live backend and return public pane IDs, agent, optional name, status, selection state, and whether Context Drop fully manages the task.
 - `delegate_task`: start a fully managed task using configured defaults and an optional configured agent/name.
