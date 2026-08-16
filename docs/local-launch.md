@@ -15,15 +15,18 @@ On macOS the installer uses a per-user LaunchAgent. On Linux it uses a systemd u
 
 ## Orchestrator task tools
 
-The trusted conversation router exposes exactly:
+The trusted conversation router exposes managed task controls and constrained Herdr inspection:
 
 - `list_tasks`: query the selected live backend and return public pane IDs, agent, optional name, status, selection state, and whether Context Drop fully manages the task.
 - `delegate_task`: start a fully managed task using configured defaults and an optional configured agent/name.
-- `continue_task`: send a follow-up to an exact live Herdr (`wX:pY`) or tmux (`%N`) pane.
+- `continue_task` / `herdr_prompt`: send a follow-up through the same managed continuation boundary to an exact live pane. An authorized-sensitive worker cannot be continued.
+- `herdr_overview` / `herdr_read`: inspect the configured Herdr session without exposing raw credentials.
+- `herdr_wait`: poll authoritative status client-side with a bounded timeout and cancellation; it never invokes a blocking Herdr wait subprocess and reports timeout separately from observed status.
+- `repo_list` / `start_agent`: select only a validated alias or unambiguous live workspace cwd, then launch a fully managed, tracked worker with reporting, safety policy, and capacity enforcement.
 
-Continuation is available for managed and unmanaged live panes. Pane IDs must come from live status or a trusted report and must never be guessed.
+Continuation is available for managed and unmanaged live panes. Pane IDs must come from live status or a trusted report and must never be guessed. Adopting an unmanaged pane creates managed tracking and scoped reporting before the prompt is sent.
 
-Managed Herdr work uses new tabs in the reusable `ContextDropManaged` workspace in session `default`. Context Drop must not close or disturb unrelated workspaces, tabs, or panes.
+Managed Herdr work uses new tabs in the reusable `ContextDropManaged` workspace in the configured `CONTEXT_DROP_HERDR_SESSION`; full-AI work never silently switches to another session. Workspace-targeted launches use a new copilot tab in that exact validated workspace. Context Drop must not close or disturb unrelated workspaces, tabs, or panes.
 
 ## Worker reports
 

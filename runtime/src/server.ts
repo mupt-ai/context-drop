@@ -3,7 +3,7 @@ import { timingSafeEqual, randomBytes, createHash } from "node:crypto";
 import { existsSync, readFileSync, mkdirSync, writeFileSync, chmodSync, renameSync, rmSync, statSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import type { DelegationLane, LaunchRequest, ParentReport, RunRecord, RuntimeConfig, ParentReportKind, SensitiveAction } from "./types.js";
-import { closeHerdrWorker, continueLiveHerdr, herdrTopology, launchInHerdr, listHerdrAgents, paneAlive, promptHerdrAgent, readHerdrAgent, resolveHerdrRepo, startHerdrAgent, waitHerdrAgent } from "./herdr.js";
+import { closeHerdrWorker, continueLiveHerdr, herdrAgentStatus, herdrTopology, launchInHerdr, listHerdrAgents, paneAlive, readHerdrAgent, resolveHerdrRepo } from "./herdr.js";
 import { LaunchOutcomeUnknownError, systemRunner, type CommandRunner } from "./launch.js";
 import { liveTaskStatus } from "./live_status.js";
 import { closeTmuxWorker, continueLiveTmux, launchInTmux } from "./tmux.js";
@@ -23,6 +23,7 @@ const MAX_ACTIVE_TASKS_GLOBAL = 256;
 const TERMINAL_HISTORY_LIMIT = 500;
 const PANE_PROBE_COOLDOWN_MS = 60_000;
 const MAX_PANE_PROBES_PER_RECONCILE = 8;
+const AGENT_REGISTRATION_GRACE_MS = 2_000;
 interface RouterCapability { id: string; routerId: string; chatId: string; digest: string; createdAt: string; revokedAt?: string }
 interface TaskRecord { id: string; runId: string; routerId: string; chatId: string; task: string; label?: string; lane: DelegationLane; reportCapability: string; createdAt: string; updatedAt: string; status: "launching" | "launch_committed" | "running" | "completed" | "failed" | "launch_failed" | "launch_unknown"; launchError?: string; authorizationId?: string; authorizationReportId?: string; authorizedAction?: SensitiveAction; authorizedScope?: string; authorizationExpiresAt?: string; pendingTerminalReport?: ParentReport; lastObservedStatus?: string }
 export interface RuntimeRecoveryPolicy { launchTimeoutMs:number; workerIdleTimeoutMs:number; reservationMs:number; pendingReportMaxMs:number }
@@ -42,17 +43,19 @@ function reconciledRuns(config: RuntimeConfig, runner: CommandRunner): RunRecord
   const runs = loadRuns(config), reconcilable = runs.filter(run => run.backend === "herdr" && (run.status === "running" || run.status === "unknown") && run.herdrSession);
   if (!reconcilable.length) return runs;
   let changed = false;
+  const missing = new Set<string>();
   const sessions = new Set(reconcilable.map(run => run.herdrSession!));
   for (const session of sessions) {
     const sessionRuns = reconcilable.filter(run => run.herdrSession === session);
     try {
       const live = new Set(listHerdrAgents({ ...config, herdrSession: session }, runner).map(agent => agent.paneId));
-      for (const run of sessionRuns) { const status = run.herdrPane && live.has(run.herdrPane) ? "running" : "exited"; if (run.status !== status) { run.status = status; changed = true; } }
+      for (const run of sessionRuns) { const status = run.herdrPane && live.has(run.herdrPane) ? "running" : "exited"; if (status === "exited") missing.add(run.id); if (run.status !== status) { run.status = status; changed = true; } }
     } catch {
       for (const run of sessionRuns) if (run.status !== "unknown") { run.status = "unknown"; changed = true; }
     }
   }
   if (changed) replace(pathFor(config, "runs.jsonl"), runs);
+  if (missing.size) finalizeMissingTasks(config, missing, new Date(), "The worker is absent from the reachable Herdr agent list and did not send a final report.");
   return runs;
 }
 function workerCwd(config: RuntimeConfig): string { const dir = resolve(config.stateDir, "..", "delegation", "workers"); mkdirSync(dir, { recursive: true, mode: 0o700 }); chmodSync(dir, 0o700); return dir; }
@@ -106,16 +109,22 @@ function queueLifecycleReport(reports: ParentReport[], task: TaskRecord, message
   if (reports.some(report => report.runId === task.runId && report.message === message)) return;
   reports.push({ id: `report_${current.getTime().toString(36)}_${randomBytes(5).toString("hex")}`, runId: task.runId, routerId: task.routerId, chatId: task.chatId, message, createdAt: current.toISOString() });
 }
+function finalizeMissingTasks(config: RuntimeConfig, runIds: Set<string>, current: Date, message: string): void {
+  const taskPath=pathFor(config,"parent-tasks.jsonl"),reportPath=pathFor(config,"parent-reports.jsonl"),tasks=records<TaskRecord>(taskPath),reports=records<ParentReport>(reportPath);let changed=false;
+  for(const task of tasks){if(task.status!=="running"||!runIds.has(task.runId)||current.getTime()-Date.parse(task.createdAt)<AGENT_REGISTRATION_GRACE_MS)continue;task.status="failed";task.launchError="worker absent from reachable agent list";task.reportCapability="";task.updatedAt=current.toISOString();queueLifecycleReport(reports,task,message,current);changed=true;}
+  if(changed){replace(taskPath,tasks);replace(reportPath,reports);}
+}
 function observeManagedLiveTasks(config: RuntimeConfig, current: Date, runner: CommandRunner, snapshot = liveTaskStatus(config, runner)): void {
   const taskPath = pathFor(config, "parent-tasks.jsonl"), reportPath = pathFor(config, "parent-reports.jsonl");
   const tasks = records<TaskRecord>(taskPath), reports = records<ParentReport>(reportPath), runs = loadRuns(config);
   const liveByPane = new Map(snapshot.tasks.map(task => [task.paneId, task]));
-  let changed = false;
+  let changed = false, runsChanged = false;
   for (const task of tasks) {
     if (task.status !== "running") continue;
     const run = runs.find(item => item.id === task.runId), paneId = run?.backend === "herdr" ? run.herdrPane : run?.tmuxPane;
     const live = paneId ? liveByPane.get(paneId) : undefined;
-    if (!live || live.status === task.lastObservedStatus) continue;
+    if (!live) { if(run&&current.getTime()-Date.parse(task.createdAt)>=AGENT_REGISTRATION_GRACE_MS){task.status="failed";task.launchError="worker absent from reachable agent list";task.reportCapability="";task.updatedAt=current.toISOString();if(run.status!=="exited"){run.status="exited";runsChanged=true;}queueLifecycleReport(reports,task,"The worker is absent from the reachable agent list and did not send a final report.",current);changed=true;} continue; }
+    if (live.status === task.lastObservedStatus) continue;
     task.lastObservedStatus = live.status;
     task.updatedAt = current.toISOString();
     changed = true;
@@ -127,6 +136,7 @@ function observeManagedLiveTasks(config: RuntimeConfig, current: Date, runner: C
     }
   }
   if (changed) { replace(taskPath, tasks); replace(reportPath, reports); }
+  if (runsChanged) replace(pathFor(config,"runs.jsonl"),runs);
 }
 function reconcileAndCompact(config:RuntimeConfig,current:Date,policy:RuntimeRecoveryPolicy,runner:CommandRunner,probeTimes:Map<string,number>):void {
   const currentMs=current.getTime(), reportsPath=pathFor(config,"parent-reports.jsonl"), tasksPath=pathFor(config,"parent-tasks.jsonl");
@@ -228,14 +238,11 @@ export function createRuntimeServer(config: RuntimeConfig, token: string, runner
       if (req.method === "POST" && url.pathname === "/v1/herdr/read") {
         if (!routerFor(config, auth(req))) return json(res, 401, { error: "unauthorized" }); const input = await body(req); if (typeof input?.paneId !== "string" || (input.lines !== undefined && typeof input.lines !== "number")) throw new Error("paneId and numeric lines are required"); return json(res, 200, { paneId: input.paneId, output: readHerdrAgent(config, input.paneId, input.lines ?? 120, runner) });
       }
-      if (req.method === "POST" && url.pathname === "/v1/herdr/prompt") {
-        if (!routerFor(config, auth(req))) return json(res, 401, { error: "unauthorized" }); const input = await body(req); if (typeof input?.paneId !== "string" || typeof input?.prompt !== "string" || !input.prompt.trim() || Buffer.byteLength(input.prompt) > 16000) throw new Error("paneId and prompt are required; prompt must be <= 16000 bytes"); promptHerdrAgent(config, input.paneId, input.prompt, runner); return json(res, 200, { paneId: input.paneId, prompted: true });
+      if (req.method === "POST" && url.pathname === "/v1/herdr/status") {
+        if (!routerFor(config, auth(req))) return json(res, 401, { error: "unauthorized" }); const input=await body(req);if(typeof input?.paneId!=="string")throw new Error("paneId is required");return json(res,200,herdrAgentStatus(config,input.paneId,runner));
       }
-      if (req.method === "POST" && url.pathname === "/v1/herdr/wait") {
-        if (!routerFor(config, auth(req))) return json(res, 401, { error: "unauthorized" }); const input = await body(req); if (typeof input?.paneId !== "string" || !Array.isArray(input.statuses) || input.statuses.some((status: unknown) => typeof status !== "string") || typeof input.timeoutMs !== "number") throw new Error("paneId, statuses, and timeoutMs are required"); return json(res, 200, { result: waitHerdrAgent(config, input.paneId, input.statuses, input.timeoutMs, runner) });
-      }
-      if (req.method === "POST" && url.pathname === "/v1/herdr/start") {
-        if (!routerFor(config, auth(req))) return json(res, 401, { error: "unauthorized" }); const input = await body(req); if (typeof input?.agent !== "string" || typeof input?.name !== "string" || !input.name.trim() || Buffer.byteLength(input.name) > 120 || typeof input?.prompt !== "string" || !input.prompt.trim() || Buffer.byteLength(input.prompt) > 16000 || (input.repoAlias !== undefined && typeof input.repoAlias !== "string") || (input.workspaceId !== undefined && typeof input.workspaceId !== "string")) throw new Error("agent, name, prompt, and exactly one repository target are required"); const task = startHerdrAgent(config, { agent: input.agent, name: input.name, prompt: input.prompt, repoAlias: input.repoAlias, workspaceId: input.workspaceId }, runner); return json(res, 201, { task });
+      if (req.method === "POST" && url.pathname === "/v1/tasks/start") {
+        const owner=routerFor(config,auth(req));if(!owner)return json(res,401,{error:"unauthorized"});const input=await body(req);if(typeof input?.agent!=="string"||!config.agents[input.agent]||typeof input?.name!=="string"||!input.name.trim()||Buffer.byteLength(input.name)>120||typeof input?.prompt!=="string"||!input.prompt.trim()||Buffer.byteLength(input.prompt)>16000||(input.repoAlias!==undefined&&typeof input.repoAlias!=="string")||(input.workspaceId!==undefined&&typeof input.workspaceId!=="string"))throw new Error("configured agent, name, prompt, and exactly one repository target are required");const target=resolveHerdrRepo(config,{repoAlias:input.repoAlias,workspaceId:input.workspaceId},runner);requireActiveSlot(config,owner);const label=input.name.trim(),prepared=prepareTask(config,owner,input.prompt,label,target.workspaceId?"human_copilot":"full_ai",undefined,current,input.agent);prepared.request.name=label;prepared.request.repo=target.cwd;prepared.request.backend="herdr";if(target.workspaceId)prepared.request.workspaceId=target.workspaceId;const launched=launchPreparedTask(config,prepared,label,current,runner,options);return json(res,201,{task:launched.task});
       }
       if (req.method === "POST" && url.pathname === "/v1/tasks/continue") {
         const owner = routerFor(config, auth(req)); if (!owner) return json(res, 401, { error: "unauthorized" });
@@ -243,7 +250,7 @@ export function createRuntimeServer(config: RuntimeConfig, token: string, runner
         const liveSnapshot=liveTaskStatus(config,runner),live=liveSnapshot.tasks.find(task=>task.paneId===input.paneId);if(!live)return json(res,404,{error:"live task pane not found"});
         const managedRun=loadRuns(config).find(run=>(run.backend==="herdr"?run.herdrPane:run.tmuxPane)===input.paneId);let prompt:string;
         if(managedRun){
-          const managedTask=records<TaskRecord>(pathFor(config,"parent-tasks.jsonl")).find(task=>task.runId===managedRun.id);if(managedTask?.authorizationId)throw new Error("authorized sensitive workers cannot be continued; request a fresh exact authorization");
+          const managedTask=records<TaskRecord>(pathFor(config,"parent-tasks.jsonl")).find(task=>task.runId===managedRun.id);if(!managedTask||managedTask.routerId!==owner.routerId||managedTask.chatId!==owner.chatId)throw new Error("managed task is owned by another conversation");if(managedTask.authorizationId)throw new Error("authorized sensitive workers cannot be continued; request a fresh exact authorization");if(managedTask.status!=="running"||!managedTask.reportCapability)throw new Error("continued task reporting is no longer active");
           if(managedRun.ownsPane===false){if(!managedTask?.reportCapability)throw new Error("continued task reporting is no longer active");prompt=continuationPrompt(input.prompt.trim(),{url:`${runtimeBaseURL(config)}/v1/reports`,capability:managedTask.reportCapability,runId:managedRun.id});}else prompt=continuationPrompt(input.prompt.trim());
         }else{
           requireActiveSlot(config,owner);const runId=`run_${current.getTime().toString(36)}_${randomBytes(5).toString("hex")}`,reportCapability=randomBytes(32).toString("base64url"),createdAt=current.toISOString(),backend=liveSnapshot.backend;

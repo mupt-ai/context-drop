@@ -105,22 +105,10 @@ export function readHerdrAgent(config: RuntimeConfig, paneId: string, lines: num
   return result.stdout ?? "";
 }
 
-export function promptHerdrAgent(config: RuntimeConfig, paneId: string, prompt: string, runner: CommandRunner = systemRunner): void {
-  requireLiveAgent(config, paneId, runner);
-  const result = runner.run(config.herdrPath || "herdr", ["--session", config.herdrSession || "default", "agent", "prompt", paneId, prompt]);
-  if (result.status !== 0) throw new Error(`herdr agent prompt failed: ${result.stderr || "unknown error"}`);
-}
-
-export function waitHerdrAgent(config: RuntimeConfig, paneId: string, statuses: string[], timeoutMs: number, runner: CommandRunner = systemRunner): unknown {
-  requireLiveAgent(config, paneId, runner);
-  const allowed = new Set(["idle", "working", "blocked", "done", "unknown"]);
-  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 300_000) throw new Error("timeoutMs must be between 1 and 300000");
-  if (!statuses.length || statuses.some(status => !allowed.has(status))) throw new Error("one or more valid lifecycle statuses are required");
-  const args = ["--session", config.herdrSession || "default", "agent", "wait", paneId, ...statuses.flatMap(status => ["--until", status]), "--timeout", String(timeoutMs)];
-  const result = runner.run(config.herdrPath || "herdr", args);
-  if (result.status !== 0) throw new Error(`herdr agent wait failed: ${result.stderr || "unknown error"}`);
-  if (!result.stdout?.trim()) return { paneId, status: statuses[0] };
-  try { return JSON.parse(result.stdout); } catch { return { paneId, output: result.stdout }; }
+export function herdrAgentStatus(config: RuntimeConfig, paneId: string, runner: CommandRunner = systemRunner): { paneId: string; status: string } {
+  const agent = requireLiveAgent(config, paneId, runner);
+  if (!new Set(["idle", "working", "blocked", "done", "unknown"]).has(agent.status)) throw new Error("Herdr returned an invalid lifecycle status");
+  return { paneId: agent.paneId, status: agent.status };
 }
 
 function existingDirectory(path: string): string {
@@ -146,22 +134,6 @@ export function resolveHerdrRepo(config: RuntimeConfig, input: { repoAlias?: str
   const cwds = new Set(topology.panes.filter(pane => pane.workspaceId === input.workspaceId).map(pane => pane.foregroundCwd || pane.cwd).filter((cwd): cwd is string => Boolean(cwd)).map(existingDirectory));
   if (cwds.size !== 1) throw new Error("workspace cwd is ambiguous; use a validated repo alias");
   return { cwd: [...cwds][0], workspaceId: input.workspaceId };
-}
-
-export function startHerdrAgent(config: RuntimeConfig, input: { agent: string; name: string; prompt: string; repoAlias?: string; workspaceId?: string }, runner: CommandRunner = systemRunner): { paneId: string; workspaceId: string; tabId: string; cwd: string } {
-  if (!config.agents[input.agent]) throw new Error("configured agent is required");
-  if (!/^[A-Za-z0-9._-]{1,64}$/.test(input.agent)) throw new Error("invalid agent kind");
-  const resolved = resolveHerdrRepo(config, input, runner), session = config.herdrSession || "default", herdr = config.herdrPath || "herdr";
-  const location = resolved.workspaceId ? createTab(herdr, session, resolved.workspaceId, resolved.cwd, input.name, runner) : createWorkspace(herdr, session, resolved.cwd, input.name, runner);
-  const started = runner.run(herdr, ["--session", session, "agent", "start", input.name, "--kind", input.agent, "--pane", location.pane]);
-  if (started.status !== 0) {
-    if (location.createdFreshWorkspace) runner.run(herdr, ["--session", session, "workspace", "close", location.workspace]);
-    else runner.run(herdr, ["--session", session, "tab", "close", location.tab]);
-    throw new Error(`herdr agent start failed: ${started.stderr || "unknown error"}`);
-  }
-  const prompted = runner.run(herdr, ["--session", session, "agent", "prompt", location.pane, input.prompt]);
-  if (prompted.status !== 0) throw new LaunchOutcomeUnknownError(`herdr initial prompt outcome is unknown: ${prompted.stderr || "unknown error"}`);
-  return { paneId: location.pane, workspaceId: location.workspace, tabId: location.tab, cwd: resolved.cwd };
 }
 
 const COPILOT_LABEL = "Context Drop Copilot";
@@ -321,7 +293,7 @@ export function launchInHerdr(config: RuntimeConfig, request: LaunchRequest, id:
   const { name, runDir, argv, environment } = prepareLaunch(config, request, id);
   const herdr = config.herdrPath || "herdr";
   const lane = request.lane ?? (request.workspaceId ? "human_copilot" : "full_ai");
-  const session = lane === "full_ai" ? "default" : config.herdrSession || "default";
+  const session = config.herdrSession || "default";
   let location: WorkspaceLocation;
   if (lane === "full_ai") {
     location = fullAILocation(config, session, request.repo, runner);

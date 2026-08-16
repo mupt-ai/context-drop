@@ -64,7 +64,7 @@ context-drop daemon restart
 context-drop daemon status
 ```
 
-The daemon ignores prior history during initial sync, durably deduplicates later messages, and never gives workers iMessage credentials. The persistent orchestrator exposes exactly three task tools: `list_tasks`, `delegate_task`, and `continue_task`.
+The daemon ignores prior history during initial sync, durably deduplicates later messages, and never gives workers iMessage credentials. The persistent orchestrator exposes managed task controls plus constrained Herdr topology/read/status and validated-repository launch tools; every prompt and launch still crosses the managed safety/reporting boundary.
 
 ## Worker reports
 
