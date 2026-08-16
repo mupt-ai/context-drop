@@ -23,7 +23,7 @@ async function pollHerdrStatus(input, signal) {
 export default function (pi) {
   pi.registerTool({
     name: "list_tasks", label: "List tasks",
-    description: "Get authoritative live status from the configured backend. Use for every question about running work; never answer from memory.",
+    description: "Get authoritative live status for every worker in the configured backend, including workers launched outside this conversation. Use for every question about running work; never answer from memory.",
     parameters: Type.Object({}),
     async execute(_id, _input, signal) { const result = await request("/v1/tasks", "GET", undefined, signal); return { content: [{ type: "text", text: JSON.stringify(result) }], details: result }; },
   });
@@ -41,13 +41,13 @@ export default function (pi) {
   });
   pi.registerTool({
     name: "herdr_overview", label: "Herdr overview",
-    description: "Get authoritative workspace, tab, pane, agent, cwd, and lifecycle topology from the configured explicit Herdr session.",
+    description: "Get authoritative workspace, tab, pane, agent, cwd, and lifecycle topology for the entire configured explicit Herdr session.",
     parameters: Type.Object({}),
     async execute(_id, _input, signal) { const result = await request("/v1/herdr/overview", "GET", undefined, signal); return { content: [{ type: "text", text: JSON.stringify(result) }], details: result }; },
   });
   pi.registerTool({
     name: "herdr_read", label: "Read Herdr agent",
-    description: "Read recent output directly from an exact live Herdr agent pane; never launch an inspector worker.",
+    description: "Read recent output directly from any exact live Herdr agent pane in the configured session; never launch an inspector worker.",
     parameters: Type.Object({ paneId: Type.String({ minLength: 1, maxLength: 128 }), lines: Type.Optional(Type.Number({ minimum: 1, maximum: 500 })) }),
     async execute(_id, input, signal) { const result = await request("/v1/herdr/read", "POST", { paneId: input.paneId, lines: input.lines ?? 120 }, signal); return { content: [{ type: "text", text: result.output }], details: result }; },
   });
