@@ -18,6 +18,8 @@ export interface RuntimeConfig {
   fullAIHerdrWorkspaceLabel?: string;
   agents: Record<string, AgentConfig>;
   delegateAgent?: string;
+  /** Explicit, private aliases for repositories the trusted router may launch in. */
+  repoAliases?: Record<string, string>;
 }
 
 export interface RunRecord {

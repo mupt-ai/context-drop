@@ -1,5 +1,5 @@
-import { chmodSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import type { LaunchRequest, RunRecord, RuntimeConfig } from "./types.js";
 import { LaunchOutcomeUnknownError, prepareLaunch, systemRunner, type CommandRunner } from "./launch.js";
 
@@ -22,6 +22,146 @@ interface WorkspaceLocation {
   tab: string;
   pane: string;
   createdFreshWorkspace: boolean;
+}
+
+export interface HerdrAgentInfo {
+  paneId: string;
+  workspaceId: string;
+  tabId: string;
+  agent: string;
+  status: string;
+  cwd?: string;
+  foregroundCwd?: string;
+  focused: boolean;
+  title?: string;
+}
+export interface HerdrPaneInfo {
+  paneId: string;
+  workspaceId: string;
+  tabId: string;
+  agent?: string;
+  status?: string;
+  cwd?: string;
+  foregroundCwd?: string;
+  focused: boolean;
+  title?: string;
+}
+export interface HerdrTopology {
+  session: string;
+  workspaces: Array<{ workspaceId: string; label: string; focused: boolean; status?: string }>;
+  tabs: Array<{ tabId: string; workspaceId: string; label: string; focused: boolean; status?: string }>;
+  panes: HerdrPaneInfo[];
+  agents: HerdrAgentInfo[];
+}
+
+function herdrJSON<T>(config: RuntimeConfig, args: string[], description: string, runner: CommandRunner): T {
+  const result = runner.run(config.herdrPath || "herdr", ["--session", config.herdrSession || "default", ...args]);
+  if (result.status !== 0) throw new Error(`${description} failed: ${result.stderr || "unknown error"}`);
+  try { return JSON.parse(result.stdout ?? "") as T; } catch { throw new Error(`${description} returned invalid JSON`); }
+}
+
+export function listHerdrAgents(config: RuntimeConfig, runner: CommandRunner = systemRunner): HerdrAgentInfo[] {
+  const agentResult = herdrJSON<{ result?: { agents?: unknown } }>(config, ["agent", "list"], "herdr agent list", runner).result?.agents;
+  if (!Array.isArray(agentResult)) throw new Error("herdr agent list omitted required list");
+  return agentResult.map((value: any) => {
+    if (!value || typeof value.pane_id !== "string" || typeof value.agent !== "string" || typeof value.agent_status !== "string" || typeof value.focused !== "boolean") throw new Error("herdr agent list returned malformed agent data");
+    return { paneId: value.pane_id, workspaceId: typeof value.workspace_id === "string" ? value.workspace_id : value.pane_id.split(":")[0], tabId: typeof value.tab_id === "string" ? value.tab_id : "", agent: value.agent, status: value.agent_status, focused: value.focused, ...(typeof value.cwd === "string" ? { cwd: value.cwd } : {}), ...(typeof value.foreground_cwd === "string" ? { foregroundCwd: value.foreground_cwd } : {}), ...(typeof value.terminal_title_stripped === "string" ? { title: value.terminal_title_stripped } : {}) };
+  });
+}
+
+export function herdrTopology(config: RuntimeConfig, runner: CommandRunner = systemRunner): HerdrTopology {
+  type Raw = { result?: Record<string, unknown> };
+  const workspaceResult = herdrJSON<Raw>(config, ["workspace", "list"], "herdr workspace list", runner).result?.workspaces;
+  const tabResult = herdrJSON<Raw>(config, ["tab", "list"], "herdr tab list", runner).result?.tabs;
+  const paneResult = herdrJSON<Raw>(config, ["pane", "list"], "herdr pane list", runner).result?.panes;
+  if (!Array.isArray(workspaceResult) || !Array.isArray(tabResult) || !Array.isArray(paneResult)) throw new Error("herdr topology response omitted required lists");
+  const workspaces = workspaceResult.map((value: any) => {
+    if (!value || typeof value.workspace_id !== "string" || typeof value.label !== "string" || typeof value.focused !== "boolean") throw new Error("herdr topology returned malformed workspace data");
+    return { workspaceId: value.workspace_id, label: value.label, focused: value.focused, ...(typeof value.agent_status === "string" ? { status: value.agent_status } : {}) };
+  });
+  const tabs = tabResult.map((value: any) => {
+    if (!value || typeof value.tab_id !== "string" || typeof value.workspace_id !== "string" || typeof value.label !== "string" || typeof value.focused !== "boolean") throw new Error("herdr topology returned malformed tab data");
+    return { tabId: value.tab_id, workspaceId: value.workspace_id, label: value.label, focused: value.focused, ...(typeof value.agent_status === "string" ? { status: value.agent_status } : {}) };
+  });
+  const panes = paneResult.map((value: any) => {
+    if (!value || typeof value.pane_id !== "string" || typeof value.workspace_id !== "string" || typeof value.tab_id !== "string" || typeof value.focused !== "boolean") throw new Error("herdr topology returned malformed pane data");
+    return { paneId: value.pane_id, workspaceId: value.workspace_id, tabId: value.tab_id, focused: value.focused, ...(typeof value.agent === "string" ? { agent: value.agent } : {}), ...(typeof value.agent_status === "string" ? { status: value.agent_status } : {}), ...(typeof value.cwd === "string" ? { cwd: value.cwd } : {}), ...(typeof value.foreground_cwd === "string" ? { foregroundCwd: value.foreground_cwd } : {}), ...(typeof value.terminal_title_stripped === "string" ? { title: value.terminal_title_stripped } : {}) };
+  });
+  return { session: config.herdrSession || "default", workspaces, tabs, panes, agents: listHerdrAgents(config, runner) };
+}
+
+function requireLiveAgent(config: RuntimeConfig, paneId: string, runner: CommandRunner): HerdrAgentInfo {
+  if (!/^w[^:]+:p[^:]+$/.test(paneId)) throw new Error("invalid Herdr pane ID");
+  const agent = listHerdrAgents(config, runner).find(item => item.paneId === paneId);
+  if (!agent) throw new Error("Herdr agent is no longer available");
+  return agent;
+}
+
+export function readHerdrAgent(config: RuntimeConfig, paneId: string, lines: number, runner: CommandRunner = systemRunner): string {
+  requireLiveAgent(config, paneId, runner);
+  if (!Number.isInteger(lines) || lines < 1 || lines > 500) throw new Error("lines must be between 1 and 500");
+  const result = runner.run(config.herdrPath || "herdr", ["--session", config.herdrSession || "default", "agent", "read", paneId, "--source", "recent-unwrapped", "--lines", String(lines), "--format", "text"]);
+  if (result.status !== 0) throw new Error(`herdr agent read failed: ${result.stderr || "unknown error"}`);
+  return result.stdout ?? "";
+}
+
+export function promptHerdrAgent(config: RuntimeConfig, paneId: string, prompt: string, runner: CommandRunner = systemRunner): void {
+  requireLiveAgent(config, paneId, runner);
+  const result = runner.run(config.herdrPath || "herdr", ["--session", config.herdrSession || "default", "agent", "prompt", paneId, prompt]);
+  if (result.status !== 0) throw new Error(`herdr agent prompt failed: ${result.stderr || "unknown error"}`);
+}
+
+export function waitHerdrAgent(config: RuntimeConfig, paneId: string, statuses: string[], timeoutMs: number, runner: CommandRunner = systemRunner): unknown {
+  requireLiveAgent(config, paneId, runner);
+  const allowed = new Set(["idle", "working", "blocked", "done", "unknown"]);
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 300_000) throw new Error("timeoutMs must be between 1 and 300000");
+  if (!statuses.length || statuses.some(status => !allowed.has(status))) throw new Error("one or more valid lifecycle statuses are required");
+  const args = ["--session", config.herdrSession || "default", "agent", "wait", paneId, ...statuses.flatMap(status => ["--until", status]), "--timeout", String(timeoutMs)];
+  const result = runner.run(config.herdrPath || "herdr", args);
+  if (result.status !== 0) throw new Error(`herdr agent wait failed: ${result.stderr || "unknown error"}`);
+  if (!result.stdout?.trim()) return { paneId, status: statuses[0] };
+  try { return JSON.parse(result.stdout); } catch { return { paneId, output: result.stdout }; }
+}
+
+function existingDirectory(path: string): string {
+  if (!isAbsolute(path)) throw new Error("repository path must be absolute");
+  let real: string;
+  try { real = realpathSync(path); } catch { throw new Error("repository path does not exist"); }
+  if (!statSync(real).isDirectory()) throw new Error("repository path is not a directory");
+  return real;
+}
+
+export function resolveHerdrRepo(config: RuntimeConfig, input: { repoAlias?: string; workspaceId?: string }, runner: CommandRunner = systemRunner): { cwd: string; workspaceId?: string } {
+  const hasAlias = typeof input.repoAlias === "string" && input.repoAlias.length > 0;
+  const hasWorkspace = typeof input.workspaceId === "string" && input.workspaceId.length > 0;
+  if (hasAlias === hasWorkspace) throw new Error("specify exactly one repoAlias or workspaceId");
+  if (hasAlias) {
+    const path = config.repoAliases?.[input.repoAlias!];
+    if (!path) throw new Error("unknown repository alias; call repo_list and do not guess");
+    return { cwd: existingDirectory(path) };
+  }
+  const topology = herdrTopology(config, runner);
+  const workspace = topology.workspaces.filter(item => item.workspaceId === input.workspaceId);
+  if (workspace.length !== 1) throw new Error("workspace is not uniquely available");
+  const cwds = new Set(topology.panes.filter(pane => pane.workspaceId === input.workspaceId).map(pane => pane.foregroundCwd || pane.cwd).filter((cwd): cwd is string => Boolean(cwd)).map(existingDirectory));
+  if (cwds.size !== 1) throw new Error("workspace cwd is ambiguous; use a validated repo alias");
+  return { cwd: [...cwds][0], workspaceId: input.workspaceId };
+}
+
+export function startHerdrAgent(config: RuntimeConfig, input: { agent: string; name: string; prompt: string; repoAlias?: string; workspaceId?: string }, runner: CommandRunner = systemRunner): { paneId: string; workspaceId: string; tabId: string; cwd: string } {
+  if (!config.agents[input.agent]) throw new Error("configured agent is required");
+  if (!/^[A-Za-z0-9._-]{1,64}$/.test(input.agent)) throw new Error("invalid agent kind");
+  const resolved = resolveHerdrRepo(config, input, runner), session = config.herdrSession || "default", herdr = config.herdrPath || "herdr";
+  const location = resolved.workspaceId ? createTab(herdr, session, resolved.workspaceId, resolved.cwd, input.name, runner) : createWorkspace(herdr, session, resolved.cwd, input.name, runner);
+  const started = runner.run(herdr, ["--session", session, "agent", "start", input.name, "--kind", input.agent, "--pane", location.pane]);
+  if (started.status !== 0) {
+    if (location.createdFreshWorkspace) runner.run(herdr, ["--session", session, "workspace", "close", location.workspace]);
+    else runner.run(herdr, ["--session", session, "tab", "close", location.tab]);
+    throw new Error(`herdr agent start failed: ${started.stderr || "unknown error"}`);
+  }
+  const prompted = runner.run(herdr, ["--session", session, "agent", "prompt", location.pane, input.prompt]);
+  if (prompted.status !== 0) throw new LaunchOutcomeUnknownError(`herdr initial prompt outcome is unknown: ${prompted.stderr || "unknown error"}`);
+  return { paneId: location.pane, workspaceId: location.workspace, tabId: location.tab, cwd: resolved.cwd };
 }
 
 const COPILOT_LABEL = "Context Drop Copilot";

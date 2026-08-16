@@ -45,6 +45,70 @@ func TestInitializeHonorsPortAndPrivateModes(t *testing.T) {
 	}
 }
 
+func TestInitializePreservesValidatedRepoAliases(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CONTEXT_DROP_HOME", home)
+	if _, err := Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	_, configPath, _, _ := Paths()
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := t.TempDir()
+	cfg.RepoAliases = map[string]string{"context-drop": repo}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.RepoAliases["context-drop"] != repo {
+		t.Fatalf("repoAliases = %#v", loaded.RepoAliases)
+	}
+}
+
+func TestLoadConfigRejectsInvalidRepoAliases(t *testing.T) {
+	t.Setenv("CONTEXT_DROP_HOME", t.TempDir())
+	if _, err := Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	_, configPath, _, _ := Paths()
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, aliases := range map[string]map[string]string{
+		"invalid name":  {"bad alias": t.TempDir()},
+		"relative path": {"repo": "relative/path"},
+		"missing path":  {"repo": filepath.Join(t.TempDir(), "missing")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := cfg
+			candidate.RepoAliases = aliases
+			data, marshalErr := json.Marshal(candidate)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			if err := os.WriteFile(configPath, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadConfig(); err == nil {
+				t.Fatal("expected invalid repo alias error")
+			}
+		})
+	}
+}
+
 func TestInitializeMigratesPiPromptFileSyntax(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("CONTEXT_DROP_HOME", home)

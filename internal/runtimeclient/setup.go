@@ -29,6 +29,7 @@ type RuntimeConfig struct {
 	FullAIHerdrWorkspaceLabel string                 `json:"fullAIHerdrWorkspaceLabel"`
 	Agents                    map[string]AgentConfig `json:"agents"`
 	DelegateAgent             string                 `json:"delegateAgent,omitempty"`
+	RepoAliases               map[string]string      `json:"repoAliases,omitempty"`
 }
 
 func Initialize() ([]string, error) {
@@ -110,7 +111,7 @@ func Initialize() ([]string, error) {
 	if _, ok := agents["pi"]; ok {
 		delegateAgent = "pi"
 	}
-	cfg := RuntimeConfig{Host: "127.0.0.1", Port: port, StateDir: dir, TokenFile: tokenPath, NodePath: nodePath, DefaultBackend: backend, TmuxSession: "context-drop", HerdrPath: herdrPath, HerdrSession: herdrSession, FullAIHerdrWorkspaceLabel: fullAIHerdrWorkspaceLabel, Agents: agents, DelegateAgent: delegateAgent}
+	cfg := RuntimeConfig{Host: "127.0.0.1", Port: port, StateDir: dir, TokenFile: tokenPath, NodePath: nodePath, DefaultBackend: backend, TmuxSession: "context-drop", HerdrPath: herdrPath, HerdrSession: herdrSession, FullAIHerdrWorkspaceLabel: fullAIHerdrWorkspaceLabel, Agents: agents, DelegateAgent: delegateAgent, RepoAliases: map[string]string{}}
 	if hasExisting {
 		if existing.Host == "127.0.0.1" || existing.Host == "::1" {
 			cfg.Host = existing.Host
@@ -135,6 +136,9 @@ func Initialize() ([]string, error) {
 		}
 		if existing.DelegateAgent != "" {
 			cfg.DelegateAgent = existing.DelegateAgent
+		}
+		for alias, repo := range existing.RepoAliases {
+			cfg.RepoAliases[alias] = repo
 		}
 		for k, v := range existing.Agents {
 			// Older auto-detected Pi configs passed the prompt path as plain text.
@@ -270,6 +274,18 @@ func LoadConfig() (RuntimeConfig, error) {
 	}
 	if err := validExecutable(cfg.NodePath); err != nil {
 		return RuntimeConfig{}, fmt.Errorf("runtime nodePath: %w; run context-drop init again", err)
+	}
+	for alias, repo := range cfg.RepoAliases {
+		if strings.TrimSpace(alias) == "" || strings.ContainsAny(alias, " \t\r\n/") {
+			return RuntimeConfig{}, fmt.Errorf("runtime repo alias %q must be a non-empty identifier", alias)
+		}
+		if !filepath.IsAbs(repo) {
+			return RuntimeConfig{}, fmt.Errorf("runtime repo alias %q must reference an absolute path", alias)
+		}
+		info, err := os.Stat(repo)
+		if err != nil || !info.IsDir() {
+			return RuntimeConfig{}, fmt.Errorf("runtime repo alias %q must reference an existing directory", alias)
+		}
 	}
 	return cfg, nil
 }

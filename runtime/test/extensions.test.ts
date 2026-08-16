@@ -10,13 +10,13 @@ import type { CommandRunner } from "../src/launch.js";
 
 async function loadExtension(sourcePath: string, dir: string) {
   const typebox = join(dir, "typebox.mjs"), target = join(dir, Math.random().toString(36) + ".mjs");
-  writeFileSync(typebox, `export const Type={Object:p=>({properties:p}),String:o=>({type:"string",...o}),Optional:s=>({...s,optional:true})};`);
+  writeFileSync(typebox, `export const Type={Object:p=>({properties:p}),String:o=>({type:"string",...o}),Number:o=>({type:"number",...o}),Array:(s,o)=>({type:"array",items:s,...o}),Optional:s=>({...s,optional:true})};`);
   const source = readFileSync(sourcePath, "utf8").replace('from "typebox"', `from ${JSON.stringify(pathToFileURL(typebox).href)}`);
   writeFileSync(target, source); return import(pathToFileURL(target).href);
 }
 
-test("router extension exposes exactly three task tools on every turn", async () => {
-  const runtimeRoot=dirname(dirname(dirname(fileURLToPath(import.meta.url)))),repoRoot=dirname(runtimeRoot),dir=mkdtempSync(join(tmpdir(),"cd-router-"));process.env.CONTEXT_DROP_DELEGATE_URL="http://127.0.0.1/v1/tasks/delegate";process.env.CONTEXT_DROP_DELEGATE_CAPABILITY="cap";const router=await loadExtension(join(repoRoot,"internal","imessage","pi_router_extension.mjs"),dir);let before:any;const tools:string[]=[],active:string[][]=[];router.default({registerTool:(tool:any)=>tools.push(tool.name),on:(name:string,fn:any)=>{if(name==="before_agent_start")before=fn;},setActiveTools:(value:string[])=>active.push(value)});assert.deepEqual(tools,["list_tasks","delegate_task","continue_task"]);before({prompt:"untrusted worker report"});before({prompt:"normal user request"});assert.deepEqual(active,[["list_tasks","delegate_task","continue_task"],["list_tasks","delegate_task","continue_task"]]);
+test("router extension exposes the full tool set on every turn", async () => {
+  const runtimeRoot=dirname(dirname(dirname(fileURLToPath(import.meta.url)))),repoRoot=dirname(runtimeRoot),dir=mkdtempSync(join(tmpdir(),"cd-router-"));process.env.CONTEXT_DROP_DELEGATE_URL="http://127.0.0.1/v1/tasks/delegate";process.env.CONTEXT_DROP_DELEGATE_CAPABILITY="cap";const router=await loadExtension(join(repoRoot,"internal","imessage","pi_router_extension.mjs"),dir);let before:any;const tools:string[]=[],active:string[][]=[];router.default({registerTool:(tool:any)=>tools.push(tool.name),on:(name:string,fn:any)=>{if(name==="before_agent_start")before=fn;},setActiveTools:(value:string[])=>active.push(value)});assert.deepEqual(tools,["list_tasks","delegate_task","continue_task","herdr_overview","herdr_read","herdr_prompt","herdr_wait","repo_list","start_agent"]);before({prompt:"untrusted worker report"});before({prompt:"normal user request"});assert.deepEqual(active,[["list_tasks","delegate_task","continue_task","herdr_overview","herdr_read","herdr_prompt","herdr_wait","repo_list","start_agent"],["list_tasks","delegate_task","continue_task","herdr_overview","herdr_read","herdr_prompt","herdr_wait","repo_list","start_agent"]]);
 });
 
 test("router tools delegate, list, and continue using public pane IDs", async () => {
