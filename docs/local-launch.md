@@ -40,11 +40,13 @@ Managed Herdr work uses new tabs in the reusable `ContextDropManaged` workspace 
 
 ## Worker reports
 
-Managed workers receive scoped reporting values in their launch environment and use:
+Workers use one command for reports:
 
 ```sh
 context-drop report "Natural-language progress or result"
 ```
+
+Managed launches receive scoped reporting values in their environment. For adopted live panes, Context Drop stores scoped credentials by Herdr/tmux pane in its private local state, and `context-drop report` uses the pane environment to discover the right record automatically. Workers do not export variables manually.
 
 The message enters the owning orchestrator conversation. Worker-authored reports are complemented by daemon lifecycle events if a managed pane exits, crashes, or disappears. Reporting credentials cannot control the daemon or upload files.
 
