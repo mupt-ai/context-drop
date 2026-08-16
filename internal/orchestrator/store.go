@@ -194,9 +194,12 @@ func normalizeState(st *State) {
 func legacyJobStatus(outcome string) string {
 	switch outcome {
 	case "launching":
-		return "running"
+		return "failed"
 	case "launched":
-		return "running"
+		// Legacy jobs only recorded that a worker was dispatched; they were
+		// never live lifecycle records. Treat them as terminal history so an
+		// upgrade cannot make every old launch permanently block overlap=skip.
+		return "completed"
 	case "launch_error":
 		return "failed"
 	case "":

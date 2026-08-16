@@ -27,6 +27,33 @@ func TestLoadMigratesLegacyScheduleWithoutDroppingFields(t *testing.T) {
 	}
 }
 
+func TestLoadTreatsLegacyLaunchJobsAsTerminalHistory(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	legacy := map[string]any{
+		"schedules": []map[string]any{{
+			"name": "legacy", "agent": "pi", "repo": dir, "prompt": "keep me", "every": int64(time.Minute), "enabled": true,
+		}},
+		"jobs": []map[string]any{{
+			"id": "job_old", "schedule_name": "legacy", "outcome": "launched", "runtime_run_id": "run_old", "created_at": time.Now().Add(-time.Hour),
+		}},
+	}
+	data, _ := json.Marshal(legacy)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := (Store{Path: path}).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Jobs) != 1 || st.Jobs[0].Status != "completed" {
+		t.Fatalf("legacy launch must be terminal history: %#v", st.Jobs)
+	}
+	if hasActiveJob(st, "legacy") {
+		t.Fatal("legacy launch blocks future overlap-safe occurrences")
+	}
+}
+
 func TestClaimDueSkipsActiveOverlapAndAdvancesOccurrence(t *testing.T) {
 	now := time.Now().UTC()
 	st := State{}
