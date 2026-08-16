@@ -219,6 +219,38 @@ func TestWarmPersistentResponderUsesIncrementalPromptAndKeepsMemoryAvailable(t *
 	}
 }
 
+func TestRouterModePromptNamesAllManagedToolsAndGuardsGuessing(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Trusted = true
+	cfg.RouterMode = true
+	responder := &fakePersistentResponder{}
+	adapter := Adapter{Config: cfg, PersistentResponder: responder}
+	if _, err := adapter.RespondMeasured(context.Background(), Message{ID: "7", Text: "status"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"list_tasks", "delegate_task", "continue_task", "herdr_prompt", "herdr_overview", "herdr_read", "herdr_wait", "repo_list", "start_agent", "Never guess"} {
+		if !strings.Contains(responder.prompt, want) {
+			t.Fatalf("router prompt missing %q: %q", want, responder.prompt)
+		}
+	}
+}
+
+func TestRouterModeIncrementalPromptNamesAllManagedToolsAndGuardsGuessing(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Trusted = true
+	cfg.RouterMode = true
+	responder := &fakePersistentResponder{state: PersistentResponderState{NeedsBootstrap: false}}
+	adapter := Adapter{Config: cfg, PersistentResponder: responder}
+	if _, err := adapter.RespondMeasured(context.Background(), Message{ID: "8", Text: "status"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"list_tasks", "delegate_task", "continue_task", "herdr_prompt", "herdr_overview", "herdr_read", "herdr_wait", "repo_list", "start_agent", "Never guess"} {
+		if !strings.Contains(responder.prompt, want) {
+			t.Fatalf("incremental router prompt missing %q: %q", want, responder.prompt)
+		}
+	}
+}
+
 func TestTrustedPersistentResponderBudgetCapsExcessiveConfiguredTimeout(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Trusted = true
