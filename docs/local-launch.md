@@ -34,7 +34,7 @@ context-drop repo remove context-drop
 
 Alias paths are canonicalized and must already be absolute directories.
 
-Continuation is available for managed and unmanaged live panes. Pane IDs must come from live status or a trusted report and must never be guessed. Adopting an unmanaged pane creates managed tracking and scoped reporting before the prompt is sent.
+Continuation is available for every managed or unmanaged live pane, including agents currently marked `idle` or `done`. Pane IDs must come from live status or a trusted report and must never be guessed. Adopting an unmanaged or previously completed pane creates fresh managed tracking and scoped reporting before the prompt is sent.
 
 Managed Herdr work uses new tabs in the reusable `ContextDropManaged` workspace in the configured `CONTEXT_DROP_HERDR_SESSION`; full-AI work never silently switches to another session. Workspace-targeted launches use a new copilot tab in that exact validated workspace. Context Drop must not close or disturb unrelated workspaces, tabs, or panes.
 

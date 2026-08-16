@@ -254,10 +254,12 @@ export function createRuntimeServer(config: RuntimeConfig, token: string, runner
         const owner = routerFor(config, auth(req)); if (!owner) return json(res, 401, { error: "unauthorized" });
         const input = await body(req); if (typeof input?.paneId !== "string" || typeof input?.prompt !== "string" || !input.prompt.trim() || Buffer.byteLength(input.prompt) > 16000) throw new Error("paneId and prompt are required; prompt must be <= 16000 bytes");
         const liveSnapshot=liveTaskStatus(config,runner),live=liveSnapshot.tasks.find(task=>task.paneId===input.paneId);if(!live)return json(res,404,{error:"live task pane not found"});
-        const managedRun=loadRuns(config).find(run=>(run.backend==="herdr"?run.herdrPane:run.tmuxPane)===input.paneId);let prompt:string;
-        if(managedRun){
-          const managedTask=records<TaskRecord>(pathFor(config,"parent-tasks.jsonl")).find(task=>task.runId===managedRun.id);if(!managedTask||managedTask.routerId!==owner.routerId||managedTask.chatId!==owner.chatId)throw new Error("managed task is owned by another conversation");if(managedTask.authorizationId)throw new Error("authorized sensitive workers cannot be continued; request a fresh exact authorization");if(managedTask.status!=="running"||!managedTask.reportCapability)throw new Error("continued task reporting is no longer active");
-          if(managedRun.ownsPane===false){if(!managedTask?.reportCapability)throw new Error("continued task reporting is no longer active");prompt=continuationPrompt(input.prompt.trim(),{url:`${runtimeBaseURL(config)}/v1/reports`,capability:managedTask.reportCapability,runId:managedRun.id});}else prompt=continuationPrompt(input.prompt.trim());
+        const managedRun=loadRuns(config).find(run=>(run.backend==="herdr"?run.herdrPane:run.tmuxPane)===input.paneId),managedTask=managedRun?records<TaskRecord>(pathFor(config,"parent-tasks.jsonl")).find(task=>task.runId===managedRun.id):undefined,activeManaged=managedRun&&managedTask?.status==="running"&&Boolean(managedTask.reportCapability);let prompt:string;
+        if(activeManaged&&managedTask.authorizationId)throw new Error("authorized sensitive workers cannot be continued; request a fresh exact authorization");
+        if(activeManaged&&managedTask.routerId===owner.routerId&&managedTask.chatId===owner.chatId){
+          if(managedRun.ownsPane===false)prompt=continuationPrompt(input.prompt.trim(),{url:`${runtimeBaseURL(config)}/v1/reports`,capability:managedTask.reportCapability,runId:managedRun.id});else prompt=continuationPrompt(input.prompt.trim());
+        }else if(activeManaged){
+          prompt=continuationPrompt(input.prompt.trim());
         }else{
           requireActiveSlot(config,owner);const runId=`run_${current.getTime().toString(36)}_${randomBytes(5).toString("hex")}`,reportCapability=randomBytes(32).toString("base64url"),createdAt=current.toISOString(),backend=liveSnapshot.backend;
           const record:TaskRecord={id:`task_${runId}`,runId,routerId:owner.routerId,chatId:owner.chatId,task:input.prompt.trim(),label:live.name,lane:"full_ai",reportCapability,createdAt,updatedAt:createdAt,status:"running",lastObservedStatus:live.status};

@@ -35,7 +35,7 @@ export default function (pi) {
   });
   pi.registerTool({
     name: "continue_task", label: "Continue task",
-    description: "Send a relevant follow-up to the exact live worker pane. Use only a paneId obtained from list_tasks or a trusted worker report; never guess.",
+    description: "Send a relevant follow-up to any exact live worker pane, including idle or done agents. Use only a paneId obtained from list_tasks or a trusted worker report; never guess.",
     parameters: Type.Object({ paneId: Type.String({ minLength: 1, maxLength: 128 }), prompt: Type.String({ minLength: 1, maxLength: 16000 }) }),
     async execute(_id, input, signal) { const result = await request("/v1/tasks/continue", "POST", input, signal); return { content: [{ type: "text", text: `follow-up sent to pane ${input.paneId}` }], details: result }; },
   });
@@ -53,7 +53,7 @@ export default function (pi) {
   });
   pi.registerTool({
     name: "herdr_prompt", label: "Prompt Herdr agent",
-    description: "Continue an exact live worker through the managed continuation boundary. Resolve the pane first and never guess; authorized-sensitive workers cannot be bypassed.",
+    description: "Continue any exact live worker, including idle or done agents, through the managed continuation boundary. Resolve the pane first and never guess; authorized-sensitive workers cannot be bypassed.",
     parameters: Type.Object({ paneId: Type.String({ minLength: 1, maxLength: 128 }), prompt: Type.String({ minLength: 1, maxLength: 16000 }) }),
     async execute(_id, input, signal) { const result = await request("/v1/tasks/continue", "POST", input, signal); return { content: [{ type: "text", text: `follow-up sent to pane ${input.paneId}` }], details: result }; },
   });
