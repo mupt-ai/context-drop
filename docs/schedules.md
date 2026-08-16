@@ -18,6 +18,8 @@ context-drop schedule add --name worker-watch --type watch --backend herdr --wat
 
 `--command` is an exact argv entry: shell operators, substitutions, and redirections are ordinary text and are not interpreted.
 
+For long agent workflows, keep the instructions in a versioned repository file and make the saved prompt a short directive to read and execute that file. For example, the personal digest schedule points at [`workflows/personal-digest/WORKFLOW.md`](../workflows/personal-digest/WORKFLOW.md) rather than embedding the full workflow in daemon state.
+
 ## Lifecycle and safety
 
 Jobs use `queued`, `running`, `completed`, `failed`, `timed_out`, or `skipped`, with durable occurrence keys and start/finish timestamps. The default/latest missed-run policy coalesces missed intervals. `overlap=skip` prevents a new occurrence while a queued/running job exists and records the skipped occurrence. `queue` and `replace` are rejected until safe cancellation semantics exist.

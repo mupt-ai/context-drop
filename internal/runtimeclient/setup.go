@@ -173,6 +173,72 @@ func Initialize() ([]string, error) {
 	return detected, nil
 }
 
+func ConfigureRepoAlias(alias, path string, remove bool) error {
+	alias = strings.TrimSpace(alias)
+	if alias == "" || strings.ContainsAny(alias, " /\\\t\r\n") {
+		return fmt.Errorf("repository alias must be a non-empty identifier without whitespace or slashes")
+	}
+	_, configPath, _, err := Paths()
+	if err != nil {
+		return err
+	}
+	lock, err := lockConfig(configPath + ".lock")
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	cfg, err := LoadConfig()
+	if err != nil {
+		return err
+	}
+	if cfg.RepoAliases == nil {
+		cfg.RepoAliases = map[string]string{}
+	}
+	if remove {
+		if _, ok := cfg.RepoAliases[alias]; !ok {
+			return fmt.Errorf("repository alias %q is not configured", alias)
+		}
+		delete(cfg.RepoAliases, alias)
+	} else {
+		if !filepath.IsAbs(path) {
+			return fmt.Errorf("repository path must be absolute")
+		}
+		resolved, resolveErr := filepath.EvalSymlinks(path)
+		if resolveErr != nil {
+			return fmt.Errorf("resolve repository path: %w", resolveErr)
+		}
+		info, statErr := os.Stat(resolved)
+		if statErr != nil || !info.IsDir() {
+			return fmt.Errorf("repository path must be an existing directory")
+		}
+		cfg.RepoAliases[alias] = resolved
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	tmp, err := os.CreateTemp(filepath.Dir(configPath), ".config-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err = tmp.Chmod(0o600); err == nil {
+		_, err = tmp.Write(data)
+	}
+	if err == nil {
+		err = tmp.Sync()
+	}
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, configPath)
+}
+
 func ConfigureAgent(name string, agent AgentConfig, replace bool) error {
 	if strings.TrimSpace(name) == "" || strings.ContainsAny(name, " \t\r\n/") {
 		return fmt.Errorf("agent name must be a non-empty identifier without whitespace or slashes")

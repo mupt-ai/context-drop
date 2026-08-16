@@ -24,6 +24,16 @@ The trusted conversation router exposes managed task controls and constrained He
 - `herdr_wait`: poll authoritative status client-side with a bounded timeout and cancellation; it never invokes a blocking Herdr wait subprocess and reports timeout separately from observed status.
 - `repo_list` / `start_agent`: select only a validated alias or unambiguous live workspace cwd, then launch a fully managed, tracked worker with reporting, safety policy, and capacity enforcement.
 
+Manage aliases without editing runtime JSON:
+
+```sh
+context-drop repo add context-drop /absolute/path/to/context-drop
+context-drop repo list
+context-drop repo remove context-drop
+```
+
+Alias paths are canonicalized and must already be absolute directories.
+
 Continuation is available for managed and unmanaged live panes. Pane IDs must come from live status or a trusted report and must never be guessed. Adopting an unmanaged pane creates managed tracking and scoped reporting before the prompt is sent.
 
 Managed Herdr work uses new tabs in the reusable `ContextDropManaged` workspace in the configured `CONTEXT_DROP_HERDR_SESSION`; full-AI work never silently switches to another session. Workspace-targeted launches use a new copilot tab in that exact validated workspace. Context Drop must not close or disturb unrelated workspaces, tabs, or panes.
