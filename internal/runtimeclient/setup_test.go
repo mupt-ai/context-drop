@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -42,6 +43,145 @@ func TestInitializeHonorsPortAndPrivateModes(t *testing.T) {
 		if info.Mode().Perm() != tc.mode {
 			t.Fatalf("%s mode = %o", filepath.Base(tc.path), info.Mode().Perm())
 		}
+	}
+}
+
+func TestInitializePreservesValidatedRepoAliases(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CONTEXT_DROP_HOME", home)
+	if _, err := Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	_, configPath, _, _ := Paths()
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := t.TempDir()
+	cfg.RepoAliases = map[string]string{"context-drop": repo}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.RepoAliases["context-drop"] != repo {
+		t.Fatalf("repoAliases = %#v", loaded.RepoAliases)
+	}
+}
+
+func TestConfigureRepoAliasAddsAndRemovesCanonicalDirectory(t *testing.T) {
+	t.Setenv("CONTEXT_DROP_HOME", t.TempDir())
+	if _, err := Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	repo := t.TempDir()
+	if err := ConfigureRepoAlias("context-drop", repo, false); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, _ := filepath.EvalSymlinks(repo)
+	if cfg.RepoAliases["context-drop"] != resolved {
+		t.Fatalf("repoAliases = %#v", cfg.RepoAliases)
+	}
+	if err := ConfigureRepoAlias("context-drop", "", true); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cfg.RepoAliases["context-drop"]; ok {
+		t.Fatalf("alias was not removed: %#v", cfg.RepoAliases)
+	}
+}
+
+func TestInitializeWritesAtomicallyAndConcurrentAliasIsPreserved(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CONTEXT_DROP_HOME", home)
+	if _, err := Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	repo := t.TempDir()
+	if err := ConfigureRepoAlias("context-drop", repo, false); err != nil {
+		t.Fatal(err)
+	}
+	// Re-running Initialize must not lose the alias written concurrently.
+	if _, err := Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.RepoAliases["context-drop"] == "" {
+		t.Fatalf("repo alias was lost after Initialize: %#v", cfg.RepoAliases)
+	}
+	// Verify no leftover temp files in the config directory.
+	entries, err := os.ReadDir(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".config-") && strings.HasSuffix(e.Name(), ".tmp") {
+			t.Fatalf("leftover temp file: %s", e.Name())
+		}
+	}
+}
+
+func TestConfigureRepoAliasRejectsInvalidInput(t *testing.T) {
+
+	t.Setenv("CONTEXT_DROP_HOME", t.TempDir())
+	if _, err := Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	for name, path := range map[string]string{"bad alias": t.TempDir(), "relative": "relative/path", "missing": filepath.Join(t.TempDir(), "missing")} {
+		if err := ConfigureRepoAlias(name, path, false); err == nil {
+			t.Fatalf("ConfigureRepoAlias(%q, %q) succeeded", name, path)
+		}
+	}
+}
+
+func TestLoadConfigRejectsInvalidRepoAliases(t *testing.T) {
+	t.Setenv("CONTEXT_DROP_HOME", t.TempDir())
+	if _, err := Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	_, configPath, _, _ := Paths()
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, aliases := range map[string]map[string]string{
+		"invalid name":  {"bad alias": t.TempDir()},
+		"relative path": {"repo": "relative/path"},
+		"missing path":  {"repo": filepath.Join(t.TempDir(), "missing")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := cfg
+			candidate.RepoAliases = aliases
+			data, marshalErr := json.Marshal(candidate)
+			if marshalErr != nil {
+				t.Fatal(marshalErr)
+			}
+			if err := os.WriteFile(configPath, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadConfig(); err == nil {
+				t.Fatal("expected invalid repo alias error")
+			}
+		})
 	}
 }
 

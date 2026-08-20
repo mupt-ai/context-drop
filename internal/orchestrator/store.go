@@ -19,34 +19,60 @@ const (
 	MaxJobs         = 1000
 	MaxSeenMessages = 5000
 	MaxMessageJobs  = 1000
-	MaxPromptBytes  = 64 * 1024
+	MaxPromptBytes  = 16000
+)
+
+const (
+	ScheduleAgent   = "agent"
+	ScheduleCommand = "command"
+	ScheduleWatch   = "watch"
+	OverlapSkip     = "skip"
 )
 
 type Schedule struct {
-	Name             string        `json:"name"`
-	Agent            string        `json:"agent"`
-	Backend          string        `json:"backend,omitempty"`
-	Repo             string        `json:"repo"`
-	Prompt           string        `json:"prompt"`
-	Every            time.Duration `json:"every,omitempty"`
-	Cron             string        `json:"cron,omitempty"`
-	Timezone         string        `json:"timezone,omitempty"`
-	Enabled          bool          `json:"enabled"`
-	NotifyOnInitiate bool          `json:"notify_on_initiate"`
-	CreatedAt        time.Time     `json:"created_at"`
-	LastFiredAt      *time.Time    `json:"last_fired_at,omitempty"`
-	NextRunAt        time.Time     `json:"next_run_at"`
+	Name                string        `json:"name"`
+	Type                string        `json:"type"`
+	Agent               string        `json:"agent,omitempty"`
+	Backend             string        `json:"backend,omitempty"`
+	Repo                string        `json:"repo,omitempty"`
+	Prompt              string        `json:"prompt,omitempty"`
+	Command             []string      `json:"command,omitempty"`
+	Cwd                 string        `json:"cwd,omitempty"`
+	WatchPane           string        `json:"watch_pane,omitempty"`
+	WatchTarget         string        `json:"watch_target,omitempty"`
+	LastWatchState      string        `json:"last_watch_state,omitempty"`
+	Every               time.Duration `json:"every,omitempty"`
+	Cron                string        `json:"cron,omitempty"`
+	Timezone            string        `json:"timezone,omitempty"`
+	Enabled             bool          `json:"enabled"`
+	Overlap             string        `json:"overlap"`
+	MissedRunPolicy     string        `json:"missed_run_policy"`
+	Timeout             time.Duration `json:"timeout,omitempty"`
+	MaxRetries          int           `json:"max_retries,omitempty"`
+	ConsecutiveFailures int           `json:"consecutive_failures,omitempty"`
+	AutoPauseAfter      int           `json:"auto_pause_after,omitempty"`
+	NotifyOnInitiate    bool          `json:"notify_on_initiate"`
+	CreatedAt           time.Time     `json:"created_at"`
+	LastFiredAt         *time.Time    `json:"last_fired_at,omitempty"`
+	NextRunAt           time.Time     `json:"next_run_at"`
 }
 
 type Job struct {
-	ID           string    `json:"id"`
-	ScheduleName string    `json:"schedule_name"`
-	Agent        string    `json:"agent"`
-	Repo         string    `json:"repo"`
-	RuntimeRunID string    `json:"runtime_run_id,omitempty"`
-	Outcome      string    `json:"outcome"`
-	Error        string    `json:"error,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
+	ID            string     `json:"id"`
+	OccurrenceKey string     `json:"occurrence_key"`
+	ScheduleName  string     `json:"schedule_name"`
+	ScheduleType  string     `json:"schedule_type"`
+	Agent         string     `json:"agent,omitempty"`
+	Repo          string     `json:"repo,omitempty"`
+	Backend       string     `json:"backend,omitempty"`
+	RuntimeRunID  string     `json:"runtime_run_id,omitempty"`
+	Status        string     `json:"status"`
+	Outcome       string     `json:"outcome,omitempty"` // legacy compatibility
+	Attempt       int        `json:"attempt,omitempty"`
+	Error         string     `json:"error,omitempty"`
+	CreatedAt     time.Time  `json:"created_at"`
+	StartedAt     *time.Time `json:"started_at,omitempty"`
+	FinishedAt    *time.Time `json:"finished_at,omitempty"`
 }
 
 type MessageJob struct {
@@ -133,7 +159,55 @@ func (s Store) Load() (State, error) {
 	if st.MessageJobs == nil {
 		st.MessageJobs = map[string]MessageJob{}
 	}
+	normalizeState(&st)
 	return st, nil
+}
+
+// normalizeState is an in-memory, non-destructive migration for legacy state.
+// It is persisted by the next ordinary Update/Save transaction.
+func normalizeState(st *State) {
+	for i := range st.Schedules {
+		s := &st.Schedules[i]
+		if s.Type == "" {
+			s.Type = ScheduleAgent
+		}
+		if s.Overlap == "" {
+			s.Overlap = OverlapSkip
+		}
+		if s.MissedRunPolicy == "" {
+			s.MissedRunPolicy = "latest"
+		}
+	}
+	for i := range st.Jobs {
+		j := &st.Jobs[i]
+		if j.ScheduleType == "" {
+			j.ScheduleType = ScheduleAgent
+		}
+		if j.Status == "" {
+			j.Status = legacyJobStatus(j.Outcome)
+		}
+		if j.OccurrenceKey == "" {
+			j.OccurrenceKey = j.ID
+		}
+	}
+}
+
+func legacyJobStatus(outcome string) string {
+	switch outcome {
+	case "launching":
+		return "failed"
+	case "launched":
+		// Legacy jobs only recorded that a worker was dispatched; they were
+		// never live lifecycle records. Treat them as terminal history so an
+		// upgrade cannot make every old launch permanently block overlap=skip.
+		return "completed"
+	case "launch_error":
+		return "failed"
+	case "":
+		return "queued"
+	default:
+		return outcome
+	}
 }
 
 func (s Store) Save(st State) error {
@@ -199,7 +273,23 @@ func (s Store) save(st State) error {
 
 func pruneState(st *State) {
 	if len(st.Jobs) > MaxJobs {
-		st.Jobs = st.Jobs[len(st.Jobs)-MaxJobs:]
+		active := make([]Job, 0)
+		terminal := make([]Job, 0, len(st.Jobs))
+		for _, job := range st.Jobs {
+			if job.Status == "queued" || job.Status == "running" {
+				active = append(active, job)
+			} else {
+				terminal = append(terminal, job)
+			}
+		}
+		terminalLimit := MaxJobs - len(active)
+		if terminalLimit < 0 {
+			terminalLimit = 0
+		}
+		if len(terminal) > terminalLimit {
+			terminal = terminal[len(terminal)-terminalLimit:]
+		}
+		st.Jobs = append(terminal, active...)
 	}
 	if st.SeenMessageIDs == nil {
 		st.SeenMessageIDs = map[string]string{}
@@ -251,15 +341,53 @@ func ValidateSchedule(in Schedule) error {
 			return fmt.Errorf("schedule name may contain only letters, numbers, dot, dash, and underscore")
 		}
 	}
-	if strings.TrimSpace(in.Agent) == "" || strings.TrimSpace(in.Prompt) == "" {
-		return fmt.Errorf("agent and prompt are required")
+	if in.Type == "" {
+		in.Type = ScheduleAgent
+	}
+	if in.Overlap == "" {
+		in.Overlap = OverlapSkip
+	}
+	if in.MissedRunPolicy == "" {
+		in.MissedRunPolicy = "latest"
+	}
+	if in.Type != ScheduleAgent && in.Type != ScheduleCommand && in.Type != ScheduleWatch {
+		return fmt.Errorf("type must be agent, command, or watch")
+	}
+	if in.Overlap != OverlapSkip {
+		return fmt.Errorf("overlap policy %q is not safely supported; use skip", in.Overlap)
+	}
+	if in.MissedRunPolicy != "latest" {
+		return fmt.Errorf("missed-run policy must be latest")
+	}
+	if in.Timeout < 0 || in.MaxRetries < 0 || in.MaxRetries > 10 || in.AutoPauseAfter < 0 {
+		return fmt.Errorf("timeout, retries, and auto-pause must be bounded non-negative values")
 	}
 	if in.Backend != "" && in.Backend != "tmux" && in.Backend != "herdr" {
 		return fmt.Errorf("backend must be tmux or herdr")
 	}
-	if len(in.Prompt) > MaxPromptBytes {
-		return fmt.Errorf("prompt must be at most %d bytes", MaxPromptBytes)
+	switch in.Type {
+	case ScheduleAgent:
+		if strings.TrimSpace(in.Agent) == "" || strings.TrimSpace(in.Prompt) == "" {
+			return fmt.Errorf("agent and prompt are required")
+		}
+		if len(in.Prompt) > MaxPromptBytes {
+			return fmt.Errorf("prompt must be at most %d bytes", MaxPromptBytes)
+		}
+	case ScheduleCommand:
+		if len(in.Command) == 0 {
+			return fmt.Errorf("command requires a non-empty argv array")
+		}
+		for _, arg := range in.Command {
+			if arg == "" {
+				return fmt.Errorf("command argv entries must not be empty")
+			}
+		}
+	case ScheduleWatch:
+		if in.Backend == "" || (strings.TrimSpace(in.WatchPane) == "" && strings.TrimSpace(in.WatchTarget) == "") {
+			return fmt.Errorf("watch requires a backend and explicit pane or stable target")
+		}
 	}
+
 	if (in.Every > 0) == (strings.TrimSpace(in.Cron) != "") {
 		return fmt.Errorf("exactly one of --every or --cron is required")
 	}
@@ -279,17 +407,32 @@ func ValidateSchedule(in Schedule) error {
 	} else if in.Timezone != "" {
 		return fmt.Errorf("--timezone requires --cron")
 	}
-	info, err := os.Stat(in.Repo)
-	if err != nil || !info.IsDir() {
-		return fmt.Errorf("repo must be an existing local directory")
+	dir := in.Repo
+	if in.Type == ScheduleCommand {
+		dir = in.Cwd
 	}
-	if !filepath.IsAbs(in.Repo) {
-		return fmt.Errorf("repo must be an absolute path")
+	if in.Type != ScheduleWatch {
+		info, err := os.Stat(dir)
+		if err != nil || !info.IsDir() {
+			return fmt.Errorf("working directory must be an existing local directory")
+		}
+		if !filepath.IsAbs(dir) {
+			return fmt.Errorf("working directory must be an absolute path")
+		}
 	}
 	return nil
 }
 
 func Upsert(st *State, schedule Schedule, now time.Time) error {
+	if schedule.Type == "" {
+		schedule.Type = ScheduleAgent
+	}
+	if schedule.Overlap == "" {
+		schedule.Overlap = OverlapSkip
+	}
+	if schedule.MissedRunPolicy == "" {
+		schedule.MissedRunPolicy = "latest"
+	}
 	if err := ValidateSchedule(schedule); err != nil {
 		return err
 	}
@@ -323,24 +466,56 @@ func Remove(st *State, name string) bool {
 	return false
 }
 
-func Due(st *State, now time.Time) []Schedule {
-	var due []Schedule
+type Claim struct {
+	Schedule Schedule
+	Job      Job
+}
+
+func ClaimDue(st *State, now time.Time) []Claim {
+	var due []Claim
 	for i := range st.Schedules {
 		s := &st.Schedules[i]
 		if !s.Enabled || now.Before(s.NextRunAt) {
 			continue
 		}
-		due = append(due, *s)
+		occurrence := s.NextRunAt.UTC().Format(time.RFC3339Nano)
 		fired := now
 		s.LastFiredAt = &fired
-		next, err := nextScheduleOccurrence(*s, now)
+		next, err := nextScheduleOccurrence(*s, now) // latest: coalesce missed occurrences
 		if err != nil {
 			s.Enabled = false
 			continue
 		}
 		s.NextRunAt = next
+		if hasActiveJob(*st, s.Name) {
+			st.Jobs = append(st.Jobs, NewJobWithOccurrence(*s, "skipped", occurrence, now))
+			continue
+		}
+		job := NewJobWithOccurrence(*s, "queued", occurrence, now)
+		st.Jobs = append(st.Jobs, job)
+		due = append(due, Claim{Schedule: *s, Job: job})
 	}
 	return due
+}
+
+// Due is retained for callers that only need schedule snapshots. New execution
+// paths should use ClaimDue so the queued reservation is durable.
+func Due(st *State, now time.Time) []Schedule {
+	claims := ClaimDue(st, now)
+	out := make([]Schedule, 0, len(claims))
+	for _, claim := range claims {
+		out = append(out, claim.Schedule)
+	}
+	return out
+}
+
+func hasActiveJob(st State, name string) bool {
+	for _, j := range st.Jobs {
+		if j.ScheduleName == name && (j.Status == "queued" || j.Status == "running") {
+			return true
+		}
+	}
+	return false
 }
 
 func nextScheduleOccurrence(schedule Schedule, after time.Time) (time.Time, error) {
@@ -355,28 +530,92 @@ func ClaimManual(st *State, name string, now time.Time) (Schedule, Job, error) {
 		if schedule.Name != name {
 			continue
 		}
-		job := NewJob(schedule, "launching", "", "", now)
+		if hasActiveJob(*st, name) {
+			return Schedule{}, Job{}, fmt.Errorf("schedule %q already has an active job (overlap=skip)", name)
+		}
+		job := NewJobWithOccurrence(schedule, "queued", "manual:"+now.UTC().Format(time.RFC3339Nano), now)
 		st.Jobs = append(st.Jobs, job)
 		return schedule, job, nil
 	}
 	return Schedule{}, Job{}, fmt.Errorf("schedule %q not found", name)
 }
 
-func CompleteJob(st *State, id, outcome, runtimeID, errorText string) error {
+func SetJobStatus(st *State, id, status, runtimeID, errorText string, now time.Time) error {
+	valid := map[string]bool{"queued": true, "running": true, "completed": true, "failed": true, "unknown": true, "timed_out": true, "skipped": true}
+	if !valid[status] {
+		return fmt.Errorf("invalid job status %q", status)
+	}
 	for i := range st.Jobs {
-		if st.Jobs[i].ID != id {
+		j := &st.Jobs[i]
+		if j.ID != id {
 			continue
 		}
-		st.Jobs[i].Outcome = outcome
-		st.Jobs[i].RuntimeRunID = runtimeID
-		st.Jobs[i].Error = errorText
+		j.Status, j.Outcome, j.RuntimeRunID, j.Error = status, status, runtimeID, errorText
+		if (status == "running" || status == "completed" || status == "failed" || status == "timed_out") && j.StartedAt == nil {
+			at := now
+			j.StartedAt = &at
+		}
+		if status == "completed" || status == "failed" || status == "unknown" || status == "timed_out" || status == "skipped" {
+			at := now
+			j.FinishedAt = &at
+		}
 		return nil
 	}
 	return fmt.Errorf("job %q not found", id)
 }
 
-func NewJob(schedule Schedule, outcome, runtimeID, errorText string, now time.Time) Job {
+func CompleteJob(st *State, id, outcome, runtimeID, errorText string) error {
+	status := legacyJobStatus(outcome)
+	if outcome == "launched" {
+		status = "running"
+	}
+	return SetJobStatus(st, id, status, runtimeID, errorText, time.Now().UTC())
+}
+
+func NewJobWithOccurrence(schedule Schedule, status, occurrence string, now time.Time) Job {
 	var b [8]byte
 	_, _ = rand.Read(b[:])
-	return Job{ID: "job_" + hex.EncodeToString(b[:]), ScheduleName: schedule.Name, Agent: schedule.Agent, Repo: schedule.Repo, RuntimeRunID: runtimeID, Outcome: outcome, Error: errorText, CreatedAt: now}
+	job := Job{ID: "job_" + hex.EncodeToString(b[:]), OccurrenceKey: schedule.Name + ":" + occurrence, ScheduleName: schedule.Name, ScheduleType: schedule.Type, Agent: schedule.Agent, Repo: schedule.Repo, Backend: schedule.Backend, Status: status, Outcome: status, CreatedAt: now}
+	if status == "running" {
+		at := now
+		job.StartedAt = &at
+	}
+	if status == "skipped" {
+		at := now
+		job.FinishedAt = &at
+	}
+	return job
+}
+
+func NewJob(schedule Schedule, outcome, runtimeID, errorText string, now time.Time) Job {
+	job := NewJobWithOccurrence(schedule, legacyJobStatus(outcome), now.UTC().Format(time.RFC3339Nano), now)
+	job.RuntimeRunID, job.Error, job.Outcome = runtimeID, errorText, outcome
+	return job
+}
+
+func RecoverStaleLocalJobs(st *State, now time.Time) {
+	for i := range st.Jobs {
+		j := &st.Jobs[i]
+		if j.Status != "queued" && (j.ScheduleType == ScheduleAgent || j.Status != "running") {
+			continue
+		}
+		_ = SetJobStatus(st, j.ID, "failed", j.RuntimeRunID, "daemon restarted before local job completion", now)
+	}
+}
+
+func SetEnabled(st *State, name string, enabled bool, now time.Time) error {
+	for i := range st.Schedules {
+		if st.Schedules[i].Name == name {
+			st.Schedules[i].Enabled = enabled
+			if enabled {
+				next, err := nextScheduleOccurrence(st.Schedules[i], now)
+				if err != nil {
+					return err
+				}
+				st.Schedules[i].NextRunAt = next
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("schedule %q not found", name)
 }

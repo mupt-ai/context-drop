@@ -40,7 +40,7 @@ func TestPublicCommandSurface(t *testing.T) {
 		names = append(names, child.Name())
 	}
 	sort.Strings(names)
-	want := []string{"daemon", "report", "schedule", "upload", "version"}
+	want := []string{"daemon", "repo", "report", "schedule", "upload", "version"}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("commands = %v, want %v", names, want)
 	}

@@ -7,12 +7,47 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
+	"contextdrop.dev/context-drop/internal/localhome"
 	"github.com/spf13/cobra"
 )
 
 const maxReportBytes = 4000
+
+type reportCredentialsFile struct {
+	URL        string `json:"url"`
+	Capability string `json:"capability"`
+	RunID      string `json:"runId"`
+}
+
+func readReportCredentialsFile() (*reportCredentialsFile, error) {
+	paneID := os.Getenv("HERDR_PANE_ID")
+	if paneID == "" {
+		paneID = os.Getenv("TMUX_PANE")
+	}
+	if paneID == "" {
+		return nil, fmt.Errorf("worker pane is unknown")
+	}
+	root, err := localhome.Root()
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(filepath.Join(root, "managed", "report-credentials.json"))
+	if err != nil {
+		return nil, err
+	}
+	var all map[string]reportCredentialsFile
+	if err := json.Unmarshal(data, &all); err != nil {
+		return nil, err
+	}
+	creds, ok := all[paneID]
+	if !ok {
+		return nil, fmt.Errorf("worker reporting is not configured for pane %s", paneID)
+	}
+	return &creds, nil
+}
 
 func newReportCommand() *cobra.Command {
 	return &cobra.Command{
@@ -41,6 +76,19 @@ func newReportCommand() *cobra.Command {
 				return fmt.Errorf("report message must be at most %d bytes", maxReportBytes)
 			}
 			endpoint, capability, runID := os.Getenv("CONTEXT_DROP_REPORT_URL"), os.Getenv("CONTEXT_DROP_REPORT_CAPABILITY"), os.Getenv("CONTEXT_DROP_RUN_ID")
+			if endpoint == "" || capability == "" || runID == "" {
+				if creds, err := readReportCredentialsFile(); err == nil {
+					if endpoint == "" {
+						endpoint = creds.URL
+					}
+					if capability == "" {
+						capability = creds.Capability
+					}
+					if runID == "" {
+						runID = creds.RunID
+					}
+				}
+			}
 			if endpoint == "" || capability == "" || runID == "" {
 				return fmt.Errorf("worker reporting is not configured")
 			}

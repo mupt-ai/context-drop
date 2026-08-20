@@ -4,6 +4,7 @@ import { systemRunner } from "./launch.js";
 import type { RuntimeConfig, SessionBackend } from "./types.js";
 
 export interface LiveTaskStatus {
+  runId?: string;
   paneId: string;
   agent: string;
   name: string;
@@ -64,7 +65,7 @@ function liveTmuxTasks(config: RuntimeConfig, runner: CommandRunner): LiveTaskSt
   });
 }
 
-export function liveTaskStatus(config: RuntimeConfig, runner: CommandRunner = systemRunner): { backend: SessionBackend; tasks: LiveTaskStatus[] } {
-  const backend = config.defaultBackend ?? "tmux";
+export function liveTaskStatus(config: RuntimeConfig, runner: CommandRunner = systemRunner, requestedBackend?: SessionBackend): { backend: SessionBackend; tasks: LiveTaskStatus[] } {
+  const backend = requestedBackend ?? config.defaultBackend ?? "tmux";
   return { backend, tasks: backend === "herdr" ? liveHerdrTasks(config, runner) : liveTmuxTasks(config, runner) };
 }

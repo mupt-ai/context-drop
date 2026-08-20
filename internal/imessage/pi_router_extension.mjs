@@ -10,27 +10,72 @@ async function request(path, method, body, signal) {
   if (!response.ok) throw new Error(result.error || `Context Drop request failed (${response.status})`);
   return result;
 }
+function delay(ms, signal) {
+  return new Promise((resolve, reject) => { const done=()=>{signal.removeEventListener("abort",abort);resolve();};const timer=setTimeout(done,ms);const abort=()=>{clearTimeout(timer);signal.removeEventListener("abort",abort);reject(signal.reason ?? new Error("aborted"));};if(signal.aborted)return abort();signal.addEventListener("abort",abort,{once:true}); });
+}
+async function pollHerdrStatus(input, signal) {
+  const allowed=new Set(["idle","working","blocked","done","unknown"]);if(!input.statuses.length||input.statuses.some(status=>!allowed.has(status)))throw new Error("one or more valid lifecycle statuses are required");
+  const deadline=Date.now()+input.timeoutMs;let last;
+  do { last=await request("/v1/herdr/status","POST",{paneId:input.paneId},signal);if(last.paneId!==input.paneId||!allowed.has(last.status))throw new Error("Context Drop returned invalid Herdr status");if(input.statuses.includes(last.status))return {...last,matched:true};const remaining=deadline-Date.now();if(remaining<=0)break;await delay(Math.min(1000,remaining),signal); } while(true);
+  return { paneId:input.paneId, matched:false, timedOut:true, lastObservedStatus:last.status };
+}
 
 export default function (pi) {
   pi.registerTool({
     name: "list_tasks", label: "List tasks",
-    description: "Get authoritative live status from the configured backend. Use for every question about running work; never answer from memory.",
+    description: "Get authoritative live status for every worker in the configured backend, including workers launched outside this conversation. Use for every question about running work; never answer from memory.",
     parameters: Type.Object({}),
     async execute(_id, _input, signal) { const result = await request("/v1/tasks", "GET", undefined, signal); return { content: [{ type: "text", text: JSON.stringify(result) }], details: result }; },
   });
   pi.registerTool({
     name: "delegate_task", label: "Delegate task",
-    description: "Start ordinary work in a fully managed full-AI worker. The optional agent must be configured; keep the private name short and recognizable.",
+    description: "Start ordinary work in a fully managed full-AI worker. Success is returned only after the exact pane registers its agent; on an ambiguous error, check list_tasks rather than retrying. The optional agent must be configured; keep the private name short and recognizable.",
     parameters: Type.Object({ agent: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })), prompt: Type.String({ minLength: 1, maxLength: 16000 }), name: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })) }),
     async execute(_id, input, signal) { const result = await request("/v1/tasks/delegate", "POST", input, signal); return { content: [{ type: "text", text: `task started in pane ${result.task.paneId}` }], details: result }; },
   });
   pi.registerTool({
     name: "continue_task", label: "Continue task",
-    description: "Send a relevant follow-up to the exact live worker pane. Use only a paneId obtained from list_tasks or a trusted worker report; never guess.",
+    description: "Send a relevant follow-up to any exact live worker pane, including idle or done agents. Use only a paneId obtained from list_tasks or a trusted worker report; never guess.",
     parameters: Type.Object({ paneId: Type.String({ minLength: 1, maxLength: 128 }), prompt: Type.String({ minLength: 1, maxLength: 16000 }) }),
     async execute(_id, input, signal) { const result = await request("/v1/tasks/continue", "POST", input, signal); return { content: [{ type: "text", text: `follow-up sent to pane ${input.paneId}` }], details: result }; },
   });
+  pi.registerTool({
+    name: "herdr_overview", label: "Herdr overview",
+    description: "Get authoritative workspace, tab, pane, agent, cwd, and lifecycle topology for the entire configured explicit Herdr session.",
+    parameters: Type.Object({}),
+    async execute(_id, _input, signal) { const result = await request("/v1/herdr/overview", "GET", undefined, signal); return { content: [{ type: "text", text: JSON.stringify(result) }], details: result }; },
+  });
+  pi.registerTool({
+    name: "herdr_read", label: "Read Herdr agent",
+    description: "Read recent output directly from any exact live Herdr agent pane in the configured session; never launch an inspector worker.",
+    parameters: Type.Object({ paneId: Type.String({ minLength: 1, maxLength: 128 }), lines: Type.Optional(Type.Number({ minimum: 1, maximum: 500 })) }),
+    async execute(_id, input, signal) { const result = await request("/v1/herdr/read", "POST", { paneId: input.paneId, lines: input.lines ?? 120 }, signal); return { content: [{ type: "text", text: result.output }], details: result }; },
+  });
+  pi.registerTool({
+    name: "herdr_prompt", label: "Prompt Herdr agent",
+    description: "Continue any exact live worker, including idle or done agents, through the managed continuation boundary. Resolve the pane first and never guess; authorized-sensitive workers cannot be bypassed.",
+    parameters: Type.Object({ paneId: Type.String({ minLength: 1, maxLength: 128 }), prompt: Type.String({ minLength: 1, maxLength: 16000 }) }),
+    async execute(_id, input, signal) { const result = await request("/v1/tasks/continue", "POST", input, signal); return { content: [{ type: "text", text: `follow-up sent to pane ${input.paneId}` }], details: result }; },
+  });
+  pi.registerTool({
+    name: "herdr_wait", label: "Wait for Herdr agent",
+    description: "Wait for an exact pane lifecycle state: idle, working, blocked, done, or unknown.",
+    parameters: Type.Object({ paneId: Type.String({ minLength: 1, maxLength: 128 }), statuses: Type.Array(Type.String({ minLength: 1, maxLength: 16 }), { minItems: 1, maxItems: 5 }), timeoutMs: Type.Number({ minimum: 1, maximum: 300000 }) }),
+    async execute(_id, input, signal) { const result = await pollHerdrStatus(input,signal); return { content: [{ type: "text", text: JSON.stringify(result) }], details: result }; },
+  });
+  pi.registerTool({
+    name: "repo_list", label: "List repositories",
+    description: "List private validated repository aliases available for launching. Only aliases are returned; do not guess missing aliases.",
+    parameters: Type.Object({}),
+    async execute(_id, _input, signal) { const result = await request("/v1/repos", "GET", undefined, signal); return { content: [{ type: "text", text: JSON.stringify(result) }], details: result }; },
+  });
+  pi.registerTool({
+    name: "start_agent", label: "Start Herdr agent",
+    description: "Start a configured agent using exactly one validated repoAlias or a workspaceId whose live cwd resolves uniquely. Success means the exact pane registered its agent; after an ambiguous error check list_tasks rather than retrying. Never guess ambiguous targets.",
+    parameters: Type.Object({ agent: Type.String({ minLength: 1, maxLength: 64 }), name: Type.String({ minLength: 1, maxLength: 120 }), prompt: Type.String({ minLength: 1, maxLength: 16000 }), repoAlias: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })), workspaceId: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })) }),
+    async execute(_id, input, signal) { const result = await request("/v1/tasks/start", "POST", input, signal); return { content: [{ type: "text", text: `agent started in pane ${result.task.paneId}` }], details: result }; },
+  });
   pi.on("before_agent_start", () => {
-    pi.setActiveTools(["list_tasks", "delegate_task", "continue_task"]);
+    pi.setActiveTools(["list_tasks", "delegate_task", "continue_task", "herdr_overview", "herdr_read", "herdr_prompt", "herdr_wait", "repo_list", "start_agent"]);
   });
 }

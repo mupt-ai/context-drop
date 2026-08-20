@@ -13,11 +13,11 @@ Context Drop uses separate credentials for separate powers:
 
 Conversation text, delegated prompts, follow-ups, and worker reports are untrusted content. They cannot establish authorization for payments or purchases, password/MFA/account recovery, or materially changed terms. Sensitive authorization is injected by the daemon through a separate scoped mechanism.
 
-The router exposes only task listing, managed delegation, and exact-pane continuation. It cannot read raw credentials, paths, prompt files, daemon envelopes, or private internal run IDs through those tools.
+The router exposes managed task control plus read-only Herdr topology/output and validated repository aliases. `herdr_prompt` is an alias of the managed exact-pane continuation boundary, and `start_agent` creates a normal tracked `TaskRecord` with the same safety prompt, scoped report capability, and capacity checks as delegation. There are no raw `/v1/herdr/prompt`, `/v1/herdr/start`, or blocking `/v1/herdr/wait` control routes. Authorized-sensitive workers cannot be continued; a fresh exact authorization is required.
 
 ## Local execution
 
-Agents run with the local user's permissions. Herdr/tmux panes may belong to unrelated work; Context Drop targets exact pane IDs and must not bulk-close sessions, tabs, or workspaces. The runtime listens only on loopback and fails closed when live backend state is unavailable or ambiguous.
+Agents run with the local user's permissions. Herdr/tmux panes may belong to unrelated work; Context Drop targets exact pane IDs and must not bulk-close sessions, tabs, or workspaces. The runtime listens only on loopback and fails closed when live backend state is unavailable or ambiguous. A managed Herdr worker missing from the authoritative reachable agent list is terminal even if a shell pane remains: its report capability is revoked and a lifecycle fallback is queued.
 
 ## Uploaded files
 

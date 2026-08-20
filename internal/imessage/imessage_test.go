@@ -87,6 +87,10 @@ func testConfig(t *testing.T) Config {
 	}
 	cfg := Defaults()
 	cfg.Enabled = true
+	cfg.PersonaFile = filepath.Join(t.TempDir(), "AGENTS.md")
+	if err := os.WriteFile(cfg.PersonaFile, []byte("orchestrator instructions: use list_tasks, delegate_task, continue_task, herdr_prompt, herdr_overview, herdr_read, herdr_wait, repo_list, and start_agent; never guess identifiers"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	cfg.ChatID = "chat;$(nope)"
 	cfg.ImsgPath = executable
 	cfg.ResponderCommand = []string{executable, "--prompt", "{prompt_file}"}
@@ -215,6 +219,38 @@ func TestWarmPersistentResponderUsesIncrementalPromptAndKeepsMemoryAvailable(t *
 	for _, want := range []string{memoryPath, "Incoming iMessage ID 42", "hello"} {
 		if !strings.Contains(responder.prompt, want) {
 			t.Fatalf("warm prompt missing %q: %q", want, responder.prompt)
+		}
+	}
+}
+
+func TestRouterModePromptInjectsOrchestratorInstructions(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Trusted = true
+	cfg.RouterMode = true
+	responder := &fakePersistentResponder{}
+	adapter := Adapter{Config: cfg, PersistentResponder: responder}
+	if _, err := adapter.RespondMeasured(context.Background(), Message{ID: "7", Text: "status"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Orchestrator instructions", "use list_tasks", "never guess identifiers"} {
+		if !strings.Contains(responder.prompt, want) {
+			t.Fatalf("router prompt missing %q: %q", want, responder.prompt)
+		}
+	}
+}
+
+func TestRouterModeIncrementalPromptInjectsOrchestratorInstructions(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Trusted = true
+	cfg.RouterMode = true
+	responder := &fakePersistentResponder{state: PersistentResponderState{NeedsBootstrap: false}}
+	adapter := Adapter{Config: cfg, PersistentResponder: responder}
+	if _, err := adapter.RespondMeasured(context.Background(), Message{ID: "8", Text: "status"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Orchestrator instructions", "use list_tasks", "never guess identifiers"} {
+		if !strings.Contains(responder.prompt, want) {
+			t.Fatalf("incremental router prompt missing %q: %q", want, responder.prompt)
 		}
 	}
 }

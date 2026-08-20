@@ -44,6 +44,7 @@ func NewRootCommand(build BuildInfo) *cobra.Command {
 	cmd.AddCommand(newUploadCommand())
 	cmd.AddCommand(newReportCommand())
 	cmd.AddCommand(newScheduleCommand())
+	cmd.AddCommand(newRepoCommand())
 	cmd.AddCommand(newDaemonCommand())
 	cmd.AddCommand(newVersionCommand(build))
 	return cmd

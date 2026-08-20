@@ -15,23 +15,38 @@ On macOS the installer uses a per-user LaunchAgent. On Linux it uses a systemd u
 
 ## Orchestrator task tools
 
-The trusted conversation router exposes exactly:
+The trusted conversation orchestrator exposes managed task controls and full read-only Herdr inspection:
 
-- `list_tasks`: query the selected live backend and return public pane IDs, agent, optional name, status, selection state, and whether Context Drop fully manages the task.
+- `list_tasks`: query every worker in the selected live backend and return public pane IDs, agent, optional name, status, selection state, and whether Context Drop fully manages the task.
 - `delegate_task`: start a fully managed task using configured defaults and an optional configured agent/name.
-- `continue_task`: send a follow-up to an exact live Herdr (`wX:pY`) or tmux (`%N`) pane.
+- `continue_task` / `herdr_prompt`: send a follow-up through the same managed continuation boundary to an exact live pane. An authorized-sensitive worker cannot be continued.
+- `herdr_overview` / `herdr_read`: inspect the full configured Herdr session without exposing raw credentials.
+- `herdr_wait`: poll authoritative status client-side with a bounded timeout and cancellation; it never invokes a blocking Herdr wait subprocess and reports timeout separately from observed status.
+- `repo_list` / `start_agent`: select only a validated alias or unambiguous live workspace cwd, then launch a fully managed, tracked worker with reporting, safety policy, and capacity enforcement.
 
-Continuation is available for managed and unmanaged live panes. Pane IDs must come from live status or a trusted report and must never be guessed.
+Manage aliases without editing runtime JSON:
 
-Managed Herdr work uses new tabs in the reusable `ContextDropManaged` workspace in session `default`. Context Drop must not close or disturb unrelated workspaces, tabs, or panes.
+```sh
+context-drop repo add context-drop /absolute/path/to/context-drop
+context-drop repo list
+context-drop repo remove context-drop
+```
+
+Alias paths are canonicalized and must already be absolute directories.
+
+Continuation is available for every managed or unmanaged live pane, including agents currently marked `idle` or `done`. Pane IDs must come from live status or a trusted report and must never be guessed. Adopting an unmanaged or previously completed pane creates fresh managed tracking and scoped reporting before the prompt is sent.
+
+Managed Herdr work uses new tabs in the reusable `ContextDropManaged` workspace in the configured `CONTEXT_DROP_HERDR_SESSION`; full-AI work never silently switches to another session. Workspace-targeted launches use a new copilot tab in that exact validated workspace. Context Drop must not close or disturb unrelated workspaces, tabs, or panes.
 
 ## Worker reports
 
-Managed workers receive scoped reporting values in their launch environment and use:
+Workers use one command for reports:
 
 ```sh
 context-drop report "Natural-language progress or result"
 ```
+
+Managed launches receive scoped reporting values in their environment. For adopted live panes, Context Drop stores scoped credentials by Herdr/tmux pane in its private local state, and `context-drop report` uses the pane environment to discover the right record automatically. Workers do not export variables manually.
 
 The message enters the owning orchestrator conversation. Worker-authored reports are complemented by daemon lifecycle events if a managed pane exits, crashes, or disappears. Reporting credentials cannot control the daemon or upload files.
 

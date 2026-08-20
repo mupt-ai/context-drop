@@ -29,6 +29,7 @@ type RuntimeConfig struct {
 	FullAIHerdrWorkspaceLabel string                 `json:"fullAIHerdrWorkspaceLabel"`
 	Agents                    map[string]AgentConfig `json:"agents"`
 	DelegateAgent             string                 `json:"delegateAgent,omitempty"`
+	RepoAliases               map[string]string      `json:"repoAliases,omitempty"`
 }
 
 func Initialize() ([]string, error) {
@@ -42,6 +43,11 @@ func Initialize() ([]string, error) {
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return nil, err
 	}
+	lock, err := lockConfig(configPath + ".lock")
+	if err != nil {
+		return nil, err
+	}
+	defer lock.Close()
 	if _, err := os.Stat(tokenPath); os.IsNotExist(err) {
 		b := make([]byte, 32)
 		if _, err := rand.Read(b); err != nil {
@@ -110,7 +116,7 @@ func Initialize() ([]string, error) {
 	if _, ok := agents["pi"]; ok {
 		delegateAgent = "pi"
 	}
-	cfg := RuntimeConfig{Host: "127.0.0.1", Port: port, StateDir: dir, TokenFile: tokenPath, NodePath: nodePath, DefaultBackend: backend, TmuxSession: "context-drop", HerdrPath: herdrPath, HerdrSession: herdrSession, FullAIHerdrWorkspaceLabel: fullAIHerdrWorkspaceLabel, Agents: agents, DelegateAgent: delegateAgent}
+	cfg := RuntimeConfig{Host: "127.0.0.1", Port: port, StateDir: dir, TokenFile: tokenPath, NodePath: nodePath, DefaultBackend: backend, TmuxSession: "context-drop", HerdrPath: herdrPath, HerdrSession: herdrSession, FullAIHerdrWorkspaceLabel: fullAIHerdrWorkspaceLabel, Agents: agents, DelegateAgent: delegateAgent, RepoAliases: map[string]string{}}
 	if hasExisting {
 		if existing.Host == "127.0.0.1" || existing.Host == "::1" {
 			cfg.Host = existing.Host
@@ -136,6 +142,9 @@ func Initialize() ([]string, error) {
 		if existing.DelegateAgent != "" {
 			cfg.DelegateAgent = existing.DelegateAgent
 		}
+		for alias, repo := range existing.RepoAliases {
+			cfg.RepoAliases[alias] = repo
+		}
 		for k, v := range existing.Agents {
 			// Older auto-detected Pi configs passed the prompt path as plain text.
 			// Pi loads file content only when the argument uses its @file syntax.
@@ -155,18 +164,88 @@ func Initialize() ([]string, error) {
 			return nil, fmt.Errorf("delegateAgent %q is not configured", cfg.DelegateAgent)
 		}
 	}
-	data, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return nil, err
-	}
-	data = append(data, '\n')
-	if err := os.WriteFile(configPath, data, 0o600); err != nil {
-		return nil, err
-	}
-	if err := os.Chmod(configPath, 0o600); err != nil {
+	if err := writeRuntimeConfig(configPath, cfg); err != nil {
 		return nil, err
 	}
 	return detected, nil
+}
+
+func writeRuntimeConfig(configPath string, cfg RuntimeConfig) error {
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	tmp, err := os.CreateTemp(filepath.Dir(configPath), ".config-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err = tmp.Chmod(0o600); err == nil {
+		_, err = tmp.Write(data)
+	}
+	if err == nil {
+		err = tmp.Sync()
+	}
+	if closeErr := tmp.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	if err = os.Rename(tmpPath, configPath); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(configPath))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
+}
+
+func ConfigureRepoAlias(alias, path string, remove bool) error {
+	alias = strings.TrimSpace(alias)
+	if alias == "" || strings.ContainsAny(alias, " /\\\t\r\n") {
+		return fmt.Errorf("repository alias must be a non-empty identifier without whitespace or slashes")
+	}
+	_, configPath, _, err := Paths()
+	if err != nil {
+		return err
+	}
+	lock, err := lockConfig(configPath + ".lock")
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	cfg, err := LoadConfig()
+	if err != nil {
+		return err
+	}
+	if cfg.RepoAliases == nil {
+		cfg.RepoAliases = map[string]string{}
+	}
+	if remove {
+		if _, ok := cfg.RepoAliases[alias]; !ok {
+			return fmt.Errorf("repository alias %q is not configured", alias)
+		}
+		delete(cfg.RepoAliases, alias)
+	} else {
+		if !filepath.IsAbs(path) {
+			return fmt.Errorf("repository path must be absolute")
+		}
+		resolved, resolveErr := filepath.EvalSymlinks(path)
+		if resolveErr != nil {
+			return fmt.Errorf("resolve repository path: %w", resolveErr)
+		}
+		info, statErr := os.Stat(resolved)
+		if statErr != nil || !info.IsDir() {
+			return fmt.Errorf("repository path must be an existing directory")
+		}
+		cfg.RepoAliases[alias] = resolved
+	}
+	return writeRuntimeConfig(configPath, cfg)
 }
 
 func ConfigureAgent(name string, agent AgentConfig, replace bool) error {
@@ -209,30 +288,7 @@ func ConfigureAgent(name string, agent AgentConfig, replace bool) error {
 		return fmt.Errorf("agent %q is already configured; pass --replace to overwrite it", name)
 	}
 	cfg.Agents[name] = agent
-	data, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
-	tmp, err := os.CreateTemp(filepath.Dir(configPath), ".config-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-	if err = tmp.Chmod(0o600); err == nil {
-		_, err = tmp.Write(data)
-	}
-	if err == nil {
-		err = tmp.Sync()
-	}
-	if closeErr := tmp.Close(); err == nil {
-		err = closeErr
-	}
-	if err != nil {
-		return err
-	}
-	return os.Rename(tmpPath, configPath)
+	return writeRuntimeConfig(configPath, cfg)
 }
 
 func LoadConfig() (RuntimeConfig, error) {
@@ -270,6 +326,18 @@ func LoadConfig() (RuntimeConfig, error) {
 	}
 	if err := validExecutable(cfg.NodePath); err != nil {
 		return RuntimeConfig{}, fmt.Errorf("runtime nodePath: %w; run context-drop init again", err)
+	}
+	for alias, repo := range cfg.RepoAliases {
+		if strings.TrimSpace(alias) == "" || strings.ContainsAny(alias, " \t\r\n/") {
+			return RuntimeConfig{}, fmt.Errorf("runtime repo alias %q must be a non-empty identifier", alias)
+		}
+		if !filepath.IsAbs(repo) {
+			return RuntimeConfig{}, fmt.Errorf("runtime repo alias %q must reference an absolute path", alias)
+		}
+		info, err := os.Stat(repo)
+		if err != nil || !info.IsDir() {
+			return RuntimeConfig{}, fmt.Errorf("runtime repo alias %q must reference an existing directory", alias)
+		}
 	}
 	return cfg, nil
 }
