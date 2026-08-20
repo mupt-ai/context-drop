@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -66,6 +67,9 @@ func (f *fakeDelegationRuntime) LeaseReport(_ context.Context, router, chat stri
 	return runtimeclient.ParentReport{}, false, nil
 }
 func (f *fakeDelegationRuntime) FinishReport(_ context.Context, report runtimeclient.ParentReport, routerID, chatID string, delivered bool) error {
+	return f.FinishReportWithError(context.Background(), report, routerID, chatID, delivered, "")
+}
+func (f *fakeDelegationRuntime) FinishReportWithError(_ context.Context, report runtimeclient.ParentReport, routerID, chatID string, delivered bool, errorClass string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.finishDelivered = append(f.finishDelivered, delivered)
@@ -114,6 +118,44 @@ func (c *reportCommander) Run(_ context.Context, _ string, args []string, _ int)
 	return imessage.CommandResult{Stdout: []byte(`{"ok":true}`)}, nil
 }
 
+func TestSafeDeliveryErrorKeepsUsefulCauseAndRedactsSecrets(t *testing.T) {
+	if got := safeDeliveryError(fmt.Errorf("dial unix: connection refused")); strings.Contains(got, "connection refused") {
+		t.Fatalf("unknown error type leaked detail: %q", got)
+	}
+	if got := safeDeliveryError(context.DeadlineExceeded); !strings.Contains(got, "deadline exceeded") {
+		t.Fatalf("known-safe context error lost: %q", got)
+	}
+	secret := "sk-abc123xyz with no keyword that matches the old blacklist"
+	if got := safeDeliveryError(fmt.Errorf("send failed: %s", secret)); strings.Contains(got, secret) || strings.Contains(got, "abc123") {
+		t.Fatalf("diagnostic leaked secret-looking value: %q", got)
+	}
+}
+
+func TestClassifyDeliveryError(t *testing.T) {
+	tests := []struct {
+		name       string
+		respondErr error
+		sendErr    error
+		want       string
+	}{
+		{name: "success", want: ""},
+		{name: "responder timeout", respondErr: context.DeadlineExceeded, sendErr: context.DeadlineExceeded, want: "timeout"},
+		{name: "send timeout", sendErr: context.DeadlineExceeded, want: "timeout"},
+		{name: "permanent client HTTP", sendErr: &runtimeclient.HTTPError{StatusCode: http.StatusBadRequest}, want: "permanent"},
+		{name: "request timeout retries", sendErr: &runtimeclient.HTTPError{StatusCode: http.StatusRequestTimeout}, want: "transient"},
+		{name: "rate limit retries", sendErr: &runtimeclient.HTTPError{StatusCode: http.StatusTooManyRequests}, want: "transient"},
+		{name: "server error retries", sendErr: &runtimeclient.HTTPError{StatusCode: http.StatusBadGateway}, want: "transient"},
+		{name: "unknown retries", sendErr: errors.New("network unavailable"), want: "transient"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classifyDeliveryError(tt.respondErr, tt.sendErr); got != tt.want {
+				t.Fatalf("classifyDeliveryError()=%q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestReportDeliveryRetriesAfterSendFailureAndScopesChat(t *testing.T) {
 	backend := &fakeDelegationRuntime{reports: []runtimeclient.ParentReport{{ID: "r-other", RouterID: imessageRouterID, ChatID: "other", RunID: "x", Kind: "completed", Message: "secret"}, {ID: "r1", RouterID: imessageRouterID, ChatID: "chat", RunID: "run_123", Kind: "failed", Message: "bad\n\x1b[31m\u202Ething"}}}
 	commander := &reportCommander{fail: 1}
@@ -150,6 +192,8 @@ func TestScheduleOwnedReportRoutesToConfiguredOrchestrator(t *testing.T) {
 func TestReportDeliveryUsesHTTPLeaseReleaseAndAck(t *testing.T) {
 	var mu sync.Mutex
 	leased, delivered, releases, acks := false, false, 0, 0
+	var releaseErrorClass string
+	var leaseSeconds int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -159,6 +203,11 @@ func TestReportDeliveryUsesHTTPLeaseReleaseAndAck(t *testing.T) {
 		}
 		switch req.URL.Path {
 		case "/v1/reports/lease":
+			var input struct {
+				LeaseSeconds int `json:"leaseSeconds"`
+			}
+			_ = json.NewDecoder(req.Body).Decode(&input)
+			leaseSeconds = input.LeaseSeconds
 			if delivered || leased {
 				_ = json.NewEncoder(w).Encode(map[string]any{})
 				return
@@ -166,6 +215,11 @@ func TestReportDeliveryUsesHTTPLeaseReleaseAndAck(t *testing.T) {
 			leased = true
 			_ = json.NewEncoder(w).Encode(map[string]any{"report": runtimeclient.ParentReport{ID: "r1", RunID: "run", RouterID: imessageRouterID, ChatID: "chat", Kind: "completed", Message: "done", LeaseID: "lease"}})
 		case "/v1/reports/r1/release":
+			var input struct {
+				ErrorClass string `json:"errorClass"`
+			}
+			_ = json.NewDecoder(req.Body).Decode(&input)
+			releaseErrorClass = input.ErrorClass
 			leased = false
 			releases++
 			_ = json.NewEncoder(w).Encode(map[string]any{"report": map[string]any{"id": "r1"}})
@@ -189,8 +243,8 @@ func TestReportDeliveryUsesHTTPLeaseReleaseAndAck(t *testing.T) {
 	runner := &Runner{Delegation: client, IMessage: &imessage.Adapter{Config: cfg, Commander: commander, PersistentResponder: &recordingResponder{}}}
 	runner.deliverReportsOnce(context.Background())
 	runner.deliverReportsOnce(context.Background())
-	if releases != 1 || acks != 1 || len(commander.sends) != 1 {
-		t.Fatalf("releases=%d acks=%d sends=%v", releases, acks, commander.sends)
+	if releases != 1 || acks != 1 || len(commander.sends) != 1 || releaseErrorClass != "transient" || leaseSeconds < 20*60+cfg.SendTimeoutSeconds {
+		t.Fatalf("releases=%d acks=%d errorClass=%q leaseSeconds=%d sends=%v", releases, acks, releaseErrorClass, leaseSeconds, commander.sends)
 	}
 }
 
@@ -392,7 +446,11 @@ func TestConfigureRouterHealthGatesAndRotatesOverHTTP(t *testing.T) {
 	cfg.RouterMode = true
 	cfg.ChatID = "chat-a"
 	cfg.ResponderCwd = t.TempDir()
-	cfg.ResponderCommand = []string{"/tmp/pi", "--session", "/private/original-session.jsonl", "@{prompt_file}"}
+	session := filepath.Join(t.TempDir(), "original-session.jsonl")
+	if err := os.WriteFile(session, []byte(fmt.Sprintf("{\"type\":\"session\",\"cwd\":%q}\n", cfg.ResponderCwd)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.ResponderCommand = []string{"/tmp/pi", "--session", session, "@{prompt_file}"}
 	responder, ok, err := imessage.NewPiRPCResponder(cfg)
 	if err != nil || !ok {
 		t.Fatalf("responder ok=%v err=%v", ok, err)

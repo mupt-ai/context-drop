@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -68,6 +69,38 @@ func TestRuntimePortConflictIsExplicit(t *testing.T) {
 	}
 	if err := runtimePortConflict(); err == nil || !strings.Contains(err.Error(), "occupied") {
 		t.Fatalf("conflict error = %v", err)
+	}
+}
+
+func TestRuntimeWriterOwnerIsRecognizedBeforeHealthListenerStarts(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CONTEXT_DROP_HOME", home)
+	dir, configPath, tokenPath, err := runtimeclient.Paths()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := filepath.Join(dir, "state")
+	if err := os.MkdirAll(filepath.Join(state, "writer.lock"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state, "writer.lock", "pid"), []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tokenPath, []byte("token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	node := filepath.Join(home, "node")
+	if err := os.WriteFile(node, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := runtimeclient.RuntimeConfig{Host: "127.0.0.1", Port: 47762, StateDir: state, TokenFile: tokenPath, NodePath: node, TmuxSession: "context-drop", Agents: map[string]runtimeclient.AgentConfig{}}
+	data, _ := json.Marshal(cfg)
+	if err := os.WriteFile(configPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	live, err := runtimeWriterOwnerAlive()
+	if err != nil || !live {
+		t.Fatalf("live=%v err=%v", live, err)
 	}
 }
 

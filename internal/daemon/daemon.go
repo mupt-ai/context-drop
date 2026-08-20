@@ -337,7 +337,7 @@ func Run(ctx context.Context) error {
 			}
 		case <-retry:
 			retry = nil
-			childDone, stopChild, err = startRuntime(ctx)
+			childDone, stopChild, err = ensureRuntime(ctx)
 			if err != nil {
 				_ = recordRuntimeError(err)
 				log.Printf("Context Drop runtime restart failed: %v; retrying in %s", err, backoff)
@@ -373,6 +373,22 @@ func Run(ctx context.Context) error {
 				consecutiveHealthFailures = 0
 				backoff = time.Second
 				_ = recordRuntimeError(nil)
+				if retry != nil {
+					// Health recovered while a restart was pending. Cancel the
+					// pending restart and keep the current owner. Router capability
+					// setup is still required because this may be a different or
+					// externally supervised runtime.
+					retry = nil
+					if routerMode && !routerReady {
+						if configureErr := runner.configureRouterWithRetry(ctx, 100, 100*time.Millisecond); configureErr != nil {
+							_ = recordRuntimeError(configureErr)
+							retry = time.After(backoff)
+						} else {
+							routerReady = true
+							startMessageReceiver()
+						}
+					}
+				}
 				continue
 			}
 			consecutiveHealthFailures++
@@ -403,16 +419,60 @@ func ensureRuntime(ctx context.Context) (<-chan error, func(), error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	healthCtx, cancel := context.WithTimeout(ctx, time.Second)
-	defer cancel()
-	if client.Health(healthCtx) == nil {
-		log.Printf("Context Drop daemon using existing healthy local runtime")
-		return nil, func() {}, nil
+	for attempt := 0; ; attempt++ {
+		healthCtx, cancel := context.WithTimeout(ctx, time.Second)
+		healthErr := client.Health(healthCtx)
+		cancel()
+		if healthErr == nil {
+			log.Printf("Context Drop daemon using existing healthy local runtime")
+			return nil, func() {}, nil
+		}
+		live, ownerErr := runtimeWriterOwnerAlive()
+		if ownerErr != nil {
+			return nil, nil, ownerErr
+		}
+		if !live {
+			break
+		}
+		// A process that owns the writer lock may be between lock acquisition and
+		// listen(). Never start a duplicate while that owner is alive.
+		if attempt >= 50 {
+			return nil, nil, fmt.Errorf("runtime writer is alive but health is not ready yet")
+		}
+		select {
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
 	if conflictErr := runtimePortConflict(); conflictErr != nil {
 		return nil, nil, conflictErr
 	}
 	return startRuntime(ctx)
+}
+
+func runtimeWriterOwnerAlive() (bool, error) {
+	cfg, err := runtimeclient.LoadConfig()
+	if err != nil {
+		return false, err
+	}
+	b, err := os.ReadFile(filepath.Join(cfg.StateDir, "writer.lock", "pid"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil || pid <= 0 {
+		return false, nil
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil {
+		return false, nil
+	}
+	err = process.Signal(syscall.Signal(0))
+	return err == nil || errors.Is(err, os.ErrPermission), nil
 }
 
 func runtimePortConflict() error {
@@ -805,11 +865,17 @@ func (r *Runner) startMessageWorker(ctx context.Context) {
 	})
 }
 
-func responderFailureReply(err error) string {
-	if errors.Is(err, context.DeadlineExceeded) {
-		return "i hit the responder time limit before finishing, so i stopped it instead of leaving chat hung. send it again and i’ll delegate it."
+func responderFailureReply(err error, response imessage.Response) string {
+	if response.SideEffectToolCompleted {
+		return "the responder didn’t produce a final reply, but delegated or continued work may already have started. i won’t repeat the request; check current task status before deciding next steps."
 	}
-	return "i couldn’t process that message. try again, and i’ll tell you what’s blocked if it fails."
+	if response.ToolCompleted {
+		return "the responder completed at least one tool call but didn’t produce a final reply. i won’t repeat the request automatically; check current status before retrying anything."
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "the responder timed out before a final reply. work may have started, so i won’t repeat the request automatically; check current task status first."
+	}
+	return "i couldn’t complete that responder turn. i won’t retry automatically because the outcome may be ambiguous; check current status before resending."
 }
 
 func (r *Runner) processMessage(ctx context.Context, message imessage.Message) {
@@ -855,7 +921,7 @@ func (r *Runner) processMessage(ctx context.Context, message imessage.Message) {
 		// Only send a generic error when the responder failed. If `imsg send`
 		// failed after possibly delivering, never send a second reply.
 		if responderErr != nil {
-			_ = r.IMessage.Send(ctx, responderFailureReply(responderErr))
+			_ = r.IMessage.Send(ctx, responderFailureReply(responderErr, response))
 		}
 	}
 	if err := r.Store.Update(func(st *orchestrator.State) error {

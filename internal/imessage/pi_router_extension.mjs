@@ -29,7 +29,7 @@ export default function (pi) {
   });
   pi.registerTool({
     name: "delegate_task", label: "Delegate task",
-    description: "Start ordinary work in a fully managed full-AI worker. The optional agent must be configured; keep the private name short and recognizable.",
+    description: "Start ordinary work in a fully managed full-AI worker. Success is returned only after the exact pane registers its agent; on an ambiguous error, check list_tasks rather than retrying. The optional agent must be configured; keep the private name short and recognizable.",
     parameters: Type.Object({ agent: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })), prompt: Type.String({ minLength: 1, maxLength: 16000 }), name: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })) }),
     async execute(_id, input, signal) { const result = await request("/v1/tasks/delegate", "POST", input, signal); return { content: [{ type: "text", text: `task started in pane ${result.task.paneId}` }], details: result }; },
   });
@@ -71,7 +71,7 @@ export default function (pi) {
   });
   pi.registerTool({
     name: "start_agent", label: "Start Herdr agent",
-    description: "Start a configured agent using exactly one validated repoAlias or a workspaceId whose live cwd resolves uniquely. Never guess ambiguous targets.",
+    description: "Start a configured agent using exactly one validated repoAlias or a workspaceId whose live cwd resolves uniquely. Success means the exact pane registered its agent; after an ambiguous error check list_tasks rather than retrying. Never guess ambiguous targets.",
     parameters: Type.Object({ agent: Type.String({ minLength: 1, maxLength: 64 }), name: Type.String({ minLength: 1, maxLength: 120 }), prompt: Type.String({ minLength: 1, maxLength: 16000 }), repoAlias: Type.Optional(Type.String({ minLength: 1, maxLength: 120 })), workspaceId: Type.Optional(Type.String({ minLength: 1, maxLength: 128 })) }),
     async execute(_id, input, signal) { const result = await request("/v1/tasks/start", "POST", input, signal); return { content: [{ type: "text", text: `agent started in pane ${result.task.paneId}` }], details: result }; },
   });

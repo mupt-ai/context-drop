@@ -289,6 +289,31 @@ export function continueLiveHerdr(config: RuntimeConfig, session: string, paneId
   if (sent.status !== 0) throw new Error(`delegated task follow-up was not sent: ${sent.stderr || "agent prompt failed"}`);
 }
 
+export function waitForHerdrAgent(config: RuntimeConfig, paneId: string, timeoutMs = 15_000, pollMs = 250, runner: CommandRunner = systemRunner): void {
+  const deadline = Date.now() + timeoutMs;
+  let reachable = false;
+  let lastError = "";
+  for (;;) {
+    try {
+      const agent = listHerdrAgents(config, runner).find(item => item.paneId === paneId);
+      reachable = true;
+      if (agent) return;
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : "Herdr status unavailable";
+    }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(pollMs, remaining));
+  }
+  if (!reachable) throw new LaunchOutcomeUnknownError(`herdr agent registration outcome is unknown: ${lastError || "agent list unavailable"}`);
+  throw new Error(`herdr agent did not register in pane ${paneId} within ${timeoutMs}ms`);
+}
+
+export function cleanupHerdrLaunch(config: RuntimeConfig, run: RunRecord, runner: CommandRunner = systemRunner): boolean {
+  if (!run.herdrSession || !run.herdrPane) return false;
+  return runner.run(config.herdrPath || "herdr", ["--session", run.herdrSession, "pane", "close", run.herdrPane]).status === 0;
+}
+
 export function launchInHerdr(config: RuntimeConfig, request: LaunchRequest, id: string, runner: CommandRunner = systemRunner): RunRecord {
   const { name, runDir, argv, environment } = prepareLaunch(config, request, id);
   const herdr = config.herdrPath || "herdr";
@@ -309,12 +334,12 @@ export function launchInHerdr(config: RuntimeConfig, request: LaunchRequest, id:
   chmodSync(launcher, 0o700);
   const start = runner.run(herdr, ["--session", session, "pane", "run", location.pane, shellQuote(launcher)]);
   if (start.status !== 0) {
-    if (location.createdFreshWorkspace) {
-      runner.run(herdr, ["--session", session, "workspace", "close", location.workspace]);
-    } else {
-      runner.run(herdr, ["--session", session, "tab", "close", location.tab]);
-    }
-    throw new LaunchOutcomeUnknownError(`herdr agent launch outcome is unknown: ${start.stderr || "unknown error"}`);
+    if (start.status === null) throw new LaunchOutcomeUnknownError(`herdr agent launch outcome is unknown: ${start.stderr || "command outcome unavailable"}`);
+    // The pane/tab was created by this request and pane run definitively failed.
+    // Close only that exact owned pane; never close a reused workspace.
+    runner.run(herdr, ["--session", session, "pane", "close", location.pane]);
+    if (location.createdFreshWorkspace) runner.run(herdr, ["--session", session, "workspace", "close", location.workspace]);
+    throw new Error(`herdr agent launch failed: ${start.stderr || `exit status ${start.status}`}`);
   }
 
   return {
