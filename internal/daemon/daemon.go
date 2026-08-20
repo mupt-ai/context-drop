@@ -875,6 +875,10 @@ func responderFailureReply(err error, response imessage.Response) string {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "the responder timed out before a final reply. work may have started, so i won’t repeat the request automatically; check current task status first."
 	}
+	var prePromptErr *imessage.ResponderPrePromptError
+	if errors.As(err, &prePromptErr) {
+		return "the responder failed before starting. no tools or side effects ran, so it’s safe to resend the request."
+	}
 	return "i couldn’t complete that responder turn. i won’t retry automatically because the outcome may be ambiguous; check current status before resending."
 }
 

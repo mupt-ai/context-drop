@@ -313,6 +313,10 @@ func (r *PiRPCResponder) Prepare(ctx context.Context) (PersistentResponderState,
 	defer r.releaseTurn()
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.ensurePreparedLocked(ctx)
+}
+
+func (r *PiRPCResponder) ensurePreparedLocked(ctx context.Context) (PersistentResponderState, error) {
 	if r.cmd != nil {
 		select {
 		case <-r.done:
@@ -446,15 +450,17 @@ func (r *PiRPCResponder) Respond(ctx context.Context, prompt string, maxOutput i
 	defer r.releaseTurn()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.cmd == nil {
-		return Response{}, errors.New("Pi RPC responder was not prepared")
+	state, err := r.ensurePreparedLocked(ctx)
+	if err != nil {
+		return Response{}, &ResponderPrePromptError{Cause: err}
 	}
+	startupMetrics := ResponseMetrics{ResponderStartup: state.Startup, ColdStart: state.ColdStart}
 
 	id := r.requestID("prompt")
 	started := time.Now()
 	if err := r.write(map[string]any{"id": id, "type": "prompt", "message": prompt}); err != nil {
 		r.stopLocked()
-		return Response{}, err
+		return Response{Metrics: startupMetrics}, err
 	}
 	accepted := false
 	firstOutput := time.Duration(0)
@@ -478,13 +484,13 @@ func (r *PiRPCResponder) Respond(ctx context.Context, prompt string, maxOutput i
 				r.stopLocked()
 				cause = fmt.Errorf("Pi RPC responder: %w", err)
 			}
-			return Response{ToolCompleted: toolCompleted, SideEffectToolCompleted: sideEffectCompleted}, &ResponderTurnError{Cause: cause, ToolCompleted: toolCompleted, SideEffectToolCompleted: sideEffectCompleted}
+			return Response{Metrics: startupMetrics, ToolCompleted: toolCompleted, SideEffectToolCompleted: sideEffectCompleted}, &ResponderTurnError{Cause: cause, ToolCompleted: toolCompleted, SideEffectToolCompleted: sideEffectCompleted}
 		}
 		switch record.Type {
 		case "response":
 			if record.ID == id {
 				if !record.Success {
-					return Response{}, fmt.Errorf("Pi RPC prompt rejected: %s", rpcError(record))
+					return Response{Metrics: startupMetrics}, fmt.Errorf("Pi RPC prompt rejected: %s", rpcError(record))
 				}
 				accepted = true
 			}
@@ -533,17 +539,22 @@ func (r *PiRPCResponder) Respond(ctx context.Context, prompt string, maxOutput i
 			}
 		case "agent_settled":
 			if !accepted {
-				return Response{}, errors.New("Pi RPC agent settled before accepting the prompt")
+				return Response{Metrics: startupMetrics}, errors.New("Pi RPC agent settled before accepting the prompt")
 			}
 			reply = strings.TrimSpace(reply)
 			if reply == "" {
-				return Response{ToolCompleted: toolCompleted, SideEffectToolCompleted: sideEffectCompleted}, &ResponderTurnError{Cause: errors.New("Pi RPC responder returned an empty reply"), ToolCompleted: toolCompleted, SideEffectToolCompleted: sideEffectCompleted}
+				return Response{Metrics: startupMetrics, ToolCompleted: toolCompleted, SideEffectToolCompleted: sideEffectCompleted}, &ResponderTurnError{Cause: errors.New("Pi RPC responder returned an empty reply"), ToolCompleted: toolCompleted, SideEffectToolCompleted: sideEffectCompleted}
 			}
 			if len(reply) > maxOutput {
-				return Response{}, fmt.Errorf("Pi RPC responder reply exceeds %d bytes", maxOutput)
+				return Response{Metrics: startupMetrics}, fmt.Errorf("Pi RPC responder reply exceeds %d bytes", maxOutput)
 			}
 			r.needsBootstrap = false
-			return Response{Reply: reply, ToolCompleted: toolCompleted, SideEffectToolCompleted: sideEffectCompleted, Metrics: ResponseMetrics{Responder: time.Since(started), TimeToFirstOutput: firstOutput, ToolExecution: toolDuration, Compaction: compactionDuration, ModelRounds: modelRounds}}, nil
+			startupMetrics.Responder = time.Since(started)
+			startupMetrics.TimeToFirstOutput = firstOutput
+			startupMetrics.ToolExecution = toolDuration
+			startupMetrics.Compaction = compactionDuration
+			startupMetrics.ModelRounds = modelRounds
+			return Response{Reply: reply, ToolCompleted: toolCompleted, SideEffectToolCompleted: sideEffectCompleted, Metrics: startupMetrics}, nil
 		}
 	}
 }

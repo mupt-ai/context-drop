@@ -103,6 +103,15 @@ type PersistentResponder interface {
 	Close() error
 }
 
+// ResponderPrePromptError marks a failure that occurred before a prompt could
+// be sent to the responder. Retrying the user request cannot duplicate work.
+type ResponderPrePromptError struct {
+	Cause error
+}
+
+func (e *ResponderPrePromptError) Error() string { return e.Cause.Error() }
+func (e *ResponderPrePromptError) Unwrap() error { return e.Cause }
+
 type PersistentSender interface {
 	Send(context.Context, string, string) error
 	Close() error
@@ -434,22 +443,22 @@ func (a Adapter) RespondMeasured(ctx context.Context, message Message) (Response
 		var err error
 		responderState, err = a.PersistentResponder.Prepare(respondCtx)
 		if err != nil {
-			return Response{}, err
+			return Response{}, &ResponderPrePromptError{Cause: err}
 		}
 		includeDurableContext = responderState.NeedsBootstrap
 	}
 	promptStarted := time.Now()
 	prompt, err := a.buildPrompt(message, includeDurableContext)
 	if err != nil {
-		return Response{}, err
+		return Response{}, &ResponderPrePromptError{Cause: err}
 	}
 	promptBuild := time.Since(promptStarted)
 	if a.PersistentResponder != nil {
 		response, respondErr := a.PersistentResponder.Respond(respondCtx, prompt, a.Config.MaxReplyBytes)
 		response.Metrics.PromptBuild = promptBuild
 		response.Metrics.PromptBytes = len(prompt)
-		response.Metrics.ResponderStartup = responderState.Startup
-		response.Metrics.ColdStart = responderState.ColdStart
+		response.Metrics.ResponderStartup += responderState.Startup
+		response.Metrics.ColdStart = response.Metrics.ColdStart || responderState.ColdStart
 		return response, respondErr
 	}
 

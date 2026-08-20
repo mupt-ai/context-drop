@@ -150,6 +150,39 @@ func TestPiRPCResponderReusesOneWarmProcess(t *testing.T) {
 	}
 }
 
+func TestPiRPCResponderRestartsAfterDelegationEnvRotationBetweenPrepareAndRespond(t *testing.T) {
+	responder := &PiRPCResponder{
+		argv: []string{os.Args[0], "-test.run=TestPiRPCHelperProcess"},
+		env:  append(os.Environ(), "CONTEXT_DROP_PI_RPC_HELPER=1", "CONTEXT_DROP_PI_RPC_MESSAGE_COUNT=2"),
+	}
+	defer responder.Close()
+
+	prepared, err := responder.Prepare(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !prepared.ColdStart {
+		t.Fatalf("prepare state = %#v", prepared)
+	}
+
+	// This is the production race: capability rotation stops the process after
+	// Adapter has released Prepare's turn gate but before Respond acquires it.
+	responder.SetDelegationEnv("http://127.0.0.1:1/v1/tasks/delegate", "rotated-capability")
+	response, err := responder.Respond(context.Background(), "after rotation", 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Reply != "reply 1" {
+		t.Fatalf("reply = %q", response.Reply)
+	}
+	if !response.Metrics.ColdStart || response.Metrics.ResponderStartup <= 0 {
+		t.Fatalf("restart metrics = %#v", response.Metrics)
+	}
+	if url, capability := responder.DelegationEnv(); url == "" || capability != "rotated-capability" {
+		t.Fatalf("delegation env = %q, %q", url, capability)
+	}
+}
+
 func TestPiRPCResponderAdmissionIsContextCancellable(t *testing.T) {
 	responder := &PiRPCResponder{}
 	if err := responder.acquireTurn(context.Background()); err != nil {

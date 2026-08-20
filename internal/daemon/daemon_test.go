@@ -56,6 +56,27 @@ func TestResponderFailureReplyExplainsTimeout(t *testing.T) {
 	}
 }
 
+func TestResponderFailureReplyMarksPrePromptFailureSafeToResend(t *testing.T) {
+	err := &imessage.ResponderPrePromptError{Cause: errors.New("prepare failed")}
+	reply := responderFailureReply(err, imessage.Response{})
+	for _, want := range []string{"before starting", "no tools or side effects ran", "safe to resend"} {
+		if !strings.Contains(reply, want) {
+			t.Fatalf("reply = %q; missing %q", reply, want)
+		}
+	}
+	if strings.Contains(reply, "ambiguous") {
+		t.Fatalf("reply incorrectly claims ambiguity: %q", reply)
+	}
+}
+
+func TestResponderFailureReplyKeepsPrePromptTimeoutConservative(t *testing.T) {
+	err := &imessage.ResponderPrePromptError{Cause: context.DeadlineExceeded}
+	reply := responderFailureReply(err, imessage.Response{})
+	if !strings.Contains(reply, "timed out") || strings.Contains(reply, "safe to resend") {
+		t.Fatalf("reply = %q", reply)
+	}
+}
+
 func TestResponderFailureReplyDoesNotDuplicateSuccessfulDelegation(t *testing.T) {
 	reply := responderFailureReply(context.DeadlineExceeded, imessage.Response{ToolCompleted: true, SideEffectToolCompleted: true})
 	if !strings.Contains(reply, "may already have started") || strings.Contains(reply, "send it again") {
