@@ -33,6 +33,8 @@ type PiRPCResponder struct {
 	routerExtensionPath string
 
 	mu             sync.Mutex
+	gateOnce       sync.Once
+	turnGate       chan struct{}
 	cmd            *exec.Cmd
 	stdin          io.WriteCloser
 	records        chan rpcRecord
@@ -41,6 +43,15 @@ type PiRPCResponder struct {
 	needsBootstrap bool
 	nextID         atomic.Uint64
 }
+
+type ResponderTurnError struct {
+	Cause                   error
+	ToolCompleted           bool
+	SideEffectToolCompleted bool
+}
+
+func (e *ResponderTurnError) Error() string { return e.Cause.Error() }
+func (e *ResponderTurnError) Unwrap() error { return e.Cause }
 
 type rpcRecord struct {
 	ID      string          `json:"id,omitempty"`
@@ -56,6 +67,8 @@ type rpcRecord struct {
 		Delta string `json:"delta,omitempty"`
 	} `json:"assistantMessageEvent,omitempty"`
 	ToolCallID string `json:"toolCallId,omitempty"`
+	ToolName   string `json:"toolName,omitempty"`
+	IsError    bool   `json:"isError,omitempty"`
 }
 
 type lockedBuffer struct {
@@ -106,7 +119,70 @@ func NewPiRPCResponder(cfg Config) (*PiRPCResponder, bool, error) {
 		argv = append(argv, "--no-builtin-tools", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-context-files", "--extension", routerExtensionPath)
 	}
 	argv = append(argv, "--extension", contextFilterPath)
+	argv, err = recoverMissingSessionCwd(argv, cfg.ResponderCwd)
+	if err != nil {
+		return nil, false, err
+	}
 	return &PiRPCResponder{dir: cfg.ResponderCwd, argv: argv, contextFilterPath: contextFilterPath, routerExtensionPath: routerExtensionPath}, true, nil
+}
+
+func recoverMissingSessionCwd(argv []string, fallbackCwd string) ([]string, error) {
+	for i := 1; i+1 < len(argv); i++ {
+		if argv[i] != "--session" {
+			continue
+		}
+		sessionArg := argv[i+1]
+		// Pi resolves bare --session IDs through its session manager. Reimplementing
+		// that project/global lookup here would risk opening or rotating the wrong
+		// session, so only inspect explicit session files.
+		if !strings.ContainsAny(sessionArg, `/\\`) && !strings.HasSuffix(sessionArg, ".jsonl") {
+			return nil, fmt.Errorf("cannot preflight persistent Pi session ID %q; configure --session with an explicit JSONL path or use --session-id", sessionArg)
+		}
+		file, err := os.Open(sessionArg)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil, fmt.Errorf("persistent Pi session file does not exist: %w", err)
+			}
+			return nil, fmt.Errorf("open persistent Pi session: %w", err)
+		}
+		scanner := bufio.NewScanner(file)
+		var header struct {
+			Type string `json:"type"`
+			Cwd  string `json:"cwd"`
+		}
+		if scanner.Scan() {
+			if err := json.Unmarshal(scanner.Bytes(), &header); err != nil {
+				_ = file.Close()
+				return nil, fmt.Errorf("decode persistent Pi session header: %w", err)
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			_ = file.Close()
+			return nil, fmt.Errorf("read persistent Pi session header: %w", err)
+		}
+		if err := file.Close(); err != nil {
+			return nil, fmt.Errorf("close persistent Pi session: %w", err)
+		}
+		if header.Type != "session" || header.Cwd == "" {
+			return argv, nil
+		}
+		info, statErr := os.Stat(header.Cwd)
+		if statErr == nil && info.IsDir() {
+			return argv, nil
+		}
+		if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+			return nil, fmt.Errorf("stat persistent Pi session cwd: %w", statErr)
+		}
+		fallback, fallbackErr := os.Stat(fallbackCwd)
+		if fallbackErr != nil || !fallback.IsDir() {
+			return nil, fmt.Errorf("persistent Pi session cwd is missing and responder fallback cwd is unavailable")
+		}
+		out := append([]string(nil), argv[:i]...)
+		out = append(out, "--session-id", fmt.Sprintf("context-drop-recovered-%d", time.Now().UnixNano()))
+		out = append(out, argv[i+2:]...)
+		return out, nil
+	}
+	return argv, nil
 }
 
 func restrictedRouterArgv(argv []string) []string {
@@ -219,7 +295,22 @@ func (r *PiRPCResponder) DelegationEnv() (string, string) {
 	return url, capability
 }
 
+func (r *PiRPCResponder) acquireTurn(ctx context.Context) error {
+	r.gateOnce.Do(func() { r.turnGate = make(chan struct{}, 1); r.turnGate <- struct{}{} })
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-r.turnGate:
+		return nil
+	}
+}
+func (r *PiRPCResponder) releaseTurn() { r.turnGate <- struct{}{} }
+
 func (r *PiRPCResponder) Prepare(ctx context.Context) (PersistentResponderState, error) {
+	if err := r.acquireTurn(ctx); err != nil {
+		return PersistentResponderState{}, fmt.Errorf("wait for Pi RPC responder: %w", err)
+	}
+	defer r.releaseTurn()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.cmd != nil {
@@ -349,6 +440,10 @@ func (r *PiRPCResponder) read(stdout io.Reader, records chan<- rpcRecord) {
 }
 
 func (r *PiRPCResponder) Respond(ctx context.Context, prompt string, maxOutput int) (Response, error) {
+	if err := r.acquireTurn(ctx); err != nil {
+		return Response{}, fmt.Errorf("wait for Pi RPC responder: %w", err)
+	}
+	defer r.releaseTurn()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.cmd == nil {
@@ -365,6 +460,9 @@ func (r *PiRPCResponder) Respond(ctx context.Context, prompt string, maxOutput i
 	firstOutput := time.Duration(0)
 	var reply string
 	toolStarts := map[string]time.Time{}
+	toolNames := map[string]string{}
+	toolCompleted := false
+	sideEffectCompleted := false
 	var toolDuration time.Duration
 	var compactionStarted time.Time
 	var compactionDuration time.Duration
@@ -373,11 +471,14 @@ func (r *PiRPCResponder) Respond(ctx context.Context, prompt string, maxOutput i
 	for {
 		record, err := r.next(ctx)
 		if err != nil {
+			var cause error
 			if ctx.Err() != nil && r.abortAndDrain(time.Second) {
-				return Response{}, fmt.Errorf("Pi RPC responder: %w", ctx.Err())
+				cause = fmt.Errorf("Pi RPC responder: %w", ctx.Err())
+			} else {
+				r.stopLocked()
+				cause = fmt.Errorf("Pi RPC responder: %w", err)
 			}
-			r.stopLocked()
-			return Response{}, fmt.Errorf("Pi RPC responder: %w", err)
+			return Response{ToolCompleted: toolCompleted, SideEffectToolCompleted: sideEffectCompleted}, &ResponderTurnError{Cause: cause, ToolCompleted: toolCompleted, SideEffectToolCompleted: sideEffectCompleted}
 		}
 		switch record.Type {
 		case "response":
@@ -409,10 +510,19 @@ func (r *PiRPCResponder) Respond(ctx context.Context, prompt string, maxOutput i
 			}
 		case "tool_execution_start":
 			toolStarts[record.ToolCallID] = time.Now()
+			toolNames[record.ToolCallID] = record.ToolName
 		case "tool_execution_end":
 			if toolStarted, ok := toolStarts[record.ToolCallID]; ok {
 				toolDuration += time.Since(toolStarted)
 				delete(toolStarts, record.ToolCallID)
+				name := toolNames[record.ToolCallID]
+				if !record.IsError {
+					toolCompleted = true
+					if name == "delegate_task" || name == "start_agent" || name == "continue_task" || name == "herdr_prompt" {
+						sideEffectCompleted = true
+					}
+				}
+				delete(toolNames, record.ToolCallID)
 			}
 		case "compaction_start":
 			compactionStarted = time.Now()
@@ -427,13 +537,13 @@ func (r *PiRPCResponder) Respond(ctx context.Context, prompt string, maxOutput i
 			}
 			reply = strings.TrimSpace(reply)
 			if reply == "" {
-				return Response{}, errors.New("Pi RPC responder returned an empty reply")
+				return Response{ToolCompleted: toolCompleted, SideEffectToolCompleted: sideEffectCompleted}, &ResponderTurnError{Cause: errors.New("Pi RPC responder returned an empty reply"), ToolCompleted: toolCompleted, SideEffectToolCompleted: sideEffectCompleted}
 			}
 			if len(reply) > maxOutput {
 				return Response{}, fmt.Errorf("Pi RPC responder reply exceeds %d bytes", maxOutput)
 			}
 			r.needsBootstrap = false
-			return Response{Reply: reply, Metrics: ResponseMetrics{Responder: time.Since(started), TimeToFirstOutput: firstOutput, ToolExecution: toolDuration, Compaction: compactionDuration, ModelRounds: modelRounds}}, nil
+			return Response{Reply: reply, ToolCompleted: toolCompleted, SideEffectToolCompleted: sideEffectCompleted, Metrics: ResponseMetrics{Responder: time.Since(started), TimeToFirstOutput: firstOutput, ToolExecution: toolDuration, Compaction: compactionDuration, ModelRounds: modelRounds}}, nil
 		}
 	}
 }

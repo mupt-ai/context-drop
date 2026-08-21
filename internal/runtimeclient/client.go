@@ -168,21 +168,36 @@ func (c *Client) IssueRouterCapability(ctx context.Context, routerID, chatID str
 	return out.Capability, err
 }
 func (c *Client) LeaseReport(ctx context.Context, routerID, chatID string) (ParentReport, bool, error) {
+	return c.LeaseReportFor(ctx, routerID, chatID, 0)
+}
+
+func (c *Client) LeaseReportFor(ctx context.Context, routerID, chatID string, leaseDuration time.Duration) (ParentReport, bool, error) {
 	var out struct {
 		Report ParentReport `json:"report"`
 	}
-	err := c.do(ctx, http.MethodPost, "/v1/reports/lease", map[string]string{"routerId": routerID, "chatId": chatID}, &out, http.StatusOK)
+	request := map[string]any{"routerId": routerID, "chatId": chatID}
+	if leaseDuration > 0 {
+		request["leaseSeconds"] = int64((leaseDuration + time.Second - 1) / time.Second)
+	}
+	err := c.do(ctx, http.MethodPost, "/v1/reports/lease", request, &out, http.StatusOK)
 	if err != nil {
 		return ParentReport{}, false, err
 	}
 	return out.Report, out.Report.ID != "", nil
 }
 func (c *Client) FinishReport(ctx context.Context, report ParentReport, routerID, chatID string, delivered bool) error {
+	return c.FinishReportWithError(ctx, report, routerID, chatID, delivered, "")
+}
+func (c *Client) FinishReportWithError(ctx context.Context, report ParentReport, routerID, chatID string, delivered bool, errorClass string) error {
 	action := "release"
 	if delivered {
 		action = "ack"
 	}
-	return c.do(ctx, http.MethodPost, "/v1/reports/"+url.PathEscape(report.ID)+"/"+action, map[string]string{"routerId": routerID, "chatId": chatID, "leaseId": report.LeaseID}, &map[string]any{}, http.StatusOK)
+	payload := map[string]string{"routerId": routerID, "chatId": chatID, "leaseId": report.LeaseID}
+	if errorClass != "" {
+		payload["errorClass"] = errorClass
+	}
+	return c.do(ctx, http.MethodPost, "/v1/reports/"+url.PathEscape(report.ID)+"/"+action, payload, &map[string]any{}, http.StatusOK)
 }
 func (c *Client) AutoAuthorize(ctx context.Context, report ParentReport, routerID, chatID string) (Run, string, error) {
 	var out struct {

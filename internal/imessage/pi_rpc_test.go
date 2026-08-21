@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -19,13 +21,17 @@ func TestRouterModeStructurallyRestrictsPiAndPreservesPinnedSession(t *testing.T
 	cfg.Trusted = true
 	cfg.RouterMode = true
 	cfg.ResponderCwd = t.TempDir()
-	cfg.ResponderCommand = []string{"/tmp/pi", "--print", "--session", "/private/original-session.jsonl", "--model", "router/model", "--thinking", "high", "--tools=bash", "--extension", "/tmp/ambient.mjs", "--skill", "/tmp/evil-skill", "--system-prompt=evil", "--append-system-prompt", "/tmp/evil", "--prompt-template=/tmp/template", "@/tmp/context.md", "@{prompt_file}"}
+	session := filepath.Join(t.TempDir(), "original-session.jsonl")
+	if err := os.WriteFile(session, []byte(fmt.Sprintf("{\"type\":\"session\",\"cwd\":%q}\n", cfg.ResponderCwd)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.ResponderCommand = []string{"/tmp/pi", "--print", "--session", session, "--model", "router/model", "--thinking", "high", "--tools=bash", "--extension", "/tmp/ambient.mjs", "--skill", "/tmp/evil-skill", "--system-prompt=evil", "--append-system-prompt", "/tmp/evil", "--prompt-template=/tmp/template", "@/tmp/context.md", "@{prompt_file}"}
 	responder, ok, err := NewPiRPCResponder(cfg)
 	if err != nil || !ok {
 		t.Fatalf("responder ok=%v err=%v", ok, err)
 	}
 	joined := strings.Join(responder.argv, " ")
-	for _, required := range []string{"--session /private/original-session.jsonl", "--no-builtin-tools", "--no-extensions", "--no-skills", "pi-router-extension.mjs"} {
+	for _, required := range []string{"--session " + session, "--no-builtin-tools", "--no-extensions", "--no-skills", "pi-router-extension.mjs"} {
 		if !strings.Contains(joined, required) {
 			t.Fatalf("router argv %q missing %q", joined, required)
 		}
@@ -38,7 +44,7 @@ func TestRouterModeStructurallyRestrictsPiAndPreservesPinnedSession(t *testing.T
 			t.Fatalf("router retained ambient instruction %q: %q", forbidden, joined)
 		}
 	}
-	for _, preserved := range []string{"--model router/model", "--thinking high", "--session /private/original-session.jsonl", "--no-context-files"} {
+	for _, preserved := range []string{"--model router/model", "--thinking high", "--session " + session, "--no-context-files"} {
 		if !strings.Contains(joined, preserved) {
 			t.Fatalf("router lost required/tuning flag %q: %q", preserved, joined)
 		}
@@ -144,6 +150,72 @@ func TestPiRPCResponderReusesOneWarmProcess(t *testing.T) {
 	}
 }
 
+func TestPiRPCResponderAdmissionIsContextCancellable(t *testing.T) {
+	responder := &PiRPCResponder{}
+	if err := responder.acquireTurn(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	_, err := responder.Respond(ctx, "waiting", 1024)
+	responder.releaseTurn()
+	if !errors.Is(err, context.DeadlineExceeded) || time.Since(started) > time.Second {
+		t.Fatalf("waiting response error=%v duration=%s", err, time.Since(started))
+	}
+}
+
+func TestRecoverMissingSessionCwdRotatesSessionID(t *testing.T) {
+	fallback := t.TempDir()
+	session := filepath.Join(t.TempDir(), "session.jsonl")
+	if err := os.WriteFile(session, []byte(`{"type":"session","version":3,"cwd":"/definitely/missing/context-drop-cwd"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := recoverMissingSessionCwd([]string{"pi", "--mode", "rpc", "--session", session, "--model", "x"}, fallback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(got, " ")
+	if strings.Contains(joined, session) || !strings.Contains(joined, "--session-id context-drop-recovered-") {
+		t.Fatalf("recovered argv=%q", joined)
+	}
+}
+
+func TestRecoverMissingSessionCwdRejectsMissingSessionFile(t *testing.T) {
+	_, err := recoverMissingSessionCwd([]string{"pi", "--session", filepath.Join(t.TempDir(), "missing.jsonl")}, t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "session file does not exist") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestRecoverMissingSessionCwdReturnsNonNotExistStatError(t *testing.T) {
+	dir := t.TempDir()
+	loop := filepath.Join(dir, "loop")
+	if err := os.Symlink("loop", loop); err != nil {
+		t.Fatal(err)
+	}
+	session := filepath.Join(dir, "session.jsonl")
+	if err := os.WriteFile(session, []byte(fmt.Sprintf("{\"type\":\"session\",\"cwd\":%q}\n", loop)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := recoverMissingSessionCwd([]string{"pi", "--session", session}, t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "stat persistent Pi session cwd") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestRecoverMissingSessionCwdRejectsUnresolvedSessionID(t *testing.T) {
+	_, err := recoverMissingSessionCwd([]string{"pi", "--session", "orchestrator"}, t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "explicit JSONL path") {
+		t.Fatalf("error=%v", err)
+	}
+	sessionDir := t.TempDir()
+	got, err := recoverMissingSessionCwd([]string{"pi", "--session-dir", sessionDir, "--session-id", "orchestrator"}, t.TempDir())
+	if err != nil || !reflect.DeepEqual(got, []string{"pi", "--session-dir", sessionDir, "--session-id", "orchestrator"}) {
+		t.Fatalf("argv=%q error=%v", got, err)
+	}
+}
+
 func TestPiRPCResponderAbortsTimedOutTurnAndRemainsWarm(t *testing.T) {
 	responder := &PiRPCResponder{
 		argv: []string{os.Args[0], "-test.run=TestPiRPCHelperProcess"},
@@ -172,6 +244,30 @@ func TestPiRPCResponderAbortsTimedOutTurnAndRemainsWarm(t *testing.T) {
 	}
 }
 
+func TestPiRPCResponderPreservesSuccessfulToolEvidenceOnEmptyFinal(t *testing.T) {
+	responder := &PiRPCResponder{argv: []string{os.Args[0], "-test.run=TestPiRPCHelperProcess"}, env: append(os.Environ(), "CONTEXT_DROP_PI_RPC_HELPER=1", "CONTEXT_DROP_PI_RPC_MESSAGE_COUNT=2", "CONTEXT_DROP_PI_RPC_EMPTY_AFTER_TOOL=1")}
+	defer responder.Close()
+	if _, err := responder.Prepare(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	response, err := responder.Respond(context.Background(), "delegate", 1024)
+	if err == nil || !response.ToolCompleted || !response.SideEffectToolCompleted {
+		t.Fatalf("response=%#v err=%v", response, err)
+	}
+}
+
+func TestPiRPCResponderDoesNotCountFailedSideEffectTool(t *testing.T) {
+	responder := &PiRPCResponder{argv: []string{os.Args[0], "-test.run=TestPiRPCHelperProcess"}, env: append(os.Environ(), "CONTEXT_DROP_PI_RPC_HELPER=1", "CONTEXT_DROP_PI_RPC_MESSAGE_COUNT=2", "CONTEXT_DROP_PI_RPC_EMPTY_AFTER_TOOL=1", "CONTEXT_DROP_PI_RPC_TOOL_ERROR=1")}
+	defer responder.Close()
+	if _, err := responder.Prepare(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	response, err := responder.Respond(context.Background(), "delegate", 1024)
+	if err == nil || response.ToolCompleted || response.SideEffectToolCompleted {
+		t.Fatalf("response=%#v err=%v", response, err)
+	}
+}
+
 func TestPiRPCHelperProcess(t *testing.T) {
 	if os.Getenv("CONTEXT_DROP_PI_RPC_HELPER") != "1" {
 		return
@@ -197,6 +293,12 @@ func TestPiRPCHelperProcess(t *testing.T) {
 		case "prompt":
 			prompts++
 			_ = enc.Encode(map[string]any{"id": command.ID, "type": "response", "command": "prompt", "success": true})
+			if os.Getenv("CONTEXT_DROP_PI_RPC_EMPTY_AFTER_TOOL") == "1" {
+				_ = enc.Encode(map[string]any{"type": "tool_execution_start", "toolCallId": "tool-1", "toolName": "delegate_task"})
+				_ = enc.Encode(map[string]any{"type": "tool_execution_end", "toolCallId": "tool-1", "toolName": "delegate_task", "isError": os.Getenv("CONTEXT_DROP_PI_RPC_TOOL_ERROR") == "1"})
+				_ = enc.Encode(map[string]any{"type": "agent_settled"})
+				continue
+			}
 			if prompts == 1 && os.Getenv("CONTEXT_DROP_PI_RPC_HANG_FIRST") == "1" {
 				continue
 			}

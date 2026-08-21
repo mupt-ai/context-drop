@@ -27,7 +27,7 @@ const (
 	DefaultSyncLimit                   = 20
 	DefaultHistoryTimeoutSeconds       = 30
 	DefaultResponderTimeoutSeconds     = 180
-	MaxTrustedResponderDuration        = 2 * time.Minute
+	MaxTrustedResponderDuration        = 20 * time.Minute
 	DefaultSendTimeoutSeconds          = 60
 	DefaultMaxMessageBytes             = 64 * 1024
 	DefaultMaxReplyBytes               = 8 * 1024
@@ -91,8 +91,10 @@ type ModelRoundMetrics struct {
 }
 
 type Response struct {
-	Reply   string
-	Metrics ResponseMetrics
+	Reply                   string
+	Metrics                 ResponseMetrics
+	SideEffectToolCompleted bool
+	ToolCompleted           bool
 }
 
 type PersistentResponder interface {

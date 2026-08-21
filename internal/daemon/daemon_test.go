@@ -50,14 +50,21 @@ func (f *fakeNotifier) Notify(title, message string) error {
 }
 
 func TestResponderFailureReplyExplainsTimeout(t *testing.T) {
-	reply := responderFailureReply(fmt.Errorf("Pi RPC responder: %w", context.DeadlineExceeded))
-	if !strings.Contains(reply, "responder time limit") || !strings.Contains(reply, "delegate") {
+	reply := responderFailureReply(fmt.Errorf("Pi RPC responder: %w", context.DeadlineExceeded), imessage.Response{})
+	if !strings.Contains(reply, "timed out") || !strings.Contains(reply, "status") {
 		t.Fatalf("reply = %q", reply)
 	}
 }
 
+func TestResponderFailureReplyDoesNotDuplicateSuccessfulDelegation(t *testing.T) {
+	reply := responderFailureReply(context.DeadlineExceeded, imessage.Response{ToolCompleted: true, SideEffectToolCompleted: true})
+	if !strings.Contains(reply, "may already have started") || strings.Contains(reply, "send it again") {
+		t.Fatalf("reply=%q", reply)
+	}
+}
+
 func TestResponderFailureReplyDoesNotExposeInternalError(t *testing.T) {
-	reply := responderFailureReply(errors.New("secret internal detail"))
+	reply := responderFailureReply(errors.New("secret internal detail"), imessage.Response{})
 	if strings.Contains(reply, "secret internal detail") {
 		t.Fatalf("reply exposed internal error: %q", reply)
 	}

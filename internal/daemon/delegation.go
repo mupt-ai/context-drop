@@ -62,7 +62,7 @@ func (r *Runner) configureRouterWithRetry(ctx context.Context, attempts int, del
 }
 
 func (r *Runner) DeliverReports(ctx context.Context) {
-	ticker := time.NewTicker(2 * time.Second)
+	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
@@ -83,8 +83,27 @@ func (r *Runner) deliverReportsOnce(ctx context.Context) {
 	}
 }
 
+func leaseReportFor(ctx context.Context, runtime DelegationRuntime, routerID, chatID string, duration time.Duration) (runtimeclient.ParentReport, bool, error) {
+	if extended, ok := runtime.(interface {
+		LeaseReportFor(context.Context, string, string, time.Duration) (runtimeclient.ParentReport, bool, error)
+	}); ok {
+		return extended.LeaseReportFor(ctx, routerID, chatID, duration)
+	}
+	return runtime.LeaseReport(ctx, routerID, chatID)
+}
+
+func finishReport(ctx context.Context, runtime DelegationRuntime, report runtimeclient.ParentReport, routerID, chatID string, delivered bool, errorClass string) error {
+	if extended, ok := runtime.(interface {
+		FinishReportWithError(context.Context, runtimeclient.ParentReport, string, string, bool, string) error
+	}); ok {
+		return extended.FinishReportWithError(ctx, report, routerID, chatID, delivered, errorClass)
+	}
+	return runtime.FinishReport(ctx, report, routerID, chatID, delivered)
+}
+
 func (r *Runner) deliverReportsOnceForOwner(ctx context.Context, routerID, chatID string) {
-	report, leased, err := r.Delegation.LeaseReport(ctx, routerID, chatID)
+	leaseDuration := imessage.MaxTrustedResponderDuration + time.Duration(r.IMessage.Config.SendTimeoutSeconds)*time.Second + time.Minute
+	report, leased, err := leaseReportFor(ctx, r.Delegation, routerID, chatID, leaseDuration)
 	if err != nil {
 		log.Printf("Context Drop report lease failed (report ID unavailable): %s", safeDeliveryError(err))
 		return
@@ -100,7 +119,7 @@ func (r *Runner) deliverReportsOnceForOwner(ctx context.Context, routerID, chatI
 				log.Printf("Context Drop YOLO report %s auto-authorization definitively failed (%s): %s", report.ID, yoloFailureReason, safeDeliveryError(authorizeErr))
 			} else {
 				log.Printf("Context Drop YOLO report %s auto-authorization failed; releasing for retry: %s", report.ID, safeDeliveryError(authorizeErr))
-				if releaseErr := r.Delegation.FinishReport(ctx, report, routerID, chatID, false); releaseErr != nil {
+				if releaseErr := finishReport(ctx, r.Delegation, report, routerID, chatID, false, "transient"); releaseErr != nil {
 					log.Printf("Context Drop YOLO report %s release failed: %s", report.ID, safeDeliveryError(releaseErr))
 				}
 				return
@@ -143,15 +162,30 @@ func (r *Runner) deliverReportsOnceForOwner(ctx context.Context, routerID, chatI
 		sendErr = respondErr
 	}
 	delivered := sendErr == nil
-	finishErr := r.Delegation.FinishReport(ctx, report, routerID, chatID, delivered)
+	errorClass := classifyDeliveryError(respondErr, sendErr)
+	finishErr := finishReport(ctx, r.Delegation, report, routerID, chatID, delivered, errorClass)
 	if finishErr != nil {
 		log.Printf("Context Drop report %s %s failed: %s", report.ID, map[bool]string{true: "ack", false: "release"}[delivered], safeDeliveryError(finishErr))
 		if !delivered {
-			if releaseErr := r.Delegation.FinishReport(ctx, report, routerID, chatID, false); releaseErr != nil {
+			if releaseErr := finishReport(ctx, r.Delegation, report, routerID, chatID, false, errorClass); releaseErr != nil {
 				log.Printf("Context Drop report %s prompt release failed: %s", report.ID, safeDeliveryError(releaseErr))
 			}
 		}
 	}
+}
+
+func classifyDeliveryError(respondErr, sendErr error) string {
+	if respondErr == nil && sendErr == nil {
+		return ""
+	}
+	if errors.Is(respondErr, context.DeadlineExceeded) || errors.Is(sendErr, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	var httpErr *runtimeclient.HTTPError
+	if errors.As(sendErr, &httpErr) && httpErr.StatusCode >= 400 && httpErr.StatusCode < 500 && httpErr.StatusCode != 408 && httpErr.StatusCode != 429 {
+		return "permanent"
+	}
+	return "transient"
 }
 
 func safeDeliveryError(err error) string {
@@ -171,7 +205,8 @@ func safeDeliveryError(err error) string {
 	if errors.Is(err, context.Canceled) {
 		return "context canceled"
 	}
-	return fmt.Sprintf("error type %T", err)
+	// Fail-closed: unknown error types do not get their message preserved.
+	return fmt.Sprintf("%T (details redacted)", err)
 }
 
 func (r *Runner) confirmSensitiveAction(ctx context.Context, chatID, incoming string) (string, bool) {
