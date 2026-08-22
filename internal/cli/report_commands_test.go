@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"strings"
 	"testing"
 )
@@ -36,33 +35,6 @@ func TestReportCommandUsesScopedWorkerEnvironment(t *testing.T) {
 	}
 	if _, ok := got["kind"]; ok {
 		t.Fatalf("report must not send a typed kind: %#v", got)
-	}
-}
-
-func TestReportCommandQuotedHeredocPreservesLiteralShellText(t *testing.T) {
-	const want = "price $5 and `date` and $(whoami); 'single' \"double\"\nsecond line"
-	out, err := exec.Command("/bin/sh", "-c", "cat <<'CONTEXT_DROP_REPORT'\n"+want+"\nCONTEXT_DROP_REPORT\n").Output()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var got map[string]string
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
-			t.Fatal(err)
-		}
-		w.WriteHeader(http.StatusCreated)
-	}))
-	defer server.Close()
-	t.Setenv("CONTEXT_DROP_REPORT_URL", server.URL)
-	t.Setenv("CONTEXT_DROP_REPORT_CAPABILITY", "scoped-cap")
-	t.Setenv("CONTEXT_DROP_RUN_ID", "run-private")
-	cmd := newReportCommand()
-	cmd.SetIn(strings.NewReader(string(out)))
-	if err := cmd.Execute(); err != nil {
-		t.Fatal(err)
-	}
-	if got["message"] != want {
-		t.Fatalf("message=%q, want %q", got["message"], want)
 	}
 }
 

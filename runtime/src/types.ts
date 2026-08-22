@@ -20,9 +20,6 @@ export interface RuntimeConfig {
   delegateAgent?: string;
   /** Explicit, private aliases for repositories the trusted router may launch in. */
   repoAliases?: Record<string, string>;
-  /** Test/advanced override for bounded Herdr registration readiness. */
-  herdrReadinessMs?: number;
-  herdrReadinessPollMs?: number;
 }
 
 export interface RunRecord {
@@ -74,10 +71,6 @@ export interface ParentReport {
   leaseId?: string;
   leaseUntil?: string;
   deliveredAt?: string;
-  deliveryAttempts?: number;
-  lastDeliveryErrorClass?: string;
-  nextDeliveryAttemptAt?: string;
-  permanentFailureAt?: string;
   challengeConsumedAt?: string;
   challengeReservationId?: string;
   challengeReservationUntil?: string;
