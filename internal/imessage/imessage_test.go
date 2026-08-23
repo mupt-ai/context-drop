@@ -232,7 +232,7 @@ func TestRouterModePromptInjectsOrchestratorInstructions(t *testing.T) {
 	if _, err := adapter.RespondMeasured(context.Background(), Message{ID: "7", Text: "status"}); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Orchestrator instructions", "use list_tasks", "never guess identifiers"} {
+	for _, want := range []string{"Orchestrator instructions", "use list_tasks", "never guess identifiers", "return the acknowledgment immediately", "do not wait for or inspect the worker in the same turn", "Omit the agent parameter"} {
 		if !strings.Contains(responder.prompt, want) {
 			t.Fatalf("router prompt missing %q: %q", want, responder.prompt)
 		}
@@ -248,7 +248,7 @@ func TestRouterModeIncrementalPromptInjectsOrchestratorInstructions(t *testing.T
 	if _, err := adapter.RespondMeasured(context.Background(), Message{ID: "8", Text: "status"}); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"Orchestrator instructions", "use list_tasks", "never guess identifiers"} {
+	for _, want := range []string{"Orchestrator instructions", "use list_tasks", "never guess identifiers", "return the acknowledgment immediately", "do not wait for or inspect the worker in the same turn", "Omit the agent parameter"} {
 		if !strings.Contains(responder.prompt, want) {
 			t.Fatalf("incremental router prompt missing %q: %q", want, responder.prompt)
 		}
