@@ -134,9 +134,15 @@ function observeManagedLiveTasks(config: RuntimeConfig, current: Date, runner: C
       task.status = live.status === "done" ? "completed" : "failed";
       task.reportCapability = "";
       // Schedules often report their useful result before the harness reaches
-      // done. A second generic completion fallback adds noise without context.
-      // Keep lifecycle reports for failed schedules and all interactive tasks.
-      if (live.status !== "done" || task.routerId !== SCHEDULE_ROUTER_ID) {
+      // done. Reap their owned pane directly instead of sending a second generic
+      // completion fallback solely to trigger cleanup after its acknowledgement.
+      if (live.status === "done" && task.routerId === SCHEDULE_ROUTER_ID) {
+        let cleanedUp = run.ownsPane === false;
+        try {
+          if (run.ownsPane !== false) cleanedUp = run.backend === "herdr" ? closeHerdrWorker(config, run, runner) : closeTmuxWorker(config, run, runner);
+        } catch { /* cleanup failure is reported below and retried on acknowledgement */ }
+        if (!cleanedUp) queueLifecycleReport(reports, task, "The scheduled workflow finished, but its managed worker pane could not be cleaned up.", current);
+      } else {
         queueLifecycleReport(reports, task, live.status === "done" ? "The worker reached its done state without a final explicit report." : "The worker exited without a final explicit report.", current);
       }
     }
