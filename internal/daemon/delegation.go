@@ -196,7 +196,7 @@ func (r *Runner) completeScheduledRun(runID string) error {
 	return r.Store.Update(func(st *orchestrator.State) error {
 		for i := range st.Jobs {
 			job := &st.Jobs[i]
-			if job.ScheduleType == orchestrator.ScheduleAgent && job.RuntimeRunID == runID && job.Status == "running" {
+			if job.ScheduleType == orchestrator.ScheduleAgent && job.RuntimeRunID == runID && (job.Status == "running" || job.Status == "unknown") {
 				return orchestrator.SetJobStatus(st, job.ID, "completed", runID, "", now)
 			}
 		}

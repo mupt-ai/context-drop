@@ -193,7 +193,9 @@ func TestScheduleLifecycleReportCompletesJobWithoutSendingMessage(t *testing.T) 
 	now := time.Now().UTC()
 	store := orchestrator.Store{Path: filepath.Join(t.TempDir(), "state.json")}
 	schedule := orchestrator.Schedule{Name: "nightly", Type: orchestrator.ScheduleAgent, Backend: "herdr", Agent: "mock", Repo: t.TempDir(), Prompt: "work", Every: time.Hour, Enabled: true}
-	job := orchestrator.NewJobWithOccurrence(schedule, "running", "run-scheduled", now)
+	// The scheduler may conservatively mark the job unknown if it observes the
+	// pane between the useful report ACK and the lifecycle report delivery.
+	job := orchestrator.NewJobWithOccurrence(schedule, "unknown", "run-scheduled", now)
 	job.RuntimeRunID = "run-scheduled"
 	if err := store.Update(func(st *orchestrator.State) error { st.Jobs = append(st.Jobs, job); return nil }); err != nil {
 		t.Fatal(err)
