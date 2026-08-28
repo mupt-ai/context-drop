@@ -81,10 +81,11 @@ func Initialize() ([]string, error) {
 	for _, name := range []string{"pi", "codex", "claude"} {
 		if path, err := exec.LookPath(name); err == nil {
 			promptArg := "{prompt_file}"
+			command := []string{path, promptArg}
 			if name == "pi" {
-				promptArg = "@{prompt_file}"
+				command = []string{path, "--approve", "@{prompt_file}"}
 			}
-			agents[name] = AgentConfig{Command: []string{path, promptArg}, PromptMode: "arg"}
+			agents[name] = AgentConfig{Command: command, PromptMode: "arg"}
 			detected = append(detected, name)
 		}
 	}
@@ -146,10 +147,10 @@ func Initialize() ([]string, error) {
 			cfg.RepoAliases[alias] = repo
 		}
 		for k, v := range existing.Agents {
-			// Older auto-detected Pi configs passed the prompt path as plain text.
-			// Pi loads file content only when the argument uses its @file syntax.
-			if k == "pi" && len(v.Command) == 2 && v.Command[1] == "{prompt_file}" {
-				v.Command[1] = "@{prompt_file}"
+			if k == "pi" && len(v.Command) == 2 && (v.Command[1] == "{prompt_file}" || v.Command[1] == "@{prompt_file}") {
+				// Managed Pi runs are unattended: load the prompt file and explicitly
+				// trust project-local resources instead of waiting for a TUI prompt.
+				v.Command = []string{v.Command[0], "--approve", "@{prompt_file}"}
 			}
 			cfg.Agents[k] = v
 		}
