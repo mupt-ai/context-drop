@@ -133,7 +133,12 @@ function observeManagedLiveTasks(config: RuntimeConfig, current: Date, runner: C
     if (live.status === "done" || live.status === "exited") {
       task.status = live.status === "done" ? "completed" : "failed";
       task.reportCapability = "";
-      queueLifecycleReport(reports, task, live.status === "done" ? "The worker reached its done state without a final explicit report." : "The worker exited without a final explicit report.", current);
+      // Schedules often report their useful result before the harness reaches
+      // done. A second generic completion fallback adds noise without context.
+      // Keep lifecycle reports for failed schedules and all interactive tasks.
+      if (live.status !== "done" || task.routerId !== SCHEDULE_ROUTER_ID) {
+        queueLifecycleReport(reports, task, live.status === "done" ? "The worker reached its done state without a final explicit report." : "The worker exited without a final explicit report.", current);
+      }
     }
   }
   if (changed) { replace(taskPath, tasks); replace(reportPath, reports); }
