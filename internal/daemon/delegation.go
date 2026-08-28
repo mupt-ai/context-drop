@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"contextdrop.dev/context-drop/internal/imessage"
+	"contextdrop.dev/context-drop/internal/orchestrator"
 	"contextdrop.dev/context-drop/internal/runtimeclient"
 )
 
@@ -111,6 +112,19 @@ func (r *Runner) deliverReportsOnceForOwner(ctx context.Context, routerID, chatI
 	if !leased {
 		return
 	}
+	if report.LifecycleOnly && routerID == scheduleRouterID {
+		if completionErr := r.completeScheduledRun(report.RunID); completionErr != nil {
+			log.Printf("Context Drop schedule lifecycle report %s state update failed: %s", report.ID, safeDeliveryError(completionErr))
+			if releaseErr := finishReport(ctx, r.Delegation, report, routerID, chatID, false, "transient"); releaseErr != nil {
+				log.Printf("Context Drop schedule lifecycle report %s release failed: %s", report.ID, safeDeliveryError(releaseErr))
+			}
+			return
+		}
+		if finishErr := finishReport(ctx, r.Delegation, report, routerID, chatID, true, ""); finishErr != nil {
+			log.Printf("Context Drop schedule lifecycle report %s ack failed: %s", report.ID, safeDeliveryError(finishErr))
+		}
+		return
+	}
 	yoloFailureReason := ""
 	if r.IMessage.Config.YoloMode && report.SensitiveAction != "" && report.Kind == "needs_user" {
 		_, outcome, authorizeErr := r.Delegation.AutoAuthorize(ctx, report, routerID, chatID)
@@ -172,6 +186,22 @@ func (r *Runner) deliverReportsOnceForOwner(ctx context.Context, routerID, chatI
 			}
 		}
 	}
+}
+
+func (r *Runner) completeScheduledRun(runID string) error {
+	if strings.TrimSpace(runID) == "" {
+		return fmt.Errorf("scheduled lifecycle report omitted its runtime run ID")
+	}
+	now := r.Now()
+	return r.Store.Update(func(st *orchestrator.State) error {
+		for i := range st.Jobs {
+			job := &st.Jobs[i]
+			if job.ScheduleType == orchestrator.ScheduleAgent && job.RuntimeRunID == runID && job.Status == "running" {
+				return orchestrator.SetJobStatus(st, job.ID, "completed", runID, "", now)
+			}
+		}
+		return nil
+	})
 }
 
 func classifyDeliveryError(respondErr, sendErr error) string {

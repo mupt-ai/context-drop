@@ -104,9 +104,9 @@ function finishAuthorizedSupersession(config:RuntimeConfig,reportPath:string,cha
   supersedeAuthorizedSource(config,sourceRunId,replacementRunId,current,runner);
 }
 function ownerInput(input: any): {routerId:string;chatId:string} { if (typeof input?.routerId !== "string" || !input.routerId.trim() || typeof input?.chatId !== "string" || !input.chatId.trim()) throw new Error("routerId and chatId are required"); return { routerId: input.routerId, chatId: input.chatId }; }
-function queueLifecycleReport(reports: ParentReport[], task: TaskRecord, message: string, current: Date): void {
+function queueLifecycleReport(reports: ParentReport[], task: TaskRecord, message: string, current: Date, lifecycleOnly = false): void {
   if (reports.some(report => report.runId === task.runId && report.message === message)) return;
-  reports.push({ id: `report_${current.getTime().toString(36)}_${randomBytes(5).toString("hex")}`, runId: task.runId, routerId: task.routerId, chatId: task.chatId, message, createdAt: current.toISOString() });
+  reports.push({ id: `report_${current.getTime().toString(36)}_${randomBytes(5).toString("hex")}`, runId: task.runId, routerId: task.routerId, chatId: task.chatId, message, createdAt: current.toISOString(), lifecycleOnly: lifecycleOnly || undefined });
 }
 function finalizeMissingTasks(config: RuntimeConfig, runIds: Set<string>, current: Date, message: string): void {
   const taskPath=pathFor(config,"parent-tasks.jsonl"),reportPath=pathFor(config,"parent-reports.jsonl"),tasks=records<TaskRecord>(taskPath),reports=records<ParentReport>(reportPath);let changed=false;
@@ -134,14 +134,10 @@ function observeManagedLiveTasks(config: RuntimeConfig, current: Date, runner: C
       task.status = live.status === "done" ? "completed" : "failed";
       task.reportCapability = "";
       // Schedules often report their useful result before the harness reaches
-      // done. Reap their owned pane directly instead of sending a second generic
-      // completion fallback solely to trigger cleanup after its acknowledgement.
+      // done. Queue a silent lifecycle report so the daemon records completion
+      // before its acknowledgement triggers the existing owned-pane cleanup.
       if (live.status === "done" && task.routerId === SCHEDULE_ROUTER_ID) {
-        let cleanedUp = run.ownsPane === false;
-        try {
-          if (run.ownsPane !== false) cleanedUp = run.backend === "herdr" ? closeHerdrWorker(config, run, runner) : closeTmuxWorker(config, run, runner);
-        } catch { /* cleanup failure is reported below and retried on acknowledgement */ }
-        if (!cleanedUp) queueLifecycleReport(reports, task, "The scheduled workflow finished, but its managed worker pane could not be cleaned up.", current);
+        queueLifecycleReport(reports, task, "The scheduled workflow reached its done state.", current, true);
       } else {
         queueLifecycleReport(reports, task, live.status === "done" ? "The worker reached its done state without a final explicit report." : "The worker exited without a final explicit report.", current);
       }
