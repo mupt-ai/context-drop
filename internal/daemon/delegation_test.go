@@ -189,6 +189,33 @@ func TestScheduleOwnedReportRoutesToConfiguredOrchestrator(t *testing.T) {
 	}
 }
 
+func TestScheduleLifecycleReportCompletesJobWithoutSendingMessage(t *testing.T) {
+	now := time.Now().UTC()
+	store := orchestrator.Store{Path: filepath.Join(t.TempDir(), "state.json")}
+	schedule := orchestrator.Schedule{Name: "nightly", Type: orchestrator.ScheduleAgent, Backend: "herdr", Agent: "mock", Repo: t.TempDir(), Prompt: "work", Every: time.Hour, Enabled: true}
+	// The scheduler may conservatively mark the job unknown if it observes the
+	// pane between the useful report ACK and the lifecycle report delivery.
+	job := orchestrator.NewJobWithOccurrence(schedule, "unknown", "run-scheduled", now)
+	job.RuntimeRunID = "run-scheduled"
+	if err := store.Update(func(st *orchestrator.State) error { st.Jobs = append(st.Jobs, job); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	backend := &fakeDelegationRuntime{reports: []runtimeclient.ParentReport{{ID: "schedule-lifecycle", RouterID: scheduleRouterID, ChatID: "chat", RunID: "run-scheduled", Message: "done", LifecycleOnly: true}}}
+	commander := &reportCommander{}
+	cfg := imessage.Defaults()
+	cfg.Enabled, cfg.RouterMode, cfg.ChatID, cfg.ImsgPath = true, true, "chat", "/bin/echo"
+	responder := &recordingResponder{}
+	runner := &Runner{Store: store, Now: func() time.Time { return now }, Delegation: backend, IMessage: &imessage.Adapter{Config: cfg, Commander: commander, PersistentResponder: responder}}
+	runner.deliverReportsOnce(context.Background())
+	state, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Jobs[0].Status != "completed" || len(responder.prompts) != 0 || len(commander.sends) != 0 || !reflect.DeepEqual(backend.finishDelivered, []bool{true}) {
+		t.Fatalf("job=%#v prompts=%v sends=%v finishes=%v", state.Jobs[0], responder.prompts, commander.sends, backend.finishDelivered)
+	}
+}
+
 func TestReportDeliveryUsesHTTPLeaseReleaseAndAck(t *testing.T) {
 	var mu sync.Mutex
 	leased, delivered, releases, acks := false, false, 0, 0

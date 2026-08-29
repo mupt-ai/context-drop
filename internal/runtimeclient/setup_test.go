@@ -211,8 +211,39 @@ func TestInitializeMigratesPiPromptFileSyntax(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := cfg.Agents["pi"].Command[1]; got != "@{prompt_file}" {
-		t.Fatalf("Pi prompt argument = %q", got)
+	if got := cfg.Agents["pi"].Command; len(got) != 3 || got[1] != "--approve" || got[2] != "@{prompt_file}" {
+		t.Fatalf("Pi command = %#v", got)
+	}
+}
+
+func TestInitializeMigratesPiCommandWithoutApprove(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CONTEXT_DROP_HOME", home)
+	if _, err := Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	_, configPath, _, _ := Paths()
+	cfg, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Agents["pi"] = AgentConfig{Command: []string{"/opt/homebrew/bin/pi", "@{prompt_file}"}, PromptMode: "arg"}
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Agents["pi"].Command; len(got) != 3 || got[1] != "--approve" || got[2] != "@{prompt_file}" {
+		t.Fatalf("Pi command = %#v", got)
 	}
 }
 

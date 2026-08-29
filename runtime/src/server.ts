@@ -104,9 +104,9 @@ function finishAuthorizedSupersession(config:RuntimeConfig,reportPath:string,cha
   supersedeAuthorizedSource(config,sourceRunId,replacementRunId,current,runner);
 }
 function ownerInput(input: any): {routerId:string;chatId:string} { if (typeof input?.routerId !== "string" || !input.routerId.trim() || typeof input?.chatId !== "string" || !input.chatId.trim()) throw new Error("routerId and chatId are required"); return { routerId: input.routerId, chatId: input.chatId }; }
-function queueLifecycleReport(reports: ParentReport[], task: TaskRecord, message: string, current: Date): void {
+function queueLifecycleReport(reports: ParentReport[], task: TaskRecord, message: string, current: Date, lifecycleOnly = false): void {
   if (reports.some(report => report.runId === task.runId && report.message === message)) return;
-  reports.push({ id: `report_${current.getTime().toString(36)}_${randomBytes(5).toString("hex")}`, runId: task.runId, routerId: task.routerId, chatId: task.chatId, message, createdAt: current.toISOString() });
+  reports.push({ id: `report_${current.getTime().toString(36)}_${randomBytes(5).toString("hex")}`, runId: task.runId, routerId: task.routerId, chatId: task.chatId, message, createdAt: current.toISOString(), lifecycleOnly: lifecycleOnly || undefined });
 }
 function finalizeMissingTasks(config: RuntimeConfig, runIds: Set<string>, current: Date, message: string): void {
   const taskPath=pathFor(config,"parent-tasks.jsonl"),reportPath=pathFor(config,"parent-reports.jsonl"),tasks=records<TaskRecord>(taskPath),reports=records<ParentReport>(reportPath);let changed=false;
@@ -133,7 +133,14 @@ function observeManagedLiveTasks(config: RuntimeConfig, current: Date, runner: C
     if (live.status === "done" || live.status === "exited") {
       task.status = live.status === "done" ? "completed" : "failed";
       task.reportCapability = "";
-      queueLifecycleReport(reports, task, live.status === "done" ? "The worker reached its done state without a final explicit report." : "The worker exited without a final explicit report.", current);
+      // Schedules often report their useful result before the harness reaches
+      // done. Queue a silent lifecycle report so the daemon records completion
+      // before its acknowledgement triggers the existing owned-pane cleanup.
+      if (live.status === "done" && task.routerId === SCHEDULE_ROUTER_ID) {
+        queueLifecycleReport(reports, task, "The scheduled workflow reached its done state.", current, true);
+      } else {
+        queueLifecycleReport(reports, task, live.status === "done" ? "The worker reached its done state without a final explicit report." : "The worker exited without a final explicit report.", current);
+      }
     }
   }
   if (changed) { replace(taskPath, tasks); replace(reportPath, reports); }
@@ -297,7 +304,7 @@ export function createRuntimeServer(config: RuntimeConfig, token: string, runner
       }
       const delivery = url.pathname.match(/^\/v1\/reports\/([^/]+)\/(ack|release)$/); if (req.method === "POST" && delivery) {
         if (!general) return json(res, 401, { error: "unauthorized" }); const input = await body(req); const owner = ownerInput(input); const all = records<ParentReport>(pathFor(config, "parent-reports.jsonl")); const report = all.find(r => r.id === decodeURIComponent(delivery[1]) && r.routerId === owner.routerId && r.chatId === owner.chatId); if (!report || !capMatches(input.leaseId ?? "", report.leaseId ?? "")) return json(res, 409, { error: "invalid report lease" }); if (delivery[2] === "ack") report.deliveredAt = now().toISOString(); delete report.leaseId; delete report.leaseUntil; replace(pathFor(config, "parent-reports.jsonl"), all);
-        if(delivery[2]==="ack"){const task=records<TaskRecord>(pathFor(config,"parent-tasks.jsonl")).find(t=>t.runId===report.runId);const run=loadRuns(config).find(r=>r.id===report.runId);if(task&&(task.status==="completed"||task.status==="failed")&&run&&run.ownsPane!==false){if(run.backend==="herdr")closeHerdrWorker(config,run,runner);else if(run.backend==="tmux")closeTmuxWorker(config,run,runner);}}
+        if(delivery[2]==="ack"){const task=records<TaskRecord>(pathFor(config,"parent-tasks.jsonl")).find(t=>t.runId===report.runId);const run=loadRuns(config).find(r=>r.id===report.runId);const cleanupReady=task?.routerId!==SCHEDULE_ROUTER_ID||report.lifecycleOnly;if(cleanupReady&&task&&(task.status==="completed"||task.status==="failed")&&run&&run.ownsPane!==false){if(run.backend==="herdr")closeHerdrWorker(config,run,runner);else if(run.backend==="tmux")closeTmuxWorker(config,run,runner);}}
         reconcileAndCompact(config,current,policy,runner,probeTimes); return json(res, 200, { report });
       }
       if (req.method === "POST" && url.pathname === "/v1/runs") { if (!general) return json(res, 401, { error: "unauthorized" }); const input = await body(req) as LaunchRequest; if (typeof input?.agent !== "string" || typeof input?.repo !== "string" || typeof input?.prompt !== "string" || (input.name !== undefined && typeof input.name !== "string") || (input.backend !== undefined && input.backend !== "tmux" && input.backend !== "herdr") || (input.workspaceId !== undefined && typeof input.workspaceId !== "string") || (input.lane !== undefined && input.lane !== "human_copilot" && input.lane !== "full_ai") || input.environment !== undefined || input.extension !== undefined) throw new Error("invalid launch request"); const id = `run_${Date.now().toString(36)}_${randomBytes(5).toString("hex")}`; const backend = input.backend ?? config.defaultBackend ?? "tmux"; const run = backend === "herdr" ? launchInHerdr(config, input, id, runner) : launchInTmux(config, input, id, runner); append(pathFor(config, "runs.jsonl"), run); return json(res, 201, run); }

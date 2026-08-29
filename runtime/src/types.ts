@@ -71,6 +71,7 @@ export interface ParentReport {
   leaseId?: string;
   leaseUntil?: string;
   deliveredAt?: string;
+  lifecycleOnly?: boolean;
   challengeConsumedAt?: string;
   challengeReservationId?: string;
   challengeReservationUntil?: string;

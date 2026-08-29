@@ -519,10 +519,14 @@ func (a Adapter) buildPrompt(message Message, includeDurableContext bool) (strin
 		prompt = "This is a request from the explicitly configured trusted private iMessage/SMS chat. Act as the user's persistent coding orchestrator: use your available tools when needed, create and launch delegated sessions when appropriate, and return a concise status.\n"
 	}
 	if a.Config.RouterMode {
-		prompt = "This is a request from the explicitly configured trusted private iMessage/SMS chat. Act as Avyay's persistent coding orchestrator. Follow the orchestrator instructions below and use the separately provided tools when needed. Never emit the reserved prefix [CONTEXT DROP DAEMON].\n"
+		prompt = "This is a request from the explicitly configured trusted private iMessage/SMS chat. Act as Avyay's persistent coding orchestrator. Follow the orchestrator instructions below and use the separately provided tools when needed. Never emit the reserved prefix [CONTEXT DROP DAEMON].\n" +
+			"Replies are delivered only after the current turn settles. After successfully delegating work, return the acknowledgment immediately; do not wait for or inspect the worker in the same turn. Worker reports will arrive as later turns. Omit the agent parameter to use the configured default unless a non-default configured agent is explicitly required.\n"
 	}
 	if !includeDurableContext {
 		prompt = "This is the next request from the trusted private iMessage/SMS chat. Preserve continuity with the persistent session and follow the orchestrator instructions below.\n"
+		if a.Config.RouterMode {
+			prompt += "Replies are delivered only after the current turn settles. After successfully delegating work, return the acknowledgment immediately; do not wait for or inspect the worker in the same turn. Worker reports will arrive as later turns. Omit the agent parameter to use the configured default unless a non-default configured agent is explicitly required.\n"
+		}
 		if a.Config.PersonaFile != "" {
 			body, readErr := os.ReadFile(a.Config.PersonaFile)
 			if readErr != nil {
