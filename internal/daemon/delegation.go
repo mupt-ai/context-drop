@@ -112,17 +112,44 @@ func (r *Runner) deliverReportsOnceForOwner(ctx context.Context, routerID, chatI
 	if !leased {
 		return
 	}
+	handled, receiptErr := r.reportWasHandled(report.ID)
+	if receiptErr != nil {
+		log.Printf("Context Drop report %s receipt lookup failed: %s", report.ID, safeDeliveryError(receiptErr))
+		if releaseErr := finishReport(ctx, r.Delegation, report, routerID, chatID, false, "transient"); releaseErr != nil {
+			log.Printf("Context Drop report %s receipt lookup release failed: %s", report.ID, safeDeliveryError(releaseErr))
+		}
+		return
+	}
+	if handled {
+		if finishErr := finishReport(ctx, r.Delegation, report, routerID, chatID, true, ""); finishErr != nil {
+			log.Printf("Context Drop report %s repeat ack failed: %s", report.ID, safeDeliveryError(finishErr))
+		}
+		return
+	}
 	if report.LifecycleOnly && routerID == scheduleRouterID {
-		if completionErr := r.completeScheduledRun(report.RunID); completionErr != nil {
+		status := report.LifecycleStatus
+		if status == "" {
+			status = "completed"
+		}
+		if completionErr := r.finishScheduledRun(report.RunID, status, report.Message); completionErr != nil {
 			log.Printf("Context Drop schedule lifecycle report %s state update failed: %s", report.ID, safeDeliveryError(completionErr))
 			if releaseErr := finishReport(ctx, r.Delegation, report, routerID, chatID, false, "transient"); releaseErr != nil {
 				log.Printf("Context Drop schedule lifecycle report %s release failed: %s", report.ID, safeDeliveryError(releaseErr))
 			}
 			return
 		}
+		if status == "failed" {
+			report.Message = r.scheduledFailureMessage(report.RunID, report.Message)
+			r.deliverScheduledReport(ctx, report, routerID, chatID)
+			return
+		}
 		if finishErr := finishReport(ctx, r.Delegation, report, routerID, chatID, true, ""); finishErr != nil {
 			log.Printf("Context Drop schedule lifecycle report %s ack failed: %s", report.ID, safeDeliveryError(finishErr))
 		}
+		return
+	}
+	if routerID == scheduleRouterID && report.SensitiveAction == "" {
+		r.deliverScheduledReport(ctx, report, routerID, chatID)
 		return
 	}
 	yoloFailureReason := ""
@@ -176,6 +203,18 @@ func (r *Runner) deliverReportsOnceForOwner(ctx context.Context, routerID, chatI
 		sendErr = respondErr
 	}
 	delivered := sendErr == nil
+	if delivered {
+		userVisible := message != noUserReplyMarker
+		visibleMessage := ""
+		if userVisible {
+			visibleMessage = message
+		}
+		if receiptErr := r.recordReportHandled(report, userVisible, visibleMessage); receiptErr != nil {
+			log.Printf("Context Drop report %s delivery receipt failed: %s", report.ID, safeDeliveryError(receiptErr))
+			delivered = false
+			sendErr = receiptErr
+		}
+	}
 	errorClass := classifyDeliveryError(respondErr, sendErr)
 	finishErr := finishReport(ctx, r.Delegation, report, routerID, chatID, delivered, errorClass)
 	if finishErr != nil {
@@ -188,32 +227,200 @@ func (r *Runner) deliverReportsOnceForOwner(ctx context.Context, routerID, chatI
 	}
 }
 
-func (r *Runner) completeScheduledRun(runID string) error {
-	if strings.TrimSpace(runID) == "" {
-		return fmt.Errorf("scheduled lifecycle report omitted its runtime run ID")
+func (r *Runner) deliverScheduledReport(ctx context.Context, report runtimeclient.ParentReport, routerID, chatID string) {
+	message := sanitizeScheduledMessage(report.Message)
+	if message == "" {
+		if releaseErr := finishReport(ctx, r.Delegation, report, routerID, chatID, false, "permanent"); releaseErr != nil {
+			log.Printf("Context Drop schedule report %s release failed: %s", report.ID, safeDeliveryError(releaseErr))
+		}
+		_ = r.recordScheduledDelivery(report.RunID, report.ID, "failed", "scheduled report contained no deliverable text")
+		return
 	}
-	now := r.Now()
+	sendCtx, cancel := context.WithTimeout(ctx, time.Duration(r.IMessage.Config.SendTimeoutSeconds)*time.Second)
+	sendErr := r.IMessage.Send(sendCtx, message)
+	cancel()
+	if sendErr != nil {
+		log.Printf("Context Drop schedule report %s iMessage send failed: %s", report.ID, safeDeliveryError(sendErr))
+		errorClass := classifyDeliveryError(nil, sendErr)
+		if releaseErr := finishReport(ctx, r.Delegation, report, routerID, chatID, false, errorClass); releaseErr != nil {
+			log.Printf("Context Drop schedule report %s release failed: %s", report.ID, safeDeliveryError(releaseErr))
+		}
+		_ = r.recordScheduledDelivery(report.RunID, report.ID, "delivery_unknown", errorClass)
+		return
+	}
+	if receiptErr := r.recordReportHandled(report, true, message); receiptErr != nil {
+		log.Printf("Context Drop schedule report %s delivery receipt failed: %s", report.ID, safeDeliveryError(receiptErr))
+		if releaseErr := finishReport(ctx, r.Delegation, report, routerID, chatID, false, "ambiguous"); releaseErr != nil {
+			log.Printf("Context Drop schedule report %s ambiguous release failed: %s", report.ID, safeDeliveryError(releaseErr))
+		}
+		_ = r.recordScheduledDelivery(report.RunID, report.ID, "delivery_unknown", "receipt persistence failed")
+		return
+	}
+	if finishErr := finishReport(ctx, r.Delegation, report, routerID, chatID, true, ""); finishErr != nil {
+		log.Printf("Context Drop schedule report %s ack failed after send: %s", report.ID, safeDeliveryError(finishErr))
+	}
+}
+
+func sanitizeScheduledMessage(value string) string {
+	var b strings.Builder
+	for _, r := range value {
+		switch {
+		case r == '\n' || r == '\t':
+			b.WriteRune(r)
+		case unicode.IsControl(r) || unicode.Is(unicode.Cf, r):
+			continue
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func (r *Runner) reportWasHandled(reportID string) (bool, error) {
+	if r.Store.Path == "" {
+		return false, nil
+	}
+	state, err := r.Store.Load()
+	if err != nil {
+		return false, err
+	}
+	_, ok := state.ReportDeliveries[reportID]
+	return ok, nil
+}
+
+func (r *Runner) recordReportHandled(report runtimeclient.ParentReport, userVisible bool, message string) error {
+	if r.Store.Path == "" {
+		return nil
+	}
+	now := time.Now().UTC()
+	if r.Now != nil {
+		now = r.Now()
+	}
 	return r.Store.Update(func(st *orchestrator.State) error {
-		for i := range st.Jobs {
-			job := &st.Jobs[i]
-			if job.ScheduleType == orchestrator.ScheduleAgent && job.RuntimeRunID == runID && (job.Status == "running" || job.Status == "unknown") {
-				return orchestrator.SetJobStatus(st, job.ID, "completed", runID, "", now)
+		if _, exists := st.ReportDeliveries[report.ID]; exists {
+			return nil
+		}
+		st.ReportDeliveries[report.ID] = orchestrator.ReportDelivery{ReportID: report.ID, RunID: report.RunID, RouterID: report.RouterID, HandledAt: now, UserVisible: userVisible}
+		if userVisible {
+			orchestrator.RecordOutbound(st, "", message, now, report.RouterID)
+		}
+		if report.RouterID == scheduleRouterID {
+			for i := range st.Jobs {
+				job := &st.Jobs[i]
+				if job.ScheduleType == orchestrator.ScheduleAgent && job.RuntimeRunID == report.RunID {
+					if report.LifecycleStatus == "failed" {
+						job.DeliveryStatus = "failure_notice_delivered"
+					} else {
+						job.DeliveryStatus = "delivered"
+					}
+					job.DeliveryReportID = report.ID
+					job.DeliveryError = ""
+					at := now
+					job.DeliveredAt = &at
+					break
+				}
 			}
 		}
 		return nil
 	})
 }
 
+func (r *Runner) recordScheduledDelivery(runID, reportID, status, errorText string) error {
+	if r.Store.Path == "" {
+		return nil
+	}
+	return r.Store.Update(func(st *orchestrator.State) error {
+		for i := range st.Jobs {
+			job := &st.Jobs[i]
+			if job.ScheduleType != orchestrator.ScheduleAgent || job.RuntimeRunID != runID {
+				continue
+			}
+			job.DeliveryStatus = status
+			job.DeliveryReportID = reportID
+			job.DeliveryError = errorText
+			return nil
+		}
+		return nil
+	})
+}
+
+func (r *Runner) finishScheduledRun(runID, status, errorText string) error {
+	if strings.TrimSpace(runID) == "" {
+		return fmt.Errorf("scheduled lifecycle report omitted its runtime run ID")
+	}
+	if status != "completed" && status != "failed" {
+		return fmt.Errorf("scheduled lifecycle report has invalid status %q", status)
+	}
+	now := r.Now()
+	return r.Store.Update(func(st *orchestrator.State) error {
+		for i := range st.Jobs {
+			job := &st.Jobs[i]
+			if job.ScheduleType != orchestrator.ScheduleAgent || job.RuntimeRunID != runID {
+				continue
+			}
+			if status == "completed" {
+				if job.Status == "running" || job.Status == "unknown" {
+					if job.DeliveryStatus == "pending" {
+						job.DeliveryStatus = "no_report"
+					}
+					return orchestrator.SetJobStatus(st, job.ID, "completed", runID, "", now)
+				}
+				return nil
+			}
+			firstFailure := job.DeliveryStatus != "failure_notice_pending" && job.DeliveryStatus != "failure_notice_delivered"
+			job.DeliveryStatus = "failure_notice_pending"
+			job.DeliveryError = sanitizeScheduledMessage(errorText)
+			if job.Status == "running" || job.Status == "unknown" {
+				if err := orchestrator.SetJobStatus(st, job.ID, "failed", runID, job.DeliveryError, now); err != nil {
+					return err
+				}
+			}
+			if firstFailure {
+				for j := range st.Schedules {
+					if st.Schedules[j].Name == job.ScheduleName {
+						st.Schedules[j].ConsecutiveFailures++
+						if st.Schedules[j].AutoPauseAfter > 0 && st.Schedules[j].ConsecutiveFailures >= st.Schedules[j].AutoPauseAfter {
+							st.Schedules[j].Enabled = false
+						}
+						break
+					}
+				}
+			}
+			return nil
+		}
+		return nil
+	})
+}
+
+func (r *Runner) scheduledFailureMessage(runID, detail string) string {
+	name := "scheduled workflow"
+	if state, err := r.Store.Load(); err == nil {
+		for _, job := range state.Jobs {
+			if job.RuntimeRunID == runID && job.ScheduleName != "" {
+				name = job.ScheduleName
+				break
+			}
+		}
+	}
+	detail = sanitizeScheduledMessage(detail)
+	if detail == "" {
+		detail = "the worker ended before producing a final message"
+	}
+	return fmt.Sprintf("Schedule %s failed: %s", name, detail)
+}
+
 func classifyDeliveryError(respondErr, sendErr error) string {
 	if respondErr == nil && sendErr == nil {
 		return ""
 	}
-	if errors.Is(respondErr, context.DeadlineExceeded) || errors.Is(sendErr, context.DeadlineExceeded) {
-		return "timeout"
+	// Once an iMessage send has been attempted, an error cannot prove that the
+	// external message was not accepted. Retrying can duplicate user-visible
+	// output, so persist the ambiguity and require explicit reconciliation.
+	if sendErr != nil && respondErr == nil {
+		return "ambiguous"
 	}
-	var httpErr *runtimeclient.HTTPError
-	if errors.As(sendErr, &httpErr) && httpErr.StatusCode >= 400 && httpErr.StatusCode < 500 && httpErr.StatusCode != 408 && httpErr.StatusCode != 429 {
-		return "permanent"
+	if errors.Is(respondErr, context.DeadlineExceeded) {
+		return "timeout"
 	}
 	return "transient"
 }

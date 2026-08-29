@@ -32,6 +32,7 @@ type ParentReport struct {
 	CreatedAt          string `json:"createdAt"`
 	LeaseID            string `json:"leaseId,omitempty"`
 	LifecycleOnly      bool   `json:"lifecycleOnly,omitempty"`
+	LifecycleStatus    string `json:"lifecycleStatus,omitempty"`
 }
 type Agent struct {
 	Name       string `json:"name"`

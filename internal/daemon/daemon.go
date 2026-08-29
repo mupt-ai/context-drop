@@ -534,7 +534,7 @@ func (r *Runner) PollMessages(ctx context.Context) {
 	}()
 	now := r.Now()
 	historyStarted := time.Now()
-	messages, err := r.IMessage.History(ctx)
+	messages, err := r.IMessage.ConversationHistory(ctx)
 	historyDuration := time.Since(historyStarted)
 	if err != nil {
 		_ = r.recordMessagePoll(now, err)
@@ -558,6 +558,13 @@ func (r *Runner) PollMessages(ctx context.Context) {
 			}
 			for _, message := range messages {
 				st.SeenMessageIDs[message.ID] = now.Format(time.RFC3339Nano)
+				if message.FromMe {
+					sentAt := now
+					if created := parseMessageCreatedAt(message.CreatedAt); created != nil {
+						sentAt = *created
+					}
+					orchestrator.RecordOutbound(st, message.ID, message.Text, sentAt, "imessage-history")
+				}
 				if rowID, rowErr := messageRowID(message); rowErr == nil && rowID > st.IMessageCursor {
 					st.IMessageCursor = rowID
 				}
@@ -578,11 +585,19 @@ func (r *Runner) PollMessages(ctx context.Context) {
 			}
 			claimTime := r.Now()
 			createdAt := parseMessageCreatedAt(message.CreatedAt)
+			st.SeenMessageIDs[message.ID] = claimTime.Format(time.RFC3339Nano)
+			if message.FromMe {
+				sentAt := claimTime
+				if createdAt != nil {
+					sentAt = *createdAt
+				}
+				orchestrator.RecordOutbound(st, message.ID, message.Text, sentAt, "imessage-history")
+				continue
+			}
 			latency := orchestrator.MessageLatency{MessageCreatedAt: createdAt, HistoryMS: historyDuration.Milliseconds()}
 			if createdAt != nil && !claimTime.Before(*createdAt) {
 				latency.QueueMS = claimTime.Sub(*createdAt).Milliseconds()
 			}
-			st.SeenMessageIDs[message.ID] = claimTime.Format(time.RFC3339Nano)
 			st.MessageJobs[message.ID] = orchestrator.MessageJob{MessageID: message.ID, Status: "queued", ClaimedAt: claimTime, UpdatedAt: claimTime, Latency: latency}
 			claimedMessages = append(claimedMessages, message)
 		}
@@ -592,7 +607,7 @@ func (r *Runner) PollMessages(ctx context.Context) {
 		return
 	}
 	if initialized {
-		log.Printf("Context Drop iMessage initial sync marked %d existing incoming message(s) seen", len(messages))
+		log.Printf("Context Drop iMessage initial sync marked %d existing chat message(s) seen", len(messages))
 		return
 	}
 	if len(claimedMessages) == 0 {
@@ -751,6 +766,11 @@ func (r *Runner) prepareMessageWatch(ctx context.Context) (int64, error) {
 			return 0, errors.New("iMessage initial sync did not initialize the configured chat")
 		}
 	}
+	syncCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	if syncErr := r.syncRecentOutbound(syncCtx); syncErr != nil {
+		log.Printf("Context Drop recent outbound sync failed: %v", syncErr)
+	}
+	cancel()
 	cursor := state.IMessageCursor
 	if cursor == 0 {
 		cursor = maxSeenMessageRowID(state.SeenMessageIDs)
@@ -768,12 +788,32 @@ func (r *Runner) prepareMessageWatch(ctx context.Context) (int64, error) {
 	return cursor, nil
 }
 
+func (r *Runner) syncRecentOutbound(ctx context.Context) error {
+	messages, err := r.IMessage.ConversationHistory(ctx)
+	if err != nil {
+		return err
+	}
+	return r.Store.Update(func(st *orchestrator.State) error {
+		for _, message := range messages {
+			if !message.FromMe {
+				continue
+			}
+			sentAt := r.Now()
+			if created := parseMessageCreatedAt(message.CreatedAt); created != nil {
+				sentAt = *created
+			}
+			orchestrator.RecordOutbound(st, message.ID, message.Text, sentAt, "imessage-history")
+		}
+		return nil
+	})
+}
+
 func (r *Runner) claimWatchedMessage(ctx context.Context, message imessage.Message) error {
 	rowID, err := messageRowID(message)
 	if err != nil {
 		return err
 	}
-	incoming, accepted := r.IMessage.IncomingMessage(message)
+	chatMessage, accepted := r.IMessage.ChatMessage(message)
 	claimTime := r.Now()
 	claimed := false
 	if err := r.Store.Update(func(st *orchestrator.State) error {
@@ -789,16 +829,24 @@ func (r *Runner) claimWatchedMessage(ctx context.Context, message imessage.Messa
 		if alreadyPassed || !accepted {
 			return nil
 		}
-		if _, seen := st.SeenMessageIDs[incoming.ID]; seen {
+		if _, seen := st.SeenMessageIDs[chatMessage.ID]; seen {
 			return nil
 		}
-		createdAt := parseMessageCreatedAt(incoming.CreatedAt)
+		createdAt := parseMessageCreatedAt(chatMessage.CreatedAt)
+		st.SeenMessageIDs[chatMessage.ID] = claimTime.Format(time.RFC3339Nano)
+		if chatMessage.FromMe {
+			sentAt := claimTime
+			if createdAt != nil {
+				sentAt = *createdAt
+			}
+			orchestrator.RecordOutbound(st, chatMessage.ID, chatMessage.Text, sentAt, "imessage-watch")
+			return nil
+		}
 		latency := orchestrator.MessageLatency{MessageCreatedAt: createdAt}
 		if createdAt != nil && !claimTime.Before(*createdAt) {
 			latency.QueueMS = claimTime.Sub(*createdAt).Milliseconds()
 		}
-		st.SeenMessageIDs[incoming.ID] = claimTime.Format(time.RFC3339Nano)
-		st.MessageJobs[incoming.ID] = orchestrator.MessageJob{MessageID: incoming.ID, Status: "queued", ClaimedAt: claimTime, UpdatedAt: claimTime, Latency: latency}
+		st.MessageJobs[chatMessage.ID] = orchestrator.MessageJob{MessageID: chatMessage.ID, Status: "queued", ClaimedAt: claimTime, UpdatedAt: claimTime, Latency: latency}
 		claimed = true
 		return nil
 	}); err != nil {
@@ -807,7 +855,7 @@ func (r *Runner) claimWatchedMessage(ctx context.Context, message imessage.Messa
 	if !claimed {
 		return nil
 	}
-	_, err = r.enqueueMessages(ctx, []imessage.Message{incoming}, false)
+	_, err = r.enqueueMessages(ctx, []imessage.Message{chatMessage}, false)
 	return err
 }
 
@@ -879,6 +927,12 @@ func responderFailureReply(err error, response imessage.Response) string {
 }
 
 func (r *Runner) processMessage(ctx context.Context, message imessage.Message) {
+	if state, err := r.Store.Load(); err == nil {
+		message.RecentOutbound = make([]imessage.ContextMessage, 0, len(state.RecentOutbound))
+		for _, outbound := range state.RecentOutbound {
+			message.RecentOutbound = append(message.RecentOutbound, imessage.ContextMessage{Text: outbound.Text, CreatedAt: outbound.SentAt.Format(time.RFC3339), Source: outbound.Source})
+		}
+	}
 	processingStarted := r.Now()
 	if err := r.Store.Update(func(st *orchestrator.State) error {
 		job := st.MessageJobs[message.ID]
@@ -931,6 +985,7 @@ func (r *Runner) processMessage(ctx context.Context, message imessage.Message) {
 		job.Error = errorText
 		if status == "sent" {
 			job.SentAt = &completedAt
+			orchestrator.RecordOutbound(st, "", response.Reply, completedAt, "conversation")
 		}
 		job.Latency.PromptBuildMS = response.Metrics.PromptBuild.Milliseconds()
 		job.Latency.ResponderStartupMS = response.Metrics.ResponderStartup.Milliseconds()

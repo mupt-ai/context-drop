@@ -4,7 +4,7 @@ Context Drop schedules are durable local workflows. Existing schedules are migra
 
 ## Types
 
-- `agent` preserves the managed worker/report workflow. Existing `--agent`, `--repo`, `--prompt`, and `--backend` flags continue to work.
+- `agent` preserves the managed worker/report workflow. Existing `--agent`, `--repo`, `--prompt`, and `--backend` flags continue to work. Scheduled workers do not emit routine progress; a Context Drop report is treated as intentional user-facing output and delivered verbatim to the configured private chat.
 - `command` executes an exact argv array directly, never through a shell. `--cwd` must be an existing absolute directory. Repeat `--command` once per argv element. This is appropriate for versioned digest/workflow scripts.
 - `watch` polls an explicit backend pane (`--watch-pane`) or stable live task name (`--watch-target`). It never launches an agent and notifies only when terminal/blocking/missing state changes.
 
@@ -22,7 +22,9 @@ For long agent workflows, keep the instructions in a versioned repository file a
 
 ## Lifecycle and safety
 
-Jobs use `queued`, `running`, `completed`, `failed`, `timed_out`, or `skipped`, with durable occurrence keys and start/finish timestamps. The default/latest missed-run policy coalesces missed intervals. `overlap=skip` prevents a new occurrence while a queued/running job exists and records the skipped occurrence. `queue` and `replace` are rejected until safe cancellation semantics exist.
+Jobs use `queued`, `running`, `completed`, `failed`, `timed_out`, or `skipped`, with durable occurrence keys and start/finish timestamps. Agent jobs also expose delivery state: `pending`, `delivered`, `no_report`, `delivery_unknown`, or failure-notice state. `completed` describes worker lifecycle; it does not imply delivery unless the delivery field says so. The default/latest missed-run policy coalesces missed intervals. `overlap=skip` prevents a new occurrence while a queued/running job exists and records the skipped occurrence. `queue` and `replace` are rejected until safe cancellation semantics exist.
+
+A scheduled worker that uses `context-drop report` should send exactly one concise final user-facing message. Context Drop coalesces unsent reports from the same schedule run and waits for the worker to finish before delivery, preventing start/progress chatter from leaking into chat. A workflow that sends directly with another messaging tool must not also report the same result; that external delivery is outside Context Drop's report receipt tracking.
 
 Commands support context-enforced `--timeout`, up to ten `--retries`, consecutive failure tracking, and `--auto-pause-after`. Agent jobs remain running while their managed runtime task is live and are reconciled from live state.
 

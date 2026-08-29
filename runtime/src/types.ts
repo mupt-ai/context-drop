@@ -72,6 +72,11 @@ export interface ParentReport {
   leaseUntil?: string;
   deliveredAt?: string;
   lifecycleOnly?: boolean;
+  lifecycleStatus?: "completed" | "failed";
+  deliveryAttempts?: number;
+  lastDeliveryError?: string;
+  nextAttemptAt?: string;
+  abandonedAt?: string;
   challengeConsumedAt?: string;
   challengeReservationId?: string;
   challengeReservationUntil?: string;

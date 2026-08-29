@@ -182,6 +182,23 @@ func TestHistoryUsesScopedArgvAndFilters(t *testing.T) {
 	}
 }
 
+func TestConversationHistoryIncludesSameChatOutboundAndExcludesOtherChats(t *testing.T) {
+	cfg := testConfig(t)
+	payload, _ := json.Marshal([]map[string]any{
+		{"id": "incoming", "text": "hello", "chat_id": cfg.ChatID, "is_from_me": false, "created_at": "2024-01-01"},
+		{"id": "self", "text": "question", "chat_id": cfg.ChatID, "is_from_me": true, "created_at": "2024-01-02"},
+		{"id": "other", "text": "ignore", "chat_id": "other", "is_from_me": true, "created_at": "2024-01-03"},
+	})
+	adapter := Adapter{Config: cfg, Commander: &fakeCommander{results: []CommandResult{{Stdout: payload}}}}
+	messages, err := adapter.ConversationHistory(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 2 || messages[0].ID != "incoming" || messages[1].ID != "self" || !messages[1].FromMe {
+		t.Fatalf("messages=%#v", messages)
+	}
+}
+
 func TestTrustedResponderPromptEnablesOrchestration(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.Trusted = true
@@ -219,6 +236,22 @@ func TestWarmPersistentResponderUsesIncrementalPromptAndKeepsMemoryAvailable(t *
 	for _, want := range []string{memoryPath, "Incoming iMessage ID 42", "hello"} {
 		if !strings.Contains(responder.prompt, want) {
 			t.Fatalf("warm prompt missing %q: %q", want, responder.prompt)
+		}
+	}
+}
+
+func TestWarmPromptIncludesRecentDeterministicOutboundMessages(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Trusted = true
+	responder := &fakePersistentResponder{}
+	adapter := Adapter{Config: cfg, PersistentResponder: responder}
+	message := Message{ID: "43", Text: "what did you just ask?", RecentOutbound: []ContextMessage{{Text: "What did you eat and when?", CreatedAt: "2026-08-29T04:00:00Z", Source: "daily-meal-checkin"}}}
+	if _, err := adapter.RespondMeasured(context.Background(), message); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Recent messages that this daemon verifiably sent", "What did you eat and when?", "daily-meal-checkin"} {
+		if !strings.Contains(responder.prompt, want) {
+			t.Fatalf("prompt missing %q: %q", want, responder.prompt)
 		}
 	}
 }

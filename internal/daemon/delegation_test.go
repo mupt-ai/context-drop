@@ -28,6 +28,7 @@ type fakeDelegationRuntime struct {
 	issued          int
 	reports         []runtimeclient.ParentReport
 	leased          map[string]bool
+	abandoned       map[string]bool
 	finishDelivered []bool
 	finishedOwners  [][2]string
 	confirmed       string
@@ -36,6 +37,7 @@ type fakeDelegationRuntime struct {
 	autoOutcome     string
 	autoErr         error
 	autoCalls       int
+	finishFailures  int
 }
 
 func (f *fakeDelegationRuntime) Health(context.Context) error {
@@ -58,7 +60,7 @@ func (f *fakeDelegationRuntime) LeaseReport(_ context.Context, router, chat stri
 		f.leased = map[string]bool{}
 	}
 	for _, r := range f.reports {
-		if r.RouterID == router && r.ChatID == chat && !f.leased[r.ID] {
+		if r.RouterID == router && r.ChatID == chat && !f.leased[r.ID] && !f.abandoned[r.ID] {
 			f.leased[r.ID] = true
 			r.LeaseID = "lease"
 			return r, true, nil
@@ -74,8 +76,19 @@ func (f *fakeDelegationRuntime) FinishReportWithError(_ context.Context, report 
 	defer f.mu.Unlock()
 	f.finishDelivered = append(f.finishDelivered, delivered)
 	f.finishedOwners = append(f.finishedOwners, [2]string{routerID, chatID})
+	if f.finishFailures > 0 {
+		f.finishFailures--
+		return errors.New("finish failed")
+	}
 	if !delivered {
-		delete(f.leased, report.ID)
+		if errorClass == "ambiguous" || errorClass == "permanent" {
+			if f.abandoned == nil {
+				f.abandoned = map[string]bool{}
+			}
+			f.abandoned[report.ID] = true
+		} else {
+			delete(f.leased, report.ID)
+		}
 	}
 	return nil
 }
@@ -140,12 +153,12 @@ func TestClassifyDeliveryError(t *testing.T) {
 	}{
 		{name: "success", want: ""},
 		{name: "responder timeout", respondErr: context.DeadlineExceeded, sendErr: context.DeadlineExceeded, want: "timeout"},
-		{name: "send timeout", sendErr: context.DeadlineExceeded, want: "timeout"},
-		{name: "permanent client HTTP", sendErr: &runtimeclient.HTTPError{StatusCode: http.StatusBadRequest}, want: "permanent"},
-		{name: "request timeout retries", sendErr: &runtimeclient.HTTPError{StatusCode: http.StatusRequestTimeout}, want: "transient"},
-		{name: "rate limit retries", sendErr: &runtimeclient.HTTPError{StatusCode: http.StatusTooManyRequests}, want: "transient"},
-		{name: "server error retries", sendErr: &runtimeclient.HTTPError{StatusCode: http.StatusBadGateway}, want: "transient"},
-		{name: "unknown retries", sendErr: errors.New("network unavailable"), want: "transient"},
+		{name: "send timeout is ambiguous", sendErr: context.DeadlineExceeded, want: "ambiguous"},
+		{name: "client error after send is ambiguous", sendErr: &runtimeclient.HTTPError{StatusCode: http.StatusBadRequest}, want: "ambiguous"},
+		{name: "request timeout after send is ambiguous", sendErr: &runtimeclient.HTTPError{StatusCode: http.StatusRequestTimeout}, want: "ambiguous"},
+		{name: "rate limit after send is ambiguous", sendErr: &runtimeclient.HTTPError{StatusCode: http.StatusTooManyRequests}, want: "ambiguous"},
+		{name: "server error after send is ambiguous", sendErr: &runtimeclient.HTTPError{StatusCode: http.StatusBadGateway}, want: "ambiguous"},
+		{name: "unknown send failure is ambiguous", sendErr: errors.New("network unavailable"), want: "ambiguous"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -156,7 +169,7 @@ func TestClassifyDeliveryError(t *testing.T) {
 	}
 }
 
-func TestReportDeliveryRetriesAfterSendFailureAndScopesChat(t *testing.T) {
+func TestReportDeliveryDoesNotRetryAfterAmbiguousSendFailureAndScopesChat(t *testing.T) {
 	backend := &fakeDelegationRuntime{reports: []runtimeclient.ParentReport{{ID: "r-other", RouterID: imessageRouterID, ChatID: "other", RunID: "x", Kind: "completed", Message: "secret"}, {ID: "r1", RouterID: imessageRouterID, ChatID: "chat", RunID: "run_123", Kind: "failed", Message: "bad\n\x1b[31m\u202Ething"}}}
 	commander := &reportCommander{fail: 1}
 	cfg := imessage.Defaults()
@@ -168,15 +181,15 @@ func TestReportDeliveryRetriesAfterSendFailureAndScopesChat(t *testing.T) {
 	runner := &Runner{Delegation: backend, IMessage: &imessage.Adapter{Config: cfg, Commander: commander, PersistentResponder: responder}}
 	runner.deliverReportsOnce(context.Background())
 	runner.deliverReportsOnce(context.Background())
-	if len(commander.sends) != 1 || commander.sends[0] != "router reply" || len(responder.prompts) != 2 || strings.Contains(responder.prompts[1], "\x1b") || strings.Contains(responder.prompts[1], "\u202E") || strings.Contains(commander.sends[0], "CONTEXT DROP DAEMON") {
-		t.Fatalf("sends=%q", commander.sends)
+	if len(commander.sends) != 0 || len(responder.prompts) != 1 || strings.Contains(responder.prompts[0], "\x1b") || strings.Contains(responder.prompts[0], "\u202E") {
+		t.Fatalf("sends=%q prompts=%q", commander.sends, responder.prompts)
 	}
-	if len(backend.finishDelivered) != 2 || backend.finishDelivered[0] || !backend.finishDelivered[1] {
+	if !reflect.DeepEqual(backend.finishDelivered, []bool{false}) {
 		t.Fatalf("finishes=%v", backend.finishDelivered)
 	}
 }
 
-func TestScheduleOwnedReportRoutesToConfiguredOrchestrator(t *testing.T) {
+func TestScheduleOwnedReportDeliversVerbatimWithoutPollutingOrchestrator(t *testing.T) {
 	backend := &fakeDelegationRuntime{reports: []runtimeclient.ParentReport{{ID: "schedule-report", RouterID: scheduleRouterID, ChatID: "chat", RunID: "run", Message: "scheduled work finished"}}}
 	commander := &reportCommander{}
 	cfg := imessage.Defaults()
@@ -184,8 +197,55 @@ func TestScheduleOwnedReportRoutesToConfiguredOrchestrator(t *testing.T) {
 	responder := &recordingResponder{}
 	runner := &Runner{Delegation: backend, IMessage: &imessage.Adapter{Config: cfg, Commander: commander, PersistentResponder: responder}}
 	runner.deliverReportsOnce(context.Background())
-	if len(responder.prompts) != 1 || !strings.Contains(responder.prompts[0], "scheduled work finished") || !reflect.DeepEqual(backend.finishedOwners, [][2]string{{scheduleRouterID, "chat"}}) || len(commander.sends) != 1 {
+	if len(responder.prompts) != 0 || !reflect.DeepEqual(backend.finishedOwners, [][2]string{{scheduleRouterID, "chat"}}) || !reflect.DeepEqual(commander.sends, []string{"scheduled work finished"}) {
 		t.Fatalf("prompts=%v owners=%v sends=%v", responder.prompts, backend.finishedOwners, commander.sends)
+	}
+}
+
+func TestScheduleOwnedReportRecordsVerifiedDelivery(t *testing.T) {
+	now := time.Now().UTC()
+	store := orchestrator.Store{Path: filepath.Join(t.TempDir(), "state.json")}
+	schedule := orchestrator.Schedule{Name: "meal", Type: orchestrator.ScheduleAgent, Agent: "mock", Repo: t.TempDir(), Prompt: "ask", Every: time.Hour, Enabled: true}
+	job := orchestrator.NewJobWithOccurrence(schedule, "running", "occurrence", now)
+	job.RuntimeRunID = "run-scheduled"
+	if err := store.Update(func(st *orchestrator.State) error { st.Jobs = append(st.Jobs, job); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	backend := &fakeDelegationRuntime{reports: []runtimeclient.ParentReport{{ID: "report-user", RouterID: scheduleRouterID, ChatID: "chat", RunID: "run-scheduled", Message: "What did you eat and when?"}}}
+	commander := &reportCommander{}
+	cfg := imessage.Defaults()
+	cfg.Enabled, cfg.RouterMode, cfg.ChatID, cfg.ImsgPath = true, true, "chat", "/bin/echo"
+	runner := &Runner{Store: store, Now: func() time.Time { return now }, Delegation: backend, IMessage: &imessage.Adapter{Config: cfg, Commander: commander, PersistentResponder: &recordingResponder{}}}
+	runner.deliverReportsOnce(context.Background())
+	state, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := state.Jobs[0]
+	if got.DeliveryStatus != "delivered" || got.DeliveryReportID != "report-user" || got.DeliveredAt == nil || !reflect.DeepEqual(commander.sends, []string{"What did you eat and when?"}) {
+		t.Fatalf("job=%#v sends=%v", got, commander.sends)
+	}
+}
+
+func TestDeliveredScheduleReportRetriesOnlyAckAfterReceipt(t *testing.T) {
+	now := time.Now().UTC()
+	store := orchestrator.Store{Path: filepath.Join(t.TempDir(), "state.json")}
+	schedule := orchestrator.Schedule{Name: "meal", Type: orchestrator.ScheduleAgent, Agent: "mock", Repo: t.TempDir(), Prompt: "ask", Every: time.Hour, Enabled: true}
+	job := orchestrator.NewJobWithOccurrence(schedule, "running", "occurrence", now)
+	job.RuntimeRunID = "run-scheduled"
+	if err := store.Update(func(st *orchestrator.State) error { st.Jobs = append(st.Jobs, job); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	backend := &fakeDelegationRuntime{finishFailures: 1, reports: []runtimeclient.ParentReport{{ID: "report-user", RouterID: scheduleRouterID, ChatID: "chat", RunID: "run-scheduled", Message: "What did you eat and when?"}}}
+	commander := &reportCommander{}
+	cfg := imessage.Defaults()
+	cfg.Enabled, cfg.RouterMode, cfg.ChatID, cfg.ImsgPath = true, true, "chat", "/bin/echo"
+	runner := &Runner{Store: store, Now: func() time.Time { return now }, Delegation: backend, IMessage: &imessage.Adapter{Config: cfg, Commander: commander, PersistentResponder: &recordingResponder{}}}
+	runner.deliverReportsOnce(context.Background())
+	backend.leased = map[string]bool{}
+	runner.deliverReportsOnce(context.Background())
+	if !reflect.DeepEqual(commander.sends, []string{"What did you eat and when?"}) || !reflect.DeepEqual(backend.finishDelivered, []bool{true, true}) {
+		t.Fatalf("sends=%v finishes=%v", commander.sends, backend.finishDelivered)
 	}
 }
 
@@ -216,9 +276,37 @@ func TestScheduleLifecycleReportCompletesJobWithoutSendingMessage(t *testing.T) 
 	}
 }
 
-func TestReportDeliveryUsesHTTPLeaseReleaseAndAck(t *testing.T) {
+func TestScheduleFailureLifecycleMarksFailureAndSendsOneNotice(t *testing.T) {
+	now := time.Now().UTC()
+	store := orchestrator.Store{Path: filepath.Join(t.TempDir(), "state.json")}
+	schedule := orchestrator.Schedule{Name: "meal", Type: orchestrator.ScheduleAgent, Agent: "mock", Repo: t.TempDir(), Prompt: "ask", Every: time.Hour, Enabled: true}
+	job := orchestrator.NewJobWithOccurrence(schedule, "running", "occurrence", now)
+	job.RuntimeRunID = "run-scheduled"
+	if err := store.Update(func(st *orchestrator.State) error {
+		st.Schedules = append(st.Schedules, schedule)
+		st.Jobs = append(st.Jobs, job)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	backend := &fakeDelegationRuntime{reports: []runtimeclient.ParentReport{{ID: "failure", RouterID: scheduleRouterID, ChatID: "chat", RunID: "run-scheduled", Message: "The worker pane closed without sending a final report.", LifecycleOnly: true, LifecycleStatus: "failed"}}}
+	commander := &reportCommander{}
+	cfg := imessage.Defaults()
+	cfg.Enabled, cfg.RouterMode, cfg.ChatID, cfg.ImsgPath = true, true, "chat", "/bin/echo"
+	runner := &Runner{Store: store, Now: func() time.Time { return now }, Delegation: backend, IMessage: &imessage.Adapter{Config: cfg, Commander: commander, PersistentResponder: &recordingResponder{}}}
+	runner.deliverReportsOnce(context.Background())
+	state, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Jobs[0].Status != "failed" || state.Jobs[0].DeliveryStatus != "failure_notice_delivered" || state.Schedules[0].ConsecutiveFailures != 1 || len(commander.sends) != 1 || !strings.Contains(commander.sends[0], "Schedule meal failed") {
+		t.Fatalf("state=%#v sends=%v", state, commander.sends)
+	}
+}
+
+func TestReportDeliveryUsesHTTPLeaseAndAbandonsAmbiguousSend(t *testing.T) {
 	var mu sync.Mutex
-	leased, delivered, releases, acks := false, false, 0, 0
+	leased, delivered, abandoned, releases, acks := false, false, false, 0, 0
 	var releaseErrorClass string
 	var leaseSeconds int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -235,7 +323,7 @@ func TestReportDeliveryUsesHTTPLeaseReleaseAndAck(t *testing.T) {
 			}
 			_ = json.NewDecoder(req.Body).Decode(&input)
 			leaseSeconds = input.LeaseSeconds
-			if delivered || leased {
+			if delivered || abandoned || leased {
 				_ = json.NewEncoder(w).Encode(map[string]any{})
 				return
 			}
@@ -247,6 +335,7 @@ func TestReportDeliveryUsesHTTPLeaseReleaseAndAck(t *testing.T) {
 			}
 			_ = json.NewDecoder(req.Body).Decode(&input)
 			releaseErrorClass = input.ErrorClass
+			abandoned = input.ErrorClass == "ambiguous" || input.ErrorClass == "permanent"
 			leased = false
 			releases++
 			_ = json.NewEncoder(w).Encode(map[string]any{"report": map[string]any{"id": "r1"}})
@@ -270,7 +359,7 @@ func TestReportDeliveryUsesHTTPLeaseReleaseAndAck(t *testing.T) {
 	runner := &Runner{Delegation: client, IMessage: &imessage.Adapter{Config: cfg, Commander: commander, PersistentResponder: &recordingResponder{}}}
 	runner.deliverReportsOnce(context.Background())
 	runner.deliverReportsOnce(context.Background())
-	if releases != 1 || acks != 1 || len(commander.sends) != 1 || releaseErrorClass != "transient" || leaseSeconds < 20*60+cfg.SendTimeoutSeconds {
+	if releases != 1 || acks != 0 || len(commander.sends) != 0 || releaseErrorClass != "ambiguous" || leaseSeconds < 20*60+cfg.SendTimeoutSeconds {
 		t.Fatalf("releases=%d acks=%d errorClass=%q leaseSeconds=%d sends=%v", releases, acks, releaseErrorClass, leaseSeconds, commander.sends)
 	}
 }

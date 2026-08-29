@@ -207,7 +207,7 @@ func waitForMessageJobs(t *testing.T, store orchestrator.Store, ids ...string) {
 	}
 }
 
-func TestMessageWatchRestartsFromDurableCursorAndFiltersOutgoing(t *testing.T) {
+func TestMessageWatchRestartsFromDurableCursorAndTracksOutgoingWithoutReplying(t *testing.T) {
 	cfg := messageTestConfig(t)
 	store := orchestrator.Store{Path: filepath.Join(t.TempDir(), "state.json")}
 	if err := store.Update(func(st *orchestrator.State) error {
@@ -250,8 +250,12 @@ func TestMessageWatchRestartsFromDurableCursorAndFiltersOutgoing(t *testing.T) {
 	if state.IMessageCursor != 103 {
 		t.Fatalf("cursor = %d", state.IMessageCursor)
 	}
-	if state.SeenMessageIDs["101"] != "" || state.MessageJobs["101"].MessageID != "" {
-		t.Fatalf("outgoing message was claimed: %#v", state.MessageJobs["101"])
+	foundOutgoing := false
+	for _, outbound := range state.RecentOutbound {
+		foundOutgoing = foundOutgoing || (outbound.MessageID == "101" && outbound.Text == "outgoing")
+	}
+	if state.SeenMessageIDs["101"] == "" || state.MessageJobs["101"].MessageID != "" || !foundOutgoing {
+		t.Fatalf("outgoing tracking is wrong: seen=%q job=%#v outbound=%#v", state.SeenMessageIDs["101"], state.MessageJobs["101"], state.RecentOutbound)
 	}
 	for _, id := range []string{"102", "103"} {
 		if state.MessageJobs[id].Status != "sent" {
@@ -264,6 +268,23 @@ func TestMessageWatchRestartsFromDurableCursorAndFiltersOutgoing(t *testing.T) {
 	commander.mu.Unlock()
 	if responds != 2 || sends != 2 {
 		t.Fatalf("responds=%d sends=%d", responds, sends)
+	}
+}
+
+func TestRecentOutboundSyncRecoversMessagesAlreadyPastCursor(t *testing.T) {
+	cfg := messageTestConfig(t)
+	store := orchestrator.Store{Path: filepath.Join(t.TempDir(), "state.json")}
+	commander := &messageCommander{history: []map[string]any{{"id": "101", "text": "What did you eat?", "chat_id": "1", "is_from_me": true, "created_at": "2026-08-29T05:00:00Z"}}}
+	runner := &Runner{Store: store, Now: func() time.Time { return time.Now().UTC() }, IMessage: &imessage.Adapter{Config: cfg, Commander: commander}}
+	if err := runner.syncRecentOutbound(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.RecentOutbound) != 1 || state.RecentOutbound[0].MessageID != "101" || state.RecentOutbound[0].Text != "What did you eat?" {
+		t.Fatalf("outbound=%#v", state.RecentOutbound)
 	}
 }
 
@@ -432,6 +453,13 @@ func TestOutgoingAndOtherChatNeverReachResponder(t *testing.T) {
 	runner.PollMessages(context.Background())
 	if commander.responds != 0 || len(commander.sends) != 0 {
 		t.Fatal("filtered message reached responder")
+	}
+	state, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.RecentOutbound) != 1 || state.RecentOutbound[0].Text != "self" || state.SeenMessageIDs["other"] != "" {
+		t.Fatalf("outbound=%#v seen-other=%q", state.RecentOutbound, state.SeenMessageIDs["other"])
 	}
 }
 

@@ -184,6 +184,20 @@ func TestValidateSchedule(t *testing.T) {
 	}
 }
 
+func TestRecordOutboundDeduplicatesDaemonSendAndObservedHistory(t *testing.T) {
+	now := time.Now().UTC()
+	st := State{}
+	RecordOutbound(&st, "", "What did you eat?", now, "scheduler")
+	RecordOutbound(&st, "11234", "What did you eat?", now.Add(time.Second), "imessage-watch")
+	if len(st.RecentOutbound) != 1 || st.RecentOutbound[0].MessageID != "11234" || st.RecentOutbound[0].Source != "scheduler" {
+		t.Fatalf("outbound=%#v", st.RecentOutbound)
+	}
+	RecordOutbound(&st, "11235", "A different message", now.Add(2*time.Second), "imessage-watch")
+	if len(st.RecentOutbound) != 2 {
+		t.Fatalf("outbound=%#v", st.RecentOutbound)
+	}
+}
+
 func TestStorePermissionsAndRetention(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "state.json")
 	store := Store{Path: path}

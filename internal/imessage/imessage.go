@@ -59,11 +59,18 @@ type Config struct {
 }
 
 type Message struct {
-	ID        string
+	ID             string
+	Text           string
+	CreatedAt      string
+	ChatID         string
+	FromMe         bool
+	RecentOutbound []ContextMessage
+}
+
+type ContextMessage struct {
 	Text      string
 	CreatedAt string
-	ChatID    string
-	FromMe    bool
+	Source    string
 }
 
 type CommandResult struct {
@@ -366,6 +373,20 @@ func Validate(cfg Config) error {
 }
 
 func (a Adapter) History(ctx context.Context) ([]Message, error) {
+	messages, err := a.ConversationHistory(ctx)
+	if err != nil {
+		return nil, err
+	}
+	filtered := messages[:0]
+	for _, message := range messages {
+		if incoming, ok := a.IncomingMessage(message); ok {
+			filtered = append(filtered, incoming)
+		}
+	}
+	return filtered, nil
+}
+
+func (a Adapter) ConversationHistory(ctx context.Context) ([]Message, error) {
 	commander := a.Commander
 	if commander == nil {
 		commander = ExecCommander{}
@@ -383,23 +404,28 @@ func (a Adapter) History(ctx context.Context) ([]Message, error) {
 	}
 	filtered := messages[:0]
 	for _, message := range messages {
-		if incoming, ok := a.IncomingMessage(message); ok {
-			filtered = append(filtered, incoming)
+		if normalized, ok := a.ChatMessage(message); ok {
+			filtered = append(filtered, normalized)
 		}
 	}
 	sort.SliceStable(filtered, func(i, j int) bool { return filtered[i].CreatedAt < filtered[j].CreatedAt })
 	return filtered, nil
 }
 
-func (a Adapter) IncomingMessage(message Message) (Message, bool) {
-	if message.FromMe || strings.TrimSpace(message.Text) == "" {
-		return Message{}, false
-	}
-	if message.ChatID != "" && message.ChatID != a.Config.ChatID {
+func (a Adapter) ChatMessage(message Message) (Message, bool) {
+	if strings.TrimSpace(message.Text) == "" || (message.ChatID != "" && message.ChatID != a.Config.ChatID) {
 		return Message{}, false
 	}
 	if len(message.Text) > a.Config.MaxMessageBytes {
 		message.Text = message.Text[:a.Config.MaxMessageBytes]
+	}
+	return message, true
+}
+
+func (a Adapter) IncomingMessage(message Message) (Message, bool) {
+	message, ok := a.ChatMessage(message)
+	if !ok || message.FromMe {
+		return Message{}, false
 	}
 	return message, true
 }
@@ -537,6 +563,7 @@ func (a Adapter) buildPrompt(message Message, includeDurableContext bool) (strin
 			}
 			prompt += "\nOrchestrator instructions:\n\n" + string(body) + "\n"
 		}
+		prompt += recentOutboundPrompt(message.RecentOutbound)
 		for _, contextFile := range []struct {
 			label string
 			path  string
@@ -547,6 +574,7 @@ func (a Adapter) buildPrompt(message Message, includeDurableContext bool) (strin
 		}
 		return prompt + "\nIncoming iMessage ID " + message.ID + ":\n\n" + message.Text + "\n", nil
 	}
+	prompt += recentOutboundPrompt(message.RecentOutbound)
 	for _, contextFile := range []struct {
 		label string
 		path  string
@@ -575,6 +603,28 @@ func (a Adapter) buildPrompt(message Message, includeDurableContext bool) (strin
 	}
 	prompt += "\nThe incoming text:\n\n" + message.Text + "\n"
 	return prompt, nil
+}
+
+func recentOutboundPrompt(messages []ContextMessage) string {
+	if len(messages) == 0 {
+		return ""
+	}
+	if len(messages) > 8 {
+		messages = messages[len(messages)-8:]
+	}
+	var b strings.Builder
+	b.WriteString("\nRecent messages that this daemon verifiably sent to the same chat (including deterministic schedule deliveries that are not Pi turns):\n")
+	for _, message := range messages {
+		text := strings.TrimSpace(message.Text)
+		if text == "" {
+			continue
+		}
+		if len(text) > 2000 {
+			text = text[:2000]
+		}
+		fmt.Fprintf(&b, "- [%s; %s] %s\n", message.CreatedAt, message.Source, text)
+	}
+	return b.String()
 }
 
 // RespondToWorkerReport delivers an untrusted worker report as a normal turn to

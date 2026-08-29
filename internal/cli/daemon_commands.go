@@ -221,11 +221,14 @@ func newScheduleCommand() *cobra.Command {
 			if s.Cron != "" {
 				cadence = fmt.Sprintf("%s (%s)", s.Cron, s.Timezone)
 			}
-			jobStatus := "none"
+			jobStatus, deliveryStatus := "none", "n/a"
 			if job, ok := latest[s.Name]; ok {
 				jobStatus = job.Status
+				if job.DeliveryStatus != "" {
+					deliveryStatus = job.DeliveryStatus
+				}
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\ttype=%s\toverlap=%s\tbackend=%s\tagent=%s\ttarget=%s\tenabled=%t\tfailures=%d\tjob=%s\tnext=%s\n", s.Name, cadence, s.Type, s.Overlap, s.Backend, s.Agent, s.WatchPane+s.WatchTarget, s.Enabled, s.ConsecutiveFailures, jobStatus, s.NextRunAt.Format(time.RFC3339))
+			fmt.Fprintf(cmd.OutOrStdout(), "%s\t%s\ttype=%s\toverlap=%s\tbackend=%s\tagent=%s\ttarget=%s\tenabled=%t\tfailures=%d\tjob=%s\tdelivery=%s\tnext=%s\n", s.Name, cadence, s.Type, s.Overlap, s.Backend, s.Agent, s.WatchPane+s.WatchTarget, s.Enabled, s.ConsecutiveFailures, jobStatus, deliveryStatus, s.NextRunAt.Format(time.RFC3339))
 		}
 		return nil
 	}}

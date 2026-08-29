@@ -16,10 +16,11 @@ import (
 )
 
 const (
-	MaxJobs         = 1000
-	MaxSeenMessages = 5000
-	MaxMessageJobs  = 1000
-	MaxPromptBytes  = 16000
+	MaxJobs             = 1000
+	MaxSeenMessages     = 5000
+	MaxMessageJobs      = 1000
+	MaxReportDeliveries = 1000
+	MaxPromptBytes      = 16000
 )
 
 const (
@@ -58,21 +59,40 @@ type Schedule struct {
 }
 
 type Job struct {
-	ID            string     `json:"id"`
-	OccurrenceKey string     `json:"occurrence_key"`
-	ScheduleName  string     `json:"schedule_name"`
-	ScheduleType  string     `json:"schedule_type"`
-	Agent         string     `json:"agent,omitempty"`
-	Repo          string     `json:"repo,omitempty"`
-	Backend       string     `json:"backend,omitempty"`
-	RuntimeRunID  string     `json:"runtime_run_id,omitempty"`
-	Status        string     `json:"status"`
-	Outcome       string     `json:"outcome,omitempty"` // legacy compatibility
-	Attempt       int        `json:"attempt,omitempty"`
-	Error         string     `json:"error,omitempty"`
-	CreatedAt     time.Time  `json:"created_at"`
-	StartedAt     *time.Time `json:"started_at,omitempty"`
-	FinishedAt    *time.Time `json:"finished_at,omitempty"`
+	ID               string     `json:"id"`
+	OccurrenceKey    string     `json:"occurrence_key"`
+	ScheduleName     string     `json:"schedule_name"`
+	ScheduleType     string     `json:"schedule_type"`
+	Agent            string     `json:"agent,omitempty"`
+	Repo             string     `json:"repo,omitempty"`
+	Backend          string     `json:"backend,omitempty"`
+	RuntimeRunID     string     `json:"runtime_run_id,omitempty"`
+	Status           string     `json:"status"`
+	Outcome          string     `json:"outcome,omitempty"` // legacy compatibility
+	Attempt          int        `json:"attempt,omitempty"`
+	Error            string     `json:"error,omitempty"`
+	DeliveryStatus   string     `json:"delivery_status,omitempty"`
+	DeliveryReportID string     `json:"delivery_report_id,omitempty"`
+	DeliveryError    string     `json:"delivery_error,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	StartedAt        *time.Time `json:"started_at,omitempty"`
+	FinishedAt       *time.Time `json:"finished_at,omitempty"`
+	DeliveredAt      *time.Time `json:"delivered_at,omitempty"`
+}
+
+type OutboundMessage struct {
+	MessageID string    `json:"message_id,omitempty"`
+	Text      string    `json:"text"`
+	SentAt    time.Time `json:"sent_at"`
+	Source    string    `json:"source"`
+}
+
+type ReportDelivery struct {
+	ReportID    string    `json:"report_id"`
+	RunID       string    `json:"run_id"`
+	RouterID    string    `json:"router_id"`
+	HandledAt   time.Time `json:"handled_at"`
+	UserVisible bool      `json:"user_visible"`
 }
 
 type MessageJob struct {
@@ -113,16 +133,18 @@ type ModelRoundLatency struct {
 }
 
 type State struct {
-	Schedules           []Schedule            `json:"schedules"`
-	Jobs                []Job                 `json:"jobs"`
-	LastRuntimeError    string                `json:"last_runtime_error,omitempty"`
-	IMessageInitialized bool                  `json:"imessage_initialized,omitempty"`
-	IMessageChatID      string                `json:"imessage_chat_id,omitempty"`
-	IMessageCursor      int64                 `json:"imessage_cursor,omitempty"`
-	SeenMessageIDs      map[string]string     `json:"seen_message_ids,omitempty"`
-	MessageJobs         map[string]MessageJob `json:"message_jobs,omitempty"`
-	LastMessagePollAt   *time.Time            `json:"last_message_poll_at,omitempty"`
-	LastMessageError    string                `json:"last_message_error,omitempty"`
+	Schedules           []Schedule                `json:"schedules"`
+	Jobs                []Job                     `json:"jobs"`
+	LastRuntimeError    string                    `json:"last_runtime_error,omitempty"`
+	IMessageInitialized bool                      `json:"imessage_initialized,omitempty"`
+	IMessageChatID      string                    `json:"imessage_chat_id,omitempty"`
+	IMessageCursor      int64                     `json:"imessage_cursor,omitempty"`
+	SeenMessageIDs      map[string]string         `json:"seen_message_ids,omitempty"`
+	MessageJobs         map[string]MessageJob     `json:"message_jobs,omitempty"`
+	LastMessagePollAt   *time.Time                `json:"last_message_poll_at,omitempty"`
+	LastMessageError    string                    `json:"last_message_error,omitempty"`
+	RecentOutbound      []OutboundMessage         `json:"recent_outbound,omitempty"`
+	ReportDeliveries    map[string]ReportDelivery `json:"report_deliveries,omitempty"`
 }
 
 type Store struct{ Path string }
@@ -158,6 +180,9 @@ func (s Store) Load() (State, error) {
 	}
 	if st.MessageJobs == nil {
 		st.MessageJobs = map[string]MessageJob{}
+	}
+	if st.ReportDeliveries == nil {
+		st.ReportDeliveries = map[string]ReportDelivery{}
 	}
 	normalizeState(&st)
 	return st, nil
@@ -300,6 +325,28 @@ func pruneState(st *State) {
 	if st.MessageJobs == nil {
 		st.MessageJobs = map[string]MessageJob{}
 	}
+	if len(st.RecentOutbound) > 20 {
+		st.RecentOutbound = st.RecentOutbound[len(st.RecentOutbound)-20:]
+	}
+	if st.ReportDeliveries == nil {
+		st.ReportDeliveries = map[string]ReportDelivery{}
+	}
+	if len(st.ReportDeliveries) > MaxReportDeliveries {
+		type deliveryItem struct {
+			id string
+			at time.Time
+		}
+		items := make([]deliveryItem, 0, len(st.ReportDeliveries))
+		for id, delivery := range st.ReportDeliveries {
+			items = append(items, deliveryItem{id: id, at: delivery.HandledAt})
+		}
+		sort.Slice(items, func(i, j int) bool { return items[i].at.After(items[j].at) })
+		keep := make(map[string]ReportDelivery, MaxReportDeliveries)
+		for _, item := range items[:MaxReportDeliveries] {
+			keep[item.id] = st.ReportDeliveries[item.id]
+		}
+		st.ReportDeliveries = keep
+	}
 	if len(st.MessageJobs) > MaxMessageJobs {
 		type item struct {
 			id string
@@ -316,6 +363,29 @@ func pruneState(st *State) {
 		}
 		st.MessageJobs = keep
 	}
+}
+
+func RecordOutbound(st *State, messageID, text string, sentAt time.Time, source string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	for i := len(st.RecentOutbound) - 1; i >= 0; i-- {
+		outbound := &st.RecentOutbound[i]
+		if messageID != "" && outbound.MessageID == messageID {
+			return
+		}
+		if outbound.Text == text && sentAt.Sub(outbound.SentAt).Abs() <= 2*time.Minute {
+			if outbound.MessageID == "" {
+				outbound.MessageID = messageID
+			}
+			if outbound.Source == "" {
+				outbound.Source = source
+			}
+			return
+		}
+	}
+	st.RecentOutbound = append(st.RecentOutbound, OutboundMessage{MessageID: messageID, Text: text, SentAt: sentAt, Source: source})
 }
 
 func newestEntries(entries map[string]string, limit int) map[string]string {
@@ -576,6 +646,9 @@ func NewJobWithOccurrence(schedule Schedule, status, occurrence string, now time
 	var b [8]byte
 	_, _ = rand.Read(b[:])
 	job := Job{ID: "job_" + hex.EncodeToString(b[:]), OccurrenceKey: schedule.Name + ":" + occurrence, ScheduleName: schedule.Name, ScheduleType: schedule.Type, Agent: schedule.Agent, Repo: schedule.Repo, Backend: schedule.Backend, Status: status, Outcome: status, CreatedAt: now}
+	if schedule.Type == ScheduleAgent && (status == "queued" || status == "running") {
+		job.DeliveryStatus = "pending"
+	}
 	if status == "running" {
 		at := now
 		job.StartedAt = &at

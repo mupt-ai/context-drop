@@ -30,6 +30,10 @@ Install and authenticate a supported agent CLI (`pi`, `codex`, or `claude`), the
 
 Verify `HERDR_ENV=1`, that the configured `default` session is running, and that the configured Herdr executable is valid. Choose tmux during initial runtime creation with `CONTEXT_DROP_BACKEND=tmux` if Herdr is not available.
 
+## A schedule completed but no message arrived
+
+Run `context-drop schedule list` and inspect both `job=` and `delivery=`. `job=completed delivery=delivered` means Context Drop received an iMessage send confirmation and persisted a receipt. `delivery=no_report` means the worker ended without a Context Drop report; check whether that workflow intentionally sends through another messaging tool. `delivery=delivery_unknown` means a send was attempted but its external outcome was ambiguous, so Context Drop did not retry and risk a duplicate.
+
 ## iMessage is not configured
 
 The public CLI does not include adapter setup commands. Verify the private `imessage/config.json`, its executable paths and permissions, macOS Messages access for `imsg`, then restart the daemon. The current release does not implement Telegram.
