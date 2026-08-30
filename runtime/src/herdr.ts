@@ -105,6 +105,14 @@ export function readHerdrAgent(config: RuntimeConfig, paneId: string, lines: num
   return result.stdout ?? "";
 }
 
+export function readHerdrPane(config: RuntimeConfig, run: RunRecord, lines: number, runner: CommandRunner = systemRunner): string {
+  if (!run.herdrSession || !run.herdrPane) throw new Error("task has no persisted Herdr pane");
+  if (!Number.isInteger(lines) || lines < 1 || lines > 500) throw new Error("lines must be between 1 and 500");
+  const result = runner.run(config.herdrPath || "herdr", ["--session", run.herdrSession, "pane", "read", run.herdrPane, "--source", "recent-unwrapped", "--lines", String(lines), "--format", "text"]);
+  if (result.status !== 0) throw new Error(`herdr pane read failed: ${result.stderr || "unknown error"}`);
+  return result.stdout ?? "";
+}
+
 export function herdrAgentStatus(config: RuntimeConfig, paneId: string, runner: CommandRunner = systemRunner): { paneId: string; status: string } {
   const agent = requireLiveAgent(config, paneId, runner);
   if (!new Set(["idle", "working", "blocked", "done", "unknown"]).has(agent.status)) throw new Error("Herdr returned an invalid lifecycle status");
@@ -352,6 +360,8 @@ export function launchInHerdr(config: RuntimeConfig, request: LaunchRequest, id:
     herdrTab: location.tab,
     herdrPane: location.pane,
     lane,
+    finalMarker: request.finalMarker,
+    finalOutputPath: request.finalOutputPath,
     status: "running",
     createdAt: new Date().toISOString(),
   };

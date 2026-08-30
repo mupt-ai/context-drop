@@ -38,6 +38,8 @@ export interface RunRecord {
   lane?: DelegationLane;
   status: "running" | "exited" | "unknown";
   ownsPane?: boolean;
+  finalMarker?: string;
+  finalOutputPath?: string;
   createdAt: string;
 }
 
@@ -51,6 +53,8 @@ export interface LaunchRequest {
   lane?: DelegationLane;
   environment?: Record<string, string>;
   extension?: string;
+  finalMarker?: string;
+  finalOutputPath?: string;
 }
 
 export type ParentReportKind = "started" | "progress" | "needs_user" | "completed" | "failed";

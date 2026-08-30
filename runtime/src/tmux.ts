@@ -27,6 +27,14 @@ export function continueInTmux(config: RuntimeConfig, run: RunRecord, message: s
   if (entered.status !== 0) throw new LaunchOutcomeUnknownError(`delegated task follow-up outcome is unknown: ${entered.stderr || "Enter failed"}`);
 }
 
+export function readTmuxWorker(run: RunRecord, runner: CommandRunner = systemRunner): string {
+  const target = run.tmuxPane || (run.tmuxSession && run.tmuxWindow ? `${run.tmuxSession}:${run.tmuxWindow}` : "");
+  if (!target) throw new Error("task has no persisted tmux pane");
+  const captured = runner.run("tmux", ["capture-pane", "-p", "-J", "-S", "-500", "-t", target]);
+  if (captured.status !== 0) throw new Error(`tmux pane capture failed: ${captured.stderr || "unknown error"}`);
+  return captured.stdout ?? "";
+}
+
 export function closeTmuxWorker(config: RuntimeConfig, run: RunRecord, runner: CommandRunner = systemRunner): boolean {
   if (run.backend !== "tmux" || !run.tmuxSession || !run.tmuxWindow) return false;
   const target = `${run.tmuxSession}:${run.tmuxWindow}`;
@@ -46,6 +54,8 @@ export function launchInTmux(config: RuntimeConfig, request: LaunchRequest, id: 
     result = runner.run("tmux", ["new-window", "-d", "-t", config.tmuxSession, "-n", window, "-c", request.repo, ...envArgs, "--", ...argv]);
   }
   if (result.status !== 0) throw new LaunchOutcomeUnknownError(`tmux launch outcome is unknown: ${result.stderr || "unknown error"}`);
+  const retained = runner.run("tmux", ["set-option", "-t", `${config.tmuxSession}:${window}`, "remain-on-exit", "on"]);
+  if (retained.status !== 0) throw new LaunchOutcomeUnknownError(`tmux output retention outcome is unknown: ${retained.stderr || "set-option failed"}`);
   const pane = runner.run("tmux", ["list-panes", "-t", `${config.tmuxSession}:${window}`, "-F", "#{pane_id}"]);
   const tmuxPane = pane.status === 0 ? (pane.stdout ?? "").trim().split("\n")[0] : undefined;
   if (!tmuxPane?.startsWith("%")) throw new LaunchOutcomeUnknownError(`tmux launch pane outcome is unknown: ${pane.stderr || "pane ID unavailable"}`);
@@ -59,6 +69,8 @@ export function launchInTmux(config: RuntimeConfig, request: LaunchRequest, id: 
     tmuxWindow: window,
     tmuxPane,
     lane: request.lane,
+    finalMarker: request.finalMarker,
+    finalOutputPath: request.finalOutputPath,
     status: "running",
     createdAt: new Date().toISOString(),
   };

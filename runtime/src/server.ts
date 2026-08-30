@@ -1,13 +1,15 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { timingSafeEqual, randomBytes, createHash } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, mkdirSync, writeFileSync, chmodSync, renameSync, rmSync, statSync, readdirSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { DelegationLane, LaunchRequest, ParentReport, RunRecord, RuntimeConfig, ParentReportKind, SensitiveAction } from "./types.js";
 import { closeHerdrWorker, continueLiveHerdr, herdrAgentStatus, herdrTopology, launchInHerdr, listHerdrAgents, paneAlive, readHerdrAgent, resolveHerdrRepo } from "./herdr.js";
 import { LaunchOutcomeUnknownError, systemRunner, type CommandRunner } from "./launch.js";
 import { liveTaskStatus } from "./live_status.js";
 import { continuationPrompt, scheduledWorkerPrompt, workerPrompt, type WorkerAuthorization } from "./prompts.js";
 import { closeTmuxWorker, continueLiveTmux, launchInTmux } from "./tmux.js";
+import { captureWorkerFinal, finalResponseInstruction, normalizeDeliverableText, type CapturedWorkerFinal } from "./worker_final.js";
 
 const REPORT_KINDS = new Set<ParentReportKind>(["started", "progress", "needs_user", "completed", "failed"]);
 const SENSITIVE_ACTIONS = new Set<SensitiveAction>(["payment_or_purchase", "password_or_mfa", "terms_or_subscription"]);
@@ -56,7 +58,7 @@ function reconciledRuns(config: RuntimeConfig, runner: CommandRunner): RunRecord
     }
   }
   if (changed) replace(pathFor(config, "runs.jsonl"), runs);
-  if (missing.size) finalizeMissingTasks(config, missing, new Date(), "The worker is absent from the reachable Herdr agent list and did not send a final report.");
+  if (missing.size) finalizeMissingTasks(config, missing, new Date(), "The worker is absent from the reachable Herdr agent list and did not send a final report.", runner);
   return runs;
 }
 function workerCwd(config: RuntimeConfig): string { const dir = resolve(config.stateDir, "..", "delegation", "workers"); mkdirSync(dir, { recursive: true, mode: 0o700 }); chmodSync(dir, 0o700); return dir; }
@@ -69,10 +71,11 @@ function runtimeBaseURL(config: RuntimeConfig): string { return `http://${config
 function reportCredentialsPath(config: RuntimeConfig): string { return resolve(config.stateDir, "..", "managed", "report-credentials.json"); }
 function writeReportCredentials(config: RuntimeConfig, paneId: string, reporting: { url:string; capability:string; runId:string }): void { const path=reportCredentialsPath(config),dir=resolve(path,"..");if(!existsSync(dir))mkdirSync(dir,{recursive:true,mode:0o700});let all:Record<string,{url:string;capability:string;runId:string}>={};try{all=JSON.parse(readFileSync(path,"utf8"));}catch{}all[paneId]=reporting;const temp=`${path}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;writeFileSync(temp,JSON.stringify(all)+"\n",{mode:0o600});chmodSync(temp,0o600);renameSync(temp,path); }
 function prepareTask(config: RuntimeConfig, owner: {routerId:string;chatId:string}, task: string, label: string, lane: DelegationLane, authorization: WorkerAuthorization | undefined, now: Date, requestedAgent?: string): { id:string; request:LaunchRequest; record:TaskRecord } {
-  const agent = requestedAgent ?? validateDelegateAgent(config); const id = `run_${now.getTime().toString(36)}_${randomBytes(5).toString("hex")}`; const reportCapability = randomBytes(32).toString("base64url");
-  const environment: Record<string,string> = { CONTEXT_DROP_REPORT_URL: `${runtimeBaseURL(config)}/v1/reports`, CONTEXT_DROP_REPORT_CAPABILITY: reportCapability, CONTEXT_DROP_RUN_ID: id };
+  const agent = requestedAgent ?? validateDelegateAgent(config); const id = `run_${now.getTime().toString(36)}_${randomBytes(5).toString("hex")}`; const reportCapability = randomBytes(32).toString("base64url"); const finalMarker=randomBytes(12).toString("hex"); const finalOutputPath=resolve(config.stateDir,"runs",id,"final-output.json");
+  const environment: Record<string,string> = { CONTEXT_DROP_REPORT_URL: `${runtimeBaseURL(config)}/v1/reports`, CONTEXT_DROP_REPORT_CAPABILITY: reportCapability, CONTEXT_DROP_RUN_ID: id, CONTEXT_DROP_FINAL_MARKER: finalMarker, CONTEXT_DROP_FINAL_OUTPUT_PATH: finalOutputPath };
   if (authorization) { environment.CONTEXT_DROP_SENSITIVE_AUTH_ID = authorization.id; environment.CONTEXT_DROP_SENSITIVE_ACTION = authorization.action; environment.CONTEXT_DROP_SENSITIVE_SCOPE = authorization.scope; environment.CONTEXT_DROP_SENSITIVE_EXPIRES_AT = authorization.expiresAt; }
-  const request: LaunchRequest = { agent, repo: workerCwd(config), prompt: workerPrompt(task, authorization), name: `task-${id.slice(-10)}`, backend: config.defaultBackend, lane, environment };
+  const request: LaunchRequest = { agent, repo: workerCwd(config), prompt: workerPrompt(task, authorization), name: `task-${id.slice(-10)}`, backend: config.defaultBackend, lane, environment, finalMarker, finalOutputPath };
+  if (agent === "pi") request.extension=resolve(dirname(fileURLToPath(import.meta.url)),"pi_worker_final_extension.js");
   const createdAt=now.toISOString();
   const record:TaskRecord = { id:`task_${id}`, runId:id, ...owner, task, label, lane, reportCapability, createdAt, updatedAt:createdAt, status:"launching", authorizationId:authorization?.id, authorizedAction:authorization?.action, authorizedScope:authorization?.scope, authorizationExpiresAt:authorization?.expiresAt };
   return { id, request, record };
@@ -109,9 +112,43 @@ function queueLifecycleReport(reports: ParentReport[], task: TaskRecord, message
   const scheduleStatus=task.routerId===SCHEDULE_ROUTER_ID&&(task.status==="completed"||task.status==="failed")?task.status:undefined;
   reports.push({ id: `report_${current.getTime().toString(36)}_${randomBytes(5).toString("hex")}`, runId: task.runId, routerId: task.routerId, chatId: task.chatId, message, createdAt: current.toISOString(), lifecycleOnly: lifecycleOnly || Boolean(scheduleStatus) || undefined, lifecycleStatus:scheduleStatus });
 }
-function finalizeMissingTasks(config: RuntimeConfig, runIds: Set<string>, current: Date, message: string): void {
-  const taskPath=pathFor(config,"parent-tasks.jsonl"),reportPath=pathFor(config,"parent-reports.jsonl"),tasks=records<TaskRecord>(taskPath),reports=records<ParentReport>(reportPath);let changed=false;
-  for(const task of tasks){if(task.status!=="running"||!runIds.has(task.runId)||current.getTime()-Date.parse(task.createdAt)<AGENT_REGISTRATION_GRACE_MS)continue;task.status="failed";task.launchError="worker absent from reachable agent list";task.reportCapability="";task.updatedAt=current.toISOString();queueLifecycleReport(reports,task,message,current);changed=true;}
+function explicitReportExists(reports: ParentReport[], runId: string): boolean {
+  return reports.some(report => report.runId === runId && !report.lifecycleOnly && normalizeDeliverableText(report.message));
+}
+function queueCapturedReport(reports: ParentReport[], task: TaskRecord, captured: CapturedWorkerFinal, current: Date): void {
+  if (!captured.deliverable || reports.some(report => report.runId === task.runId && report.kind === captured.kind && report.message === captured.message)) return;
+  reports.push({id:`report_${current.getTime().toString(36)}_${randomBytes(5).toString("hex")}`,runId:task.runId,routerId:task.routerId,chatId:task.chatId,kind:captured.kind,message:captured.message,createdAt:current.toISOString()});
+}
+function finalizeObservedTask(config:RuntimeConfig,reports:ParentReport[],task:TaskRecord,run:RunRecord,terminalState:string,current:Date,runner:CommandRunner):void {
+  const scheduled=task.routerId===SCHEDULE_ROUTER_ID;
+  if(scheduled){
+    for(let i=reports.length-1;i>=0;i--){
+      const report=reports[i];
+      if(report.runId===task.runId&&!report.lifecycleOnly&&!report.deliveredAt&&!report.abandonedAt&&!report.leaseUntil&&!normalizeDeliverableText(report.message))reports.splice(i,1);
+    }
+  }
+  const legacyLifecycle=!scheduled&&!run.finalMarker;
+  let captured:CapturedWorkerFinal;
+  if(explicitReportExists(reports,task.runId)) captured={kind:"completed",message:"The worker completed after attaching an explicit report.",deliverable:false};
+  else if(legacyLifecycle&&terminalState==="done")captured={kind:"completed",message:"The worker reached its done state without a final explicit report.",deliverable:false};
+  else if(legacyLifecycle)captured={kind:"failed",message:"The worker is absent from the reachable agent list and did not send a final report.",deliverable:false};
+  else captured=captureWorkerFinal(config,run,terminalState,runner);
+  task.status=captured.kind;
+  task.reportCapability="";
+  task.updatedAt=current.toISOString();
+  if(captured.kind==="failed")task.launchError=captured.message;else delete task.launchError;
+  if(scheduled){
+    queueCapturedReport(reports,task,captured,current);
+    queueLifecycleReport(reports,task,captured.kind==="completed"?"The scheduled workflow reached its done state.":captured.message,current,true);
+  }else if(captured.deliverable){
+    queueCapturedReport(reports,task,captured,current);
+  }else if(captured.kind==="failed"||legacyLifecycle){
+    queueLifecycleReport(reports,task,captured.message,current);
+  }
+}
+function finalizeMissingTasks(config: RuntimeConfig, runIds: Set<string>, current: Date, message: string, runner:CommandRunner=systemRunner): void {
+  const taskPath=pathFor(config,"parent-tasks.jsonl"),reportPath=pathFor(config,"parent-reports.jsonl"),tasks=records<TaskRecord>(taskPath),reports=records<ParentReport>(reportPath),runs=loadRuns(config);let changed=false;
+  for(const task of tasks){if(task.status!=="running"||!runIds.has(task.runId)||current.getTime()-Date.parse(task.createdAt)<AGENT_REGISTRATION_GRACE_MS)continue;const run=runs.find(item=>item.id===task.runId);if(run)finalizeObservedTask(config,reports,task,run,"exited",current,runner);else{task.status="failed";task.launchError="worker absent from reachable agent list";task.reportCapability="";task.updatedAt=current.toISOString();queueLifecycleReport(reports,task,message,current);}changed=true;}
   if(changed){replace(taskPath,tasks);replace(reportPath,reports);}
 }
 function observeManagedLiveTasks(config: RuntimeConfig, current: Date, runner: CommandRunner, snapshot = liveTaskStatus(config, runner)): void {
@@ -125,25 +162,13 @@ function observeManagedLiveTasks(config: RuntimeConfig, current: Date, runner: C
     if (!run || run.backend !== snapshot.backend || (run.backend === "herdr" && run.herdrSession !== (config.herdrSession || "default"))) continue;
     const paneId = run.backend === "herdr" ? run.herdrPane : run.tmuxPane;
     const live = paneId ? liveByPane.get(paneId) : undefined;
-    if (!live) { if(run&&current.getTime()-Date.parse(task.createdAt)>=AGENT_REGISTRATION_GRACE_MS){task.status="failed";task.launchError="worker absent from reachable agent list";task.reportCapability="";task.updatedAt=current.toISOString();if(run.status!=="exited"){run.status="exited";runsChanged=true;}queueLifecycleReport(reports,task,"The worker is absent from the reachable agent list and did not send a final report.",current);changed=true;} continue; }
+    if (!live) { if(run&&current.getTime()-Date.parse(task.createdAt)>=AGENT_REGISTRATION_GRACE_MS){finalizeObservedTask(config,reports,task,run,"exited",current,runner);if(run.status!=="exited"){run.status="exited";runsChanged=true;}changed=true;} continue; }
     if (live.status === task.lastObservedStatus) continue;
     task.lastObservedStatus = live.status;
     task.updatedAt = current.toISOString();
     changed = true;
     if (live.status === "blocked") queueLifecycleReport(reports, task, "The worker is blocked and may need user input before it can continue.", current);
-    if (live.status === "done" || live.status === "exited" || live.status === "failed") {
-      task.status = live.status === "done" ? "completed" : "failed";
-      task.reportCapability = "";
-      // Schedules often report their useful result before the harness reaches
-      // done. Queue a silent lifecycle report so the daemon records completion
-      // before its acknowledgement triggers the existing owned-pane cleanup.
-      if (live.status === "done" && task.routerId === SCHEDULE_ROUTER_ID) {
-        queueLifecycleReport(reports, task, "The scheduled workflow reached its done state.", current, true);
-      } else {
-        const message=live.status==="done"?"The worker reached its done state without a final explicit report.":live.status==="failed"?"The worker failed without sending a final report.":"The worker exited without a final explicit report.";
-        queueLifecycleReport(reports, task, message, current);
-      }
-    }
+    if (live.status === "done" || live.status === "exited" || live.status === "failed") finalizeObservedTask(config,reports,task,run,live.status,current,runner);
   }
   if (changed) { replace(taskPath, tasks); replace(reportPath, reports); }
   if (runsChanged) replace(pathFor(config,"runs.jsonl"),runs);
@@ -230,7 +255,7 @@ export function createRuntimeServer(config: RuntimeConfig, token: string, runner
         const owner = routerFor(config, auth(req)); if (!owner) return json(res, 401, { error: "unauthorized" }); const input = await body(req); if (typeof input?.prompt !== "string" || !input.prompt.trim() || Buffer.byteLength(input.prompt) > 16000) throw new Error("prompt is required and must be <= 16000 bytes"); const agent = input.agent === undefined ? validateDelegateAgent(config) : input.agent; if (typeof agent !== "string" || !config.agents[agent]) throw new Error("configured agent is required"); const name = input.name === undefined ? undefined : input.name; if (name !== undefined && (typeof name !== "string" || !name.trim() || Buffer.byteLength(name) > 120)) throw new Error("name must be <= 120 bytes"); const label = name?.trim() || `${agent} task`; requireActiveSlot(config, owner); const prepared = prepareTask(config, owner, input.prompt, label, "full_ai", undefined, current, agent); prepared.request.name = label; const launched=launchPreparedTask(config,prepared,label,current,runner,options); return json(res,201,{task:launched.task});
       }
       if (req.method === "POST" && url.pathname === "/v1/tasks/schedule") {
-        if (!general) return json(res,401,{error:"unauthorized"}); const input=await body(req); const owner=ownerInput(input);if(owner.routerId!==SCHEDULE_ROUTER_ID)throw new Error("invalid schedule owner"); if(typeof input?.agent!=="string"||!config.agents[input.agent])throw new Error("configured agent is required");if(typeof input.prompt!=="string"||!input.prompt.trim()||Buffer.byteLength(input.prompt)>16000)throw new Error("prompt is required and must be <= 16000 bytes");if(typeof input.name!=="string"||!input.name.trim()||Buffer.byteLength(input.name)>120)throw new Error("name is required and must be <= 120 bytes");if(typeof input.repo!=="string"||!input.repo.trim()||Buffer.byteLength(input.repo)>4096)throw new Error("repo is required");if(input.backend!==undefined&&input.backend!=="tmux"&&input.backend!=="herdr")throw new Error("backend must be tmux or herdr");const label=input.name.trim();requireActiveSlot(config,owner);const prepared=prepareTask(config,owner,input.prompt,label,"full_ai",undefined,current,input.agent);prepared.request.prompt=scheduledWorkerPrompt(input.prompt);prepared.request.repo=input.repo;prepared.request.name=label;prepared.request.backend=input.backend??config.defaultBackend??"tmux";const launched=launchPreparedTask(config,prepared,label,current,runner,options);return json(res,201,{runId:launched.run.id,task:launched.task});
+        if (!general) return json(res,401,{error:"unauthorized"}); const input=await body(req); const owner=ownerInput(input);if(owner.routerId!==SCHEDULE_ROUTER_ID)throw new Error("invalid schedule owner"); if(typeof input?.agent!=="string"||!config.agents[input.agent])throw new Error("configured agent is required");if(typeof input.prompt!=="string"||!input.prompt.trim()||Buffer.byteLength(input.prompt)>16000)throw new Error("prompt is required and must be <= 16000 bytes");if(typeof input.name!=="string"||!input.name.trim()||Buffer.byteLength(input.name)>120)throw new Error("name is required and must be <= 120 bytes");if(typeof input.repo!=="string"||!input.repo.trim()||Buffer.byteLength(input.repo)>4096)throw new Error("repo is required");if(input.backend!==undefined&&input.backend!=="tmux"&&input.backend!=="herdr")throw new Error("backend must be tmux or herdr");const label=input.name.trim();requireActiveSlot(config,owner);const prepared=prepareTask(config,owner,input.prompt,label,"full_ai",undefined,current,input.agent);prepared.request.prompt=scheduledWorkerPrompt(input.prompt,finalResponseInstruction(prepared.request.finalMarker!));prepared.request.repo=input.repo;prepared.request.name=label;prepared.request.backend=input.backend??config.defaultBackend??"tmux";const launched=launchPreparedTask(config,prepared,label,current,runner,options);return json(res,201,{runId:launched.run.id,task:launched.task});
       }
 
       if (req.method === "GET" && url.pathname === "/v1/live-tasks") {
@@ -312,7 +337,7 @@ export function createRuntimeServer(config: RuntimeConfig, token: string, runner
         if(delivery[2]==="ack"){const task=records<TaskRecord>(pathFor(config,"parent-tasks.jsonl")).find(t=>t.runId===report.runId);const run=loadRuns(config).find(r=>r.id===report.runId);const cleanupReady=task?.routerId!==SCHEDULE_ROUTER_ID||report.lifecycleOnly;if(cleanupReady&&task&&(task.status==="completed"||task.status==="failed")&&run&&run.ownsPane!==false){if(run.backend==="herdr")closeHerdrWorker(config,run,runner);else if(run.backend==="tmux")closeTmuxWorker(config,run,runner);}}
         reconcileAndCompact(config,current,policy,runner,probeTimes); return json(res, 200, { report });
       }
-      if (req.method === "POST" && url.pathname === "/v1/runs") { if (!general) return json(res, 401, { error: "unauthorized" }); const input = await body(req) as LaunchRequest; if (typeof input?.agent !== "string" || typeof input?.repo !== "string" || typeof input?.prompt !== "string" || (input.name !== undefined && typeof input.name !== "string") || (input.backend !== undefined && input.backend !== "tmux" && input.backend !== "herdr") || (input.workspaceId !== undefined && typeof input.workspaceId !== "string") || (input.lane !== undefined && input.lane !== "human_copilot" && input.lane !== "full_ai") || input.environment !== undefined || input.extension !== undefined) throw new Error("invalid launch request"); const id = `run_${Date.now().toString(36)}_${randomBytes(5).toString("hex")}`; const backend = input.backend ?? config.defaultBackend ?? "tmux"; const run = backend === "herdr" ? launchInHerdr(config, input, id, runner) : launchInTmux(config, input, id, runner); append(pathFor(config, "runs.jsonl"), run); return json(res, 201, run); }
+      if (req.method === "POST" && url.pathname === "/v1/runs") { if (!general) return json(res, 401, { error: "unauthorized" }); const input = await body(req) as LaunchRequest; if (typeof input?.agent !== "string" || typeof input?.repo !== "string" || typeof input?.prompt !== "string" || (input.name !== undefined && typeof input.name !== "string") || (input.backend !== undefined && input.backend !== "tmux" && input.backend !== "herdr") || (input.workspaceId !== undefined && typeof input.workspaceId !== "string") || (input.lane !== undefined && input.lane !== "human_copilot" && input.lane !== "full_ai") || input.environment !== undefined || input.extension !== undefined || input.finalMarker !== undefined || input.finalOutputPath !== undefined) throw new Error("invalid launch request"); const id = `run_${Date.now().toString(36)}_${randomBytes(5).toString("hex")}`; const backend = input.backend ?? config.defaultBackend ?? "tmux"; const run = backend === "herdr" ? launchInHerdr(config, input, id, runner) : launchInTmux(config, input, id, runner); append(pathFor(config, "runs.jsonl"), run); return json(res, 201, run); }
       if (req.method === "GET" && url.pathname === "/v1/agents") { if (!general) return json(res, 401, { error: "unauthorized" }); return json(res, 200, { agents: Object.entries(config.agents).map(([name,a]) => ({ name, command: a.command[0], prompt_mode: a.promptMode ?? "arg" })) }); }
       if (req.method === "GET" && url.pathname === "/v1/runs") { if (!general) return json(res, 401, { error: "unauthorized" }); return json(res, 200, { runs: reconciledRuns(config, runner) }); }
       if (req.method === "GET" && url.pathname.startsWith("/v1/runs/")) { if (!general) return json(res, 401, { error: "unauthorized" }); const id = decodeURIComponent(url.pathname.slice("/v1/runs/".length)); const run = reconciledRuns(config, runner).find(item => item.id === id); if (!run) return json(res, 404, { error: "not found" }); return json(res, 200, run); }

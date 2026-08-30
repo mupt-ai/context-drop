@@ -53,6 +53,9 @@ func TestReportCommandFallsBackToCredentialsFile(t *testing.T) {
 
 	root := t.TempDir()
 	t.Setenv("CONTEXT_DROP_HOME", root)
+	t.Setenv("CONTEXT_DROP_REPORT_URL", "")
+	t.Setenv("CONTEXT_DROP_REPORT_CAPABILITY", "")
+	t.Setenv("CONTEXT_DROP_RUN_ID", "")
 	t.Setenv("HERDR_PANE_ID", "w9:p4")
 	credsDir := root + "/managed"
 	if err := os.MkdirAll(credsDir, 0o700); err != nil {

@@ -359,10 +359,14 @@ func (r *Runner) finishScheduledRun(runID, status, errorText string) error {
 				continue
 			}
 			if status == "completed" {
+				// Scheduler reconciliation may observe the worker's done state before
+				// this lifecycle report is leased. Normalize delivery independently
+				// of the job transition so that race cannot leave a completed job
+				// permanently marked pending.
+				if job.DeliveryStatus == "pending" {
+					job.DeliveryStatus = "no_report"
+				}
 				if job.Status == "running" || job.Status == "unknown" {
-					if job.DeliveryStatus == "pending" {
-						job.DeliveryStatus = "no_report"
-					}
 					return orchestrator.SetJobStatus(st, job.ID, "completed", runID, "", now)
 				}
 				return nil
@@ -370,7 +374,7 @@ func (r *Runner) finishScheduledRun(runID, status, errorText string) error {
 			firstFailure := job.DeliveryStatus != "failure_notice_pending" && job.DeliveryStatus != "failure_notice_delivered"
 			job.DeliveryStatus = "failure_notice_pending"
 			job.DeliveryError = sanitizeScheduledMessage(errorText)
-			if job.Status == "running" || job.Status == "unknown" {
+			if job.Status != "failed" {
 				if err := orchestrator.SetJobStatus(st, job.ID, "failed", runID, job.DeliveryError, now); err != nil {
 					return err
 				}

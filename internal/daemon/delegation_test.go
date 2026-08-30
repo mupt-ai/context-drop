@@ -276,6 +276,30 @@ func TestScheduleLifecycleReportCompletesJobWithoutSendingMessage(t *testing.T) 
 	}
 }
 
+func TestScheduleLifecycleClearsPendingAfterSchedulerAlreadyMarkedCompleted(t *testing.T) {
+	now := time.Now().UTC()
+	store := orchestrator.Store{Path: filepath.Join(t.TempDir(), "state.json")}
+	schedule := orchestrator.Schedule{Name: "meal", Type: orchestrator.ScheduleAgent, Agent: "mock", Repo: t.TempDir(), Prompt: "ask", Every: time.Hour, Enabled: true}
+	job := orchestrator.NewJobWithOccurrence(schedule, "completed", "occurrence", now)
+	job.RuntimeRunID = "run-scheduled"
+	job.DeliveryStatus = "pending"
+	if err := store.Update(func(st *orchestrator.State) error { st.Jobs = append(st.Jobs, job); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	backend := &fakeDelegationRuntime{reports: []runtimeclient.ParentReport{{ID: "lifecycle", RouterID: scheduleRouterID, ChatID: "chat", RunID: "run-scheduled", Message: "done", LifecycleOnly: true, LifecycleStatus: "completed"}}}
+	cfg := imessage.Defaults()
+	cfg.Enabled, cfg.RouterMode, cfg.ChatID, cfg.ImsgPath = true, true, "chat", "/bin/echo"
+	runner := &Runner{Store: store, Now: func() time.Time { return now }, Delegation: backend, IMessage: &imessage.Adapter{Config: cfg, Commander: &reportCommander{}, PersistentResponder: &recordingResponder{}}}
+	runner.deliverReportsOnce(context.Background())
+	state, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Jobs[0].Status != "completed" || state.Jobs[0].DeliveryStatus != "no_report" || !reflect.DeepEqual(backend.finishDelivered, []bool{true}) {
+		t.Fatalf("job=%#v finishes=%v", state.Jobs[0], backend.finishDelivered)
+	}
+}
+
 func TestScheduleFailureLifecycleMarksFailureAndSendsOneNotice(t *testing.T) {
 	now := time.Now().UTC()
 	store := orchestrator.Store{Path: filepath.Join(t.TempDir(), "state.json")}

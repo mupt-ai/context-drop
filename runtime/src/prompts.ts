@@ -29,8 +29,8 @@ export function workerPrompt(task: string, authorization?: WorkerAuthorization):
   return `${WORKER_INTRO} ${SENSITIVE_ACTION_POLICY}\n\n${authorizationSection(authorization)}\n\nTASK:\n${task}`;
 }
 
-export function scheduledWorkerPrompt(task: string): string {
-  return `${SCHEDULED_WORKER_INTRO} ${SENSITIVE_ACTION_POLICY}\n\n${authorizationSection()}\n\nTASK:\n${task}`;
+export function scheduledWorkerPrompt(task: string, finalInstruction: string): string {
+  return `${SCHEDULED_WORKER_INTRO} ${SENSITIVE_ACTION_POLICY}\n\n${authorizationSection()}\n\n${finalInstruction}\n\nTASK:\n${task}`;
 }
 
 export function continuationPrompt(message: string): string {

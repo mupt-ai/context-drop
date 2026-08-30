@@ -32,7 +32,7 @@ Verify `HERDR_ENV=1`, that the configured `default` session is running, and that
 
 ## A schedule completed but no message arrived
 
-Run `context-drop schedule list` and inspect both `job=` and `delivery=`. `job=completed delivery=delivered` means Context Drop received an iMessage send confirmation and persisted a receipt. `delivery=no_report` means the worker ended without a Context Drop report; check whether that workflow intentionally sends through another messaging tool. `delivery=delivery_unknown` means a send was attempted but its external outcome was ambiguous, so Context Drop did not retry and risk a duplicate.
+Run `context-drop schedule list` and inspect both `job=` and `delivery=`. `job=completed delivery=delivered` means Context Drop received an iMessage send confirmation and persisted a receipt. `delivery=no_report` means the worker ended without a deliverable report or recovered final; check whether that workflow intentionally sends through another messaging tool. A missing or unsafe final now also produces a failed lifecycle notice, so `job=completed delivery=pending` should not persist after reconciliation. `delivery=delivery_unknown` means a send was attempted but its external outcome was ambiguous, so Context Drop did not retry and risk a duplicate.
 
 ## iMessage is not configured
 

@@ -48,7 +48,7 @@ context-drop report "Natural-language progress or result"
 
 Managed launches receive scoped reporting values in their environment. For adopted live panes, Context Drop stores scoped credentials by Herdr/tmux pane in its private local state, and `context-drop report` uses the pane environment to discover the right record automatically. Workers do not export variables manually.
 
-The message enters the owning orchestrator conversation. Worker-authored reports are complemented by daemon lifecycle events if a managed pane exits, crashes, or disappears. Reporting credentials cannot control the daemon or upload files.
+The message enters the owning orchestrator conversation. For scheduled Pi work, the runtime also persists the authoritative settled assistant text. If the worker finishes without a report, a suitable final user-facing response is normalized into a report; progress, generic completion chatter, interrupted output, and mismatched capture records are rejected. A rejected or missing final becomes a failed lifecycle notice instead of leaving delivery pending. Reporting credentials cannot control the daemon or upload files.
 
 ## Schedules
 
