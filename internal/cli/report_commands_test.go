@@ -101,3 +101,25 @@ func TestReportCommandFallsBackToCredentialsFile(t *testing.T) {
 		t.Fatalf("payload = %#v", got)
 	}
 }
+
+func TestQuestionReportIsExplicit(t *testing.T) {
+	var got map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Error(err)
+		}
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+	t.Setenv("CONTEXT_DROP_REPORT_URL", server.URL)
+	t.Setenv("CONTEXT_DROP_REPORT_CAPABILITY", "question-capability")
+	t.Setenv("CONTEXT_DROP_RUN_ID", "question-run")
+	cmd := newReportCommand()
+	cmd.SetArgs([]string{"--question", "Which repository?"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if got["kind"] != "needs_user" || got["message"] != "Which repository?" {
+		t.Fatalf("report=%v", got)
+	}
+}

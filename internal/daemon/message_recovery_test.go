@@ -3,12 +3,57 @@ package daemon
 import (
 	"context"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
 	"contextdrop.dev/context-drop/internal/imessage"
 	"contextdrop.dev/context-drop/internal/orchestrator"
 )
+
+func TestMessageBurstIsOneDurableTurn(t *testing.T) {
+	store := orchestrator.Store{Path: filepath.Join(t.TempDir(), "state.json")}
+	now := time.Now().UTC()
+	responder := &recordingResponder{response: imessage.Response{ToolCompleted: true}}
+	commander := &messageCommander{}
+	runner := &Runner{Store: store, Now: time.Now, messageDebounce: 20 * time.Millisecond, IMessage: &imessage.Adapter{Config: messageTestConfig(t), Commander: commander, PersistentResponder: responder}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var done <-chan struct{}
+	for _, text := range []string{"A", "B", "C"} {
+		if err := store.Update(func(st *orchestrator.State) error {
+			st.MessageJobs[text] = orchestrator.MessageJob{MessageID: text, Status: "queued", ClaimedAt: now, Input: &orchestrator.MessageInput{Text: text, ChatID: "chat"}}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		var err error
+		done, err = runner.enqueueMessages(ctx, []imessage.Message{{ID: text, Text: text, ChatID: "chat"}}, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("burst did not settle")
+	}
+	if !reflect.DeepEqual(responder.prompts, []string{"A\n\nB\n\nC"}) || len(commander.sends) != 0 {
+		t.Fatalf("prompts=%v sends=%v", responder.prompts, commander.sends)
+	}
+	state, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"A", "B", "C"} {
+		if state.MessageJobs[id].Status != "handled" || state.MessageJobs[id].Input != nil {
+			t.Fatalf("job=%+v", state.MessageJobs[id])
+		}
+	}
+	if len(state.RecentOutbound) != 0 {
+		t.Fatal("silent turn created an outbound message")
+	}
+}
 
 func TestProcessingDoesNotExecuteWithoutDurableState(t *testing.T) {
 	commander := &messageCommander{}

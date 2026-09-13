@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -20,6 +19,7 @@ const DefaultAddress = "http://127.0.0.1:47762"
 
 type ParentReport struct {
 	ID                 string `json:"id"`
+	Worker             int    `json:"worker"`
 	RunID              string `json:"runId"`
 	RouterID           string `json:"routerId"`
 	ChatID             string `json:"chatId"`
@@ -81,19 +81,6 @@ type HTTPError struct {
 
 func (e *HTTPError) Error() string {
 	return fmt.Sprintf("runtime returned %s: %s", http.StatusText(e.StatusCode), e.Body)
-}
-
-func AutoAuthorizationFailureReason(err error) string {
-	var httpErr *HTTPError
-	if !errors.As(err, &httpErr) {
-		return ""
-	}
-	switch httpErr.Code {
-	case "task_not_runnable", "authorization_expired":
-		return httpErr.Code
-	default:
-		return ""
-	}
 }
 
 func Paths() (dir, configPath, tokenPath string, err error) {
@@ -175,55 +162,6 @@ func (c *Client) IssueRouterCapability(ctx context.Context, routerID, chatID str
 	return out.Capability, err
 }
 
-func (c *Client) RegisterIMessageThread(ctx context.Context, routerID, chatID string, message map[string]string) (string, error) {
-	request := map[string]string{"routerId": routerID, "chatId": chatID}
-	for key, value := range message {
-		if value != "" {
-			request[key] = value
-		}
-	}
-	var out struct {
-		ThreadID string `json:"threadId"`
-	}
-	err := c.do(ctx, http.MethodPost, "/v1/imessage/threads/register", request, &out, http.StatusCreated)
-	return out.ThreadID, err
-}
-
-func (c *Client) Delegate(ctx context.Context, capability, prompt, name string) (ManagedTask, error) {
-	return c.DelegateInThread(ctx, capability, prompt, name, "")
-}
-
-func (c *Client) DelegateInThread(ctx context.Context, capability, prompt, name, threadID string) (ManagedTask, error) {
-	var out struct {
-		Task ManagedTask `json:"task"`
-	}
-	request := map[string]string{"prompt": prompt, "name": name}
-	if threadID != "" {
-		request["threadId"] = threadID
-	}
-	err := c.doWithToken(ctx, capability, http.MethodPost, "/v1/tasks/delegate", request, &out, http.StatusCreated)
-	return out.Task, err
-}
-
-func (c *Client) ActiveTask(ctx context.Context, capability string) (ManagedTask, bool, error) {
-	var out struct {
-		Task *ManagedTask `json:"task"`
-	}
-	err := c.doWithToken(ctx, capability, http.MethodGet, "/v1/tasks/active", nil, &out, http.StatusOK)
-	if err != nil || out.Task == nil {
-		return ManagedTask{}, false, err
-	}
-	return *out.Task, true, nil
-}
-
-func (c *Client) ContinueTask(ctx context.Context, capability, paneID, prompt string) (ManagedTask, error) {
-	var out struct {
-		Task ManagedTask `json:"task"`
-	}
-	request := map[string]string{"paneId": paneID, "prompt": prompt}
-	err := c.doWithToken(ctx, capability, http.MethodPost, "/v1/tasks/continue", request, &out, http.StatusOK)
-	return out.Task, err
-}
 func (c *Client) LeaseReport(ctx context.Context, routerID, chatID string) (ParentReport, bool, error) {
 	return c.LeaseReportFor(ctx, routerID, chatID, 0)
 }
@@ -256,21 +194,6 @@ func (c *Client) FinishReportWithError(ctx context.Context, report ParentReport,
 	}
 	return c.do(ctx, http.MethodPost, "/v1/reports/"+url.PathEscape(report.ID)+"/"+action, payload, &map[string]any{}, http.StatusOK)
 }
-func (c *Client) AutoAuthorize(ctx context.Context, report ParentReport, routerID, chatID string) (Run, string, error) {
-	var out struct {
-		Run     Run    `json:"run"`
-		Outcome string `json:"outcome"`
-	}
-	err := c.do(ctx, http.MethodPost, "/v1/reports/"+url.PathEscape(report.ID)+"/auto-authorize", map[string]string{"routerId": routerID, "chatId": chatID, "leaseId": report.LeaseID}, &out, http.StatusCreated)
-	return out.Run, out.Outcome, err
-}
-func (c *Client) Confirm(ctx context.Context, routerID, chatID, token string) (Run, error) {
-	var out struct {
-		Run Run `json:"run"`
-	}
-	err := c.do(ctx, http.MethodPost, "/v1/confirm", map[string]string{"routerId": routerID, "chatId": chatID, "token": token}, &out, http.StatusCreated)
-	return out.Run, err
-}
 func (c *Client) Agents(ctx context.Context) ([]Agent, error) {
 	var out struct {
 		Agents []Agent `json:"agents"`
@@ -294,12 +217,12 @@ func (c *Client) Tasks(ctx context.Context, backend string) ([]ManagedTask, erro
 	return out.Tasks, err
 }
 
-func (c *Client) LaunchManagedSchedule(ctx context.Context, agent, repo, prompt, name, backend, routerID, chatID string) (ManagedTask, error) {
+func (c *Client) LaunchManagedSchedule(ctx context.Context, agent, repo, prompt, name, backend, routerID, chatID, requestID string) (ManagedTask, error) {
 	var out struct {
 		RunID string      `json:"runId"`
 		Task  ManagedTask `json:"task"`
 	}
-	request := map[string]string{"agent": agent, "repo": repo, "prompt": prompt, "name": name, "routerId": routerID, "chatId": chatID}
+	request := map[string]string{"agent": agent, "repo": repo, "prompt": prompt, "name": name, "routerId": routerID, "chatId": chatID, "requestId": requestID}
 	if backend != "" {
 		request["backend"] = backend
 	}
@@ -308,18 +231,6 @@ func (c *Client) LaunchManagedSchedule(ctx context.Context, agent, repo, prompt,
 	return out.Task, err
 }
 
-func (c *Client) Launch(ctx context.Context, agent, repo, prompt, name, backend, workspace string) (Run, error) {
-	var out Run
-	request := map[string]string{"agent": agent, "repo": repo, "prompt": prompt, "name": name}
-	if backend != "" {
-		request["backend"] = backend
-	}
-	if workspace != "" {
-		request["workspaceId"] = workspace
-	}
-	err := c.do(ctx, http.MethodPost, "/v1/runs", request, &out, http.StatusCreated)
-	return out, err
-}
 func (c *Client) Runs(ctx context.Context) ([]Run, error) {
 	var out struct {
 		Runs []Run `json:"runs"`
@@ -331,4 +242,24 @@ func (c *Client) Run(ctx context.Context, id string) (Run, error) {
 	var out Run
 	err := c.do(ctx, http.MethodGet, "/v1/runs/"+url.PathEscape(id), nil, &out, http.StatusOK)
 	return out, err
+}
+
+// Worker is one of the four native pool slots, not an arbitrary terminal pane.
+type Worker struct {
+	Agent   string `json:"agent"`
+	Worker  int    `json:"worker"`
+	PaneID  string `json:"paneId"`
+	Backend string `json:"backend"`
+	Ready   bool   `json:"ready"`
+	Task    string `json:"task"`
+	Status  string `json:"status"`
+	Queued  int    `json:"queued"`
+}
+
+func (c *Client) Workers(ctx context.Context) ([]Worker, error) {
+	var out struct {
+		Workers []Worker `json:"workers"`
+	}
+	err := c.do(ctx, http.MethodGet, "/v1/workers", nil, &out, http.StatusOK)
+	return out.Workers, err
 }

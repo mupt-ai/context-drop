@@ -1,31 +1,27 @@
-# Typed schedules
+# Schedules
 
-Context Drop schedules are durable local workflows. Existing schedules are migrated in memory and on the next state write to `type=agent`, `overlap=skip`, and `missed_run_policy=latest`; their prompts and history are retained.
-
-## Types
-
-- `agent` preserves the managed worker/report workflow. Existing `--agent`, `--repo`, `--prompt`, and `--backend` flags continue to work. Scheduled workers do not emit routine progress; a Context Drop report is routed through the persistent conversational agent, which decides the user-facing response.
-- `command` executes an exact argv array directly, never through a shell. `--cwd` must be an existing absolute directory. Repeat `--command` once per argv element. This is appropriate for versioned digest/workflow scripts.
-- `watch` polls an explicit backend pane (`--watch-pane`) or stable live task name (`--watch-target`). It never launches an agent and notifies only when terminal/blocking/missing state changes.
-
-Examples:
+A schedule is a saved prompt and an explicit interval or calendar rule. The daemon owns timing; the main agent does not invent or run schedules itself.
 
 ```sh
-context-drop schedule add --name check --type agent --agent pi --repo /absolute/repo --prompt 'check status' --every 15m
-context-drop schedule add --name digest --type command --cwd /absolute/workflows --command /absolute/workflows/digest --command --deliver --every 1h --timeout 10m --retries 2
-context-drop schedule add --name worker-watch --type watch --backend herdr --watch-pane workspace:pane --every 1m
+context-drop schedule add --name check --repo /absolute/repo \
+  --prompt 'Check the test results and report what changed.' --every 15m
+context-drop schedule add --name morning --prompt 'Ask which task I want to prioritize.' \
+  --cron '0 9 * * 1-5' --timezone America/Los_Angeles
+context-drop schedule list
+context-drop schedule pause check
+context-drop schedule resume check
+context-drop schedule run check
+context-drop schedule remove check
 ```
 
-`--command` is an exact argv entry: shell operators, substitutions, and redirections are ordinary text and are not interpreted.
+`--repo` defaults to the current directory. `--prompt-file` snapshots a file instead of accepting inline text. `schedule NAME` shows the saved prompt; `schedule NAME "new prompt"` updates it without changing its cadence.
 
-For long agent workflows, keep the instructions in a versioned repository file and make the saved prompt a short directive to read and execute that file. For example, the personal digest schedule points at [`workflows/personal-digest/WORKFLOW.md`](../workflows/personal-digest/WORKFLOW.md) rather than embedding the full workflow in daemon state. Use `workflows/personal-digest/install-schedule.sh` to upsert or migrate the personal-digest schedule with the short prompt while preserving the existing cadence; the script does not launch work.
+Each agent occurrence has a durable identity and enters the same queue as user-delegated work. Command schedules run their stored argv directly in the daemon, without a worker or orchestrator call. They retain overlap protection, timeouts, durable job status, and per-job output logs. Interrupted scripts are not replayed after a restart. There are exactly four native Codex workers across both sources. Busy workers cause queueing, not extra agent launches. An occurrence that could not be submitted stays queued and retries with the same identity, so a lost HTTP response cannot create duplicate work. Overlap is skipped and missed intervals are coalesced to the latest occurrence.
 
-## Lifecycle and safety
+Final answers reach the main orchestrator automatically. For background maintenance, use `schedule add --silent` or `context-drop schedule NAME --silent` on an existing schedule. Routine progress and completion stay internal, without a main-model turn or a user message. Questions and failures still reach the user. Use `context-drop schedule NAME --silent=false` to restore routine messages. Results remain in runtime reports and job history.
 
-Jobs use `queued`, `running`, `completed`, `failed`, `timed_out`, or `skipped`, with durable occurrence keys and start/finish timestamps. Agent jobs also expose delivery state: `pending`, `delivered`, `no_report`, `delivery_unknown`, or failure-notice state. `completed` describes worker lifecycle; it does not imply delivery unless the delivery field says so. The default/latest missed-run policy coalesces missed intervals. `overlap=skip` prevents a new occurrence while a queued/running job exists and records the skipped occurrence. `queue` and `replace` are rejected until safe cancellation semantics exist.
+A worker needing input uses `context-drop report --question "..."` and ends its turn. Its slot remains waiting until the main routes the user's answer back to it. A schedule waiting for an answer is still active and cannot overlap itself.
 
-A scheduled worker that uses `context-drop report` should send one concise final update for the conversational agent. Context Drop coalesces unsent reports from the same schedule run and waits for the worker to finish before delivery, preventing start/progress chatter from leaking into chat. A workflow that sends directly with another messaging tool must not also report the same result; that external delivery is outside Context Drop's report receipt tracking.
+Legacy command and watch definitions remain readable and become worker prompts. New schedules have no separate command runner, pane watcher, agent selector, per-schedule backend, or direct execution retries. Herdr/tmux is chosen for the pool as a whole.
 
-Commands support context-enforced `--timeout`, up to ten `--retries`, consecutive failure tracking, and `--auto-pause-after`. Agent jobs remain running while their managed runtime task is live and are reconciled from live state.
-
-Use `schedule pause NAME`, `schedule resume NAME`, `schedule run-now NAME` (legacy `schedule run` remains an alias), and `schedule list` for lifecycle visibility.
+Job completion and report delivery are separate. `schedule list --json` includes both; a completed task may still have an undelivered report. Native workers keep report outboxes across daemon outages. Ambiguous iMessage sends are not automatically repeated.

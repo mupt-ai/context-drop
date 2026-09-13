@@ -46,6 +46,7 @@ type Schedule struct {
 	Cron                string        `json:"cron,omitempty"`
 	Timezone            string        `json:"timezone,omitempty"`
 	Enabled             bool          `json:"enabled"`
+	Silent              bool          `json:"silent,omitempty"`
 	Overlap             string        `json:"overlap"`
 	MissedRunPolicy     string        `json:"missed_run_policy"`
 	Timeout             time.Duration `json:"timeout,omitempty"`

@@ -29,7 +29,7 @@ func (f *fakeRuntime) Tasks(context.Context, string) ([]runtimeclient.ManagedTas
 	return f.taskTasks, f.taskErr
 }
 
-func (f *fakeRuntime) LaunchManagedSchedule(_ context.Context, _, _, _, name, _, routerID, chatID string) (runtimeclient.ManagedTask, error) {
+func (f *fakeRuntime) LaunchManagedSchedule(_ context.Context, _, _, _, name, _, routerID, chatID, _ string) (runtimeclient.ManagedTask, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.launches = append(f.launches, name)
@@ -117,7 +117,7 @@ func TestRunnerClaimsDueBeforeLaunchAndRecordsJob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(st.Jobs) != 1 || st.Jobs[0].Status != "unknown" {
+	if len(st.Jobs) != 1 || st.Jobs[0].Status != "running" {
 		t.Fatalf("jobs = %#v", st.Jobs)
 	}
 }

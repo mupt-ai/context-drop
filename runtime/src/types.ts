@@ -1,88 +1,68 @@
-export type SessionBackend = "tmux" | "herdr";
-export type DelegationLane = "human_copilot" | "full_ai";
-
-export interface AgentConfig {
-  command: string[];
-  promptMode?: "arg" | "stdin";
-}
-
 export interface RuntimeConfig {
   host: "127.0.0.1" | "::1";
   port: number;
   stateDir: string;
   tokenFile: string;
-  defaultBackend?: SessionBackend;
-  tmuxSession: string;
+  defaultBackend?: "tmux" | "herdr";
+  tmuxSession?: string;
   herdrPath?: string;
-  imsgPath?: string;
   herdrSession?: string;
   fullAIHerdrWorkspaceLabel?: string;
-  agents: Record<string, AgentConfig>;
-  delegateAgent?: string;
-  /** Explicit, private aliases for repositories the trusted router may launch in. */
-  repoAliases?: Record<string, string>;
-  /** Test/advanced override for bounded Herdr registration readiness. */
-  herdrReadinessMs?: number;
-  herdrReadinessPollMs?: number;
+  agents: Record<string, { command: string[]; promptMode?: string }>;
 }
 
-export interface RunRecord {
+export interface Conversation {
+  path: string;
+  leafId: string | null;
+  instructions?: string;
+}
+export interface Task {
   id: string;
-  name: string;
-  agent: string;
-  repo: string;
-  backend?: SessionBackend;
-  tmuxSession?: string;
-  tmuxWindow?: string;
-  tmuxPane?: string;
-  herdrSession?: string;
-  herdrWorkspace?: string;
-  herdrTab?: string;
-  herdrPane?: string;
-  lane?: DelegationLane;
-  status: "running" | "exited" | "unknown";
-  ownsPane?: boolean;
-  createdAt: string;
-}
-
-export interface LaunchRequest {
-  agent: string;
-  repo: string;
+  worker?: number;
+  requestedWorker?: number;
   prompt: string;
-  name?: string;
-  backend?: SessionBackend;
-  workspaceId?: string;
-  lane?: DelegationLane;
-  environment?: Record<string, string>;
-  extension?: string;
+  name: string;
+  repo: string;
+  session: string;
+  routerId: string;
+  chatId: string;
+  status: "queued" | "running" | "waiting" | "completed" | "failed";
+  capability: string;
+  createdAt: string;
+  question?: string;
+  requestIds: string[];
+  turnId: string;
+  instructions?: string;
+  followups?: string[];
 }
-
-export type ParentReportKind = "started" | "progress" | "needs_user" | "completed" | "failed";
-export type SensitiveAction = "payment_or_purchase" | "password_or_mfa" | "terms_or_subscription";
 export interface ParentReport {
   id: string;
   runId: string;
+  worker: number;
   routerId: string;
   chatId: string;
-  kind?: ParentReportKind;
+  kind: "progress" | "needs_user" | "completed" | "failed";
   message: string;
-  sensitiveAction?: SensitiveAction;
-  challengeToken?: string;
-  challengedAction?: string;
-  challengeExpiresAt?: string;
-  authorizationId?: string;
   createdAt: string;
   leaseId?: string;
-  leaseUntil?: string;
+  leaseUntil?: number;
   deliveredAt?: string;
-  lifecycleOnly?: boolean;
-  lifecycleStatus?: "completed" | "failed";
-  deliveryAttempts?: number;
-  lastDeliveryError?: string;
-  nextAttemptAt?: string;
-  abandonedAt?: string;
+  nextAttemptAt?: number;
+  attempts?: number;
+}
+export interface Slot {
+  id: number;
+  backend: "tmux" | "herdr";
+  capability: string;
+  pane?: string;
   threadId?: string;
-  challengeConsumedAt?: string;
-  challengeReservationId?: string;
-  challengeReservationUntil?: string;
+  launching?: boolean;
+  error?: string;
+}
+export interface PoolState {
+  slots: Slot[];
+  events: string[];
+  conversation?: Conversation;
+  tasks: Task[];
+  reports: ParentReport[];
 }

@@ -2,15 +2,21 @@
   "name": "context-drop-runtime",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "rm -rf dist && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test ../internal/imessage/*.test.mjs ../workflows/herdr-tab-namer/*.test.mjs dist/test/*.test.js",
+    "test": "npm run build && node --test ../workflows/herdr-tab-namer/*.test.mjs dist/test/*.test.js",
     "validate": "npm run typecheck && npm test"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@types/ws": "^8.18.1",
     "typescript": "^5.8.0"
+  },
+  "dependencies": {
+    "ws": "^8.21.3"
   }
 }

@@ -1,24 +1,11 @@
 # Security
 
-## Credential separation
+The upload token, runtime token, main delegation capability, native worker event capabilities, and task report capabilities have separate scopes. Workers receive no daemon messaging credentials or general runtime token. Task capabilities stop working after completion and remain stable while the same task receives follow-ups.
 
-Context Drop uses separate credentials for separate powers:
+The main agent has one delegation tool and uses its final text for messaging. Worker-report turns expose no delegation tools. Worker output is attributed data, not authorization for new work. The former confirmation-token and automatic-authorization execution paths are removed.
 
-- The upload token can create temporary files but cannot control the daemon.
-- The private runtime token controls loopback orchestration and is never passed to workers.
-- A worker report capability is scoped to one managed run and cannot upload, delegate, continue, or select recipients.
-- iMessage credentials and recipient configuration remain daemon-only. The router receives only random, owner-scoped thread IDs; raw chat and message GUIDs stay in private runtime state.
+Workers use normal Codex coding tools in native Herdr/tmux panes, with instructions prohibiting another delegation level or direct messaging. These are local agents running as the user, not OS-sandboxed processes; capability separation restricts Context Drop's HTTP APIs, not arbitrary access to the user's filesystem.
 
-## Trust boundaries
+The runtime listens only on loopback. Native operations target exact persisted pane IDs created for the pool. Ambiguous launches and submissions are never automatically replayed. Pending reports use durable outboxes and leased delivery; ambiguous external message delivery is parked rather than retried.
 
-Conversation text, delegated prompts, follow-ups, and worker reports are untrusted content. They cannot establish authorization for payments or purchases, password/MFA/account recovery, or materially changed terms. Sensitive authorization is injected by the daemon through a separate scoped mechanism.
-
-The router exposes managed task control plus read-only Herdr topology/output, validated repository aliases, and owner-scoped iMessage thread actions. `herdr_prompt` is an alias of the managed exact-pane continuation boundary, and `start_agent` creates a normal tracked `TaskRecord` with the same safety prompt, scoped report capability, and capacity checks as delegation. Thread replies and reactions require a stored opaque ID that is active for the same router and chat; callers cannot provide recipients or raw GUIDs. If the advanced `imsg` bridge is unavailable, targeted actions fail instead of falling back to the most recent message. There are no raw `/v1/herdr/prompt`, `/v1/herdr/start`, or blocking `/v1/herdr/wait` control routes. Authorized-sensitive workers cannot be continued; a fresh exact authorization is required.
-
-## Local execution
-
-Agents run with the local user's permissions. Herdr/tmux panes may belong to unrelated work; Context Drop targets exact pane IDs and must not bulk-close sessions, tabs, or workspaces. The runtime listens only on loopback and fails closed when live backend state is unavailable or ambiguous. A managed Herdr worker missing from the authoritative reachable agent list is terminal even if a shell pane remains: its report capability is revoked and a lifecycle fallback is queued.
-
-## Uploaded files
-
-Opaque download URLs are bearer links. Anyone with a link can read it until expiry. Use short TTLs and never upload credentials, private keys, `.env` files, customer data, or proprietary archives without explicit approval. Configure storage lifecycle deletion in addition to application TTL checks when physical deletion timing matters.
+Upload URLs are bearer links until expiry. Keep credentials and sensitive files out of uploads, and use short TTLs when appropriate.

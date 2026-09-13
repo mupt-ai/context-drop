@@ -20,7 +20,7 @@ coverage.out
 
 # Dependency directories
 /vendor/
-/runtime/node_modules/
+/runtime/node_modules
 /runtime/dist/
 
 # OS/editor files

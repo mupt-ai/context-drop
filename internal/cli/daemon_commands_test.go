@@ -7,7 +7,39 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"contextdrop.dev/context-drop/internal/orchestrator"
 )
+
+func TestScheduleSilencePreservesDefinition(t *testing.T) {
+	t.Setenv("CONTEXT_DROP_HOME", t.TempDir())
+	store, err := orchestrator.NewStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Update(func(st *orchestrator.State) error {
+		st.Schedules = []orchestrator.Schedule{{Name: "backend", Prompt: "keep this", Enabled: true}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, flag := range []string{"--silent", "--silent=false"} {
+		root := NewRootCommand(BuildInfo{})
+		root.SetOut(&bytes.Buffer{})
+		root.SetArgs([]string{"schedule", "backend", flag})
+		if err := root.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		state, err := store.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := state.Schedules[0]
+		if s.Silent != (flag == "--silent") || s.Prompt != "keep this" || !s.Enabled {
+			t.Fatalf("unexpected schedule: %+v", s)
+		}
+	}
+}
 
 func TestDaemonAndScheduleCommandsRegistered(t *testing.T) {
 	root := NewRootCommand(BuildInfo{})
@@ -47,7 +79,7 @@ func TestSchedulePositionalPromptShowAndSet(t *testing.T) {
 	root.SetOut(out)
 	root.SetErr(out)
 
-	add := []string{"schedule", "add", "--name", "demo", "--agent", "pi", "--repo", "/tmp", "--prompt", "original prompt", "--every", "1h"}
+	add := []string{"schedule", "add", "--name", "demo", "--repo", "/tmp", "--prompt", "original prompt", "--every", "1h"}
 	root.SetArgs(add)
 	if err := root.Execute(); err != nil {
 		t.Fatalf("add: %v", err)
@@ -96,7 +128,7 @@ func TestSchedulePositionalPromptShowAndSet(t *testing.T) {
 	if err := root.Execute(); err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if !strings.Contains(listOut.String(), "agent=pi") || !strings.Contains(listOut.String(), "1h") {
+	if !strings.Contains(listOut.String(), "agent=codex") || !strings.Contains(listOut.String(), "1h") {
 		t.Fatalf("other fields not preserved: %q", listOut.String())
 	}
 }

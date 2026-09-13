@@ -50,7 +50,8 @@ func readReportCredentialsFile() (*reportCredentialsFile, error) {
 }
 
 func newReportCommand() *cobra.Command {
-	return &cobra.Command{
+	var question bool
+	cmd := &cobra.Command{
 		Use:   "report [message]",
 		Short: "Report a natural-language update to the owning orchestrator",
 		Args:  cobra.MaximumNArgs(1),
@@ -92,7 +93,11 @@ func newReportCommand() *cobra.Command {
 			if endpoint == "" || capability == "" || runID == "" {
 				return fmt.Errorf("worker reporting is not configured")
 			}
-			payload, err := json.Marshal(map[string]string{"runId": runID, "message": message})
+			input := map[string]string{"runId": runID, "message": message}
+			if question {
+				input["kind"] = "needs_user"
+			}
+			payload, err := json.Marshal(input)
 			if err != nil {
 				return err
 			}
@@ -115,4 +120,6 @@ func newReportCommand() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&question, "question", false, "ask the user a question and wait for their answer")
+	return cmd
 }

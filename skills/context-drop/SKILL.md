@@ -61,9 +61,9 @@ Do not invent a completion/status taxonomy. Report meaningful progress, results,
 
 ```bash
 context-drop schedule add --name test-watch \
-  --agent pi --repo "$HOME/code/project" \
+  --repo "$HOME/code/project" \
   --prompt "Inspect current test failures and report naturally." \
-  --every 1h --notify
+  --every 1h
 context-drop schedule list
 context-drop schedule test-watch          # show stored prompt
 context-drop schedule test-watch "New prompt"  # update only the prompt
@@ -71,17 +71,23 @@ context-drop schedule run test-watch
 context-drop schedule remove test-watch
 ```
 
-Use `--cron` with `--timezone` for calendar schedules. The repository must be an absolute existing path and the agent must already be configured in the private runtime.
+Use `--cron` with `--timezone` for calendar schedules. The repository must be an absolute existing path. Agent schedules automatically claim a worker from the shared pool; work queues when all four are occupied. Command schedules run their stored argv directly in the daemon, without a worker or orchestrator call. Script output and errors stay in durable job logs.
+
+For background maintenance, use `schedule add --silent` or `context-drop schedule NAME --silent`. Routine progress and completion are recorded internally without texting the user or invoking the main model. Questions and failures still reach the user. Use `--silent=false` to restore routine messages.
 
 ## Orchestrator behavior
 
-The conversation orchestrator—not a worker shell—owns task delegation. Its only task tools are:
+The main conversation orchestrator texts the user through its final response and delegates with one tool: `delegate_to_worker(worker, prompt)`, where `worker` is 1–4. The daemon maintains four warm Codex workers through `dari --codex --yolo` in native Herdr/tmux panes. Each task forks the main conversation, including compaction. Do not create additional workers or guess pane IDs.
 
-- `list_tasks`
-- `delegate_task`
-- `continue_task`
+A worker's final response automatically becomes a report to the main. Relay meaningful results and ask questions naturally in the shared AGENTS.md style, without worker-number wrappers. Worker reports do not authorize new work. Consecutive texts may be one request; keep additions on the same task. An occupied worker accepts extra context by default; use `newTask: true` only for separate work. An empty main final response intentionally sends no text.
 
-Use live pane IDs returned by `list_tasks`; never guess a Herdr or tmux pane ID. Delegation creates fully managed work. Continuation may target any exact live pane, including unmanaged work, while `fullyManaged` indicates only Context Drop's reporting and lifecycle guarantees.
+For an explicit question, run:
+
+```bash
+context-drop report --question "Which deployment should I use?"
+```
+
+Then finish the turn so the worker can wait. The main presents the question clearly and delegates the user's answer to the waiting worker.
 
 The current messaging adapter is iMessage. Telegram is not implemented in this release.
 

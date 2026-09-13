@@ -231,7 +231,7 @@ func TestScheduleOwnedReportUsesConversationalResponse(t *testing.T) {
 	responder := &recordingResponder{}
 	runner := &Runner{Delegation: backend, IMessage: &imessage.Adapter{Config: cfg, Commander: commander, PersistentResponder: responder}}
 	runner.deliverReportsOnce(context.Background())
-	if !reflect.DeepEqual(responder.prompts, []string{"scheduled work finished"}) || !reflect.DeepEqual(backend.finishedOwners, [][2]string{{scheduleRouterID, "chat"}}) || !reflect.DeepEqual(commander.sends, []string{"router reply"}) {
+	if (len(responder.prompts) != 1 || !strings.Contains(responder.prompts[0], "scheduled work finished")) || !reflect.DeepEqual(backend.finishedOwners, [][2]string{{scheduleRouterID, "chat"}}) || !reflect.DeepEqual(commander.sends, []string{"router reply"}) {
 		t.Fatalf("prompts=%v owners=%v sends=%v", responder.prompts, backend.finishedOwners, commander.sends)
 	}
 }
@@ -283,7 +283,60 @@ func TestDeliveredScheduleReportRetriesOnlyAckAfterReceipt(t *testing.T) {
 	}
 }
 
-func TestScheduleLifecycleReportCompletesJobWithoutSendingMessage(t *testing.T) {
+func TestWorkerQuestionFallbackIsNatural(t *testing.T) {
+	backend := &fakeDelegationRuntime{reports: []runtimeclient.ParentReport{{ID: "question", RouterID: imessageRouterID, ChatID: "chat", RunID: "run", Worker: 1, Kind: "needs_user", Message: "did you eat breakfast today?"}}}
+	commander := &reportCommander{}
+	cfg := imessage.Defaults()
+	cfg.Enabled, cfg.RouterMode, cfg.ChatID, cfg.ImsgPath = true, true, "chat", "/bin/echo"
+	responder := &recordingResponder{response: imessage.Response{ToolCompleted: true}}
+	runner := &Runner{Now: time.Now, Delegation: backend, IMessage: &imessage.Adapter{Config: cfg, Commander: commander, PersistentResponder: responder}}
+	runner.deliverReportsOnce(context.Background())
+	if !reflect.DeepEqual(commander.sends, []string{"did you eat breakfast today?"}) {
+		t.Fatalf("question was wrapped or lost: %v", commander.sends)
+	}
+}
+
+func TestSilentScheduleReports(t *testing.T) {
+	for _, kind := range []string{"progress", "completed", "needs_user", "failed"} {
+		t.Run(kind, func(t *testing.T) {
+			now := time.Now().UTC()
+			store := orchestrator.Store{Path: filepath.Join(t.TempDir(), "state.json")}
+			schedule := orchestrator.Schedule{Name: "backend", Silent: true}
+			job := orchestrator.NewJobWithOccurrence(schedule, "running", "run", now)
+			job.RuntimeRunID = "run"
+			if err := store.Update(func(st *orchestrator.State) error {
+				st.Schedules = append(st.Schedules, schedule)
+				st.Jobs = append(st.Jobs, job)
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			backend := &fakeDelegationRuntime{reports: []runtimeclient.ParentReport{{ID: "report", RouterID: scheduleRouterID, ChatID: "chat", RunID: "run", Kind: kind, Message: "result"}}}
+			commander := &reportCommander{}
+			cfg := imessage.Defaults()
+			cfg.Enabled, cfg.RouterMode, cfg.ChatID, cfg.ImsgPath = true, true, "chat", "/bin/echo"
+			responder := &recordingResponder{}
+			runner := &Runner{Store: store, Now: func() time.Time { return now }, Delegation: backend, IMessage: &imessage.Adapter{Config: cfg, Commander: commander, PersistentResponder: responder}}
+			runner.deliverReportsOnce(context.Background())
+			state, err := store.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			visible := kind == "needs_user" || kind == "failed"
+			if (len(responder.prompts) != 0) != visible || (len(commander.sends) != 0) != visible || state.ReportDeliveries["report"].UserVisible != visible {
+				t.Fatalf("prompts=%v sends=%v receipt=%+v", responder.prompts, commander.sends, state.ReportDeliveries["report"])
+			}
+			if !reflect.DeepEqual(backend.finishDelivered, []bool{true}) {
+				t.Fatalf("report not acknowledged: %v", backend.finishDelivered)
+			}
+			if kind == "completed" && (state.Jobs[0].Status != "completed" || state.Jobs[0].DeliveryStatus != "silent") {
+				t.Fatalf("silent completion not recorded: %+v", state.Jobs[0])
+			}
+		})
+	}
+}
+
+func TestScheduleFinalReportCompletesJobAndReachesMain(t *testing.T) {
 	now := time.Now().UTC()
 	store := orchestrator.Store{Path: filepath.Join(t.TempDir(), "state.json")}
 	schedule := orchestrator.Schedule{Name: "nightly", Type: orchestrator.ScheduleAgent, Backend: "herdr", Agent: "mock", Repo: t.TempDir(), Prompt: "work", Every: time.Hour, Enabled: true}
@@ -294,7 +347,7 @@ func TestScheduleLifecycleReportCompletesJobWithoutSendingMessage(t *testing.T) 
 	if err := store.Update(func(st *orchestrator.State) error { st.Jobs = append(st.Jobs, job); return nil }); err != nil {
 		t.Fatal(err)
 	}
-	backend := &fakeDelegationRuntime{reports: []runtimeclient.ParentReport{{ID: "schedule-lifecycle", RouterID: scheduleRouterID, ChatID: "chat", RunID: "run-scheduled", Message: "done", LifecycleOnly: true}}}
+	backend := &fakeDelegationRuntime{reports: []runtimeclient.ParentReport{{ID: "schedule-lifecycle", RouterID: scheduleRouterID, ChatID: "chat", RunID: "run-scheduled", Worker: 2, Kind: "completed", Message: "done"}}}
 	commander := &reportCommander{}
 	cfg := imessage.Defaults()
 	cfg.Enabled, cfg.RouterMode, cfg.ChatID, cfg.ImsgPath = true, true, "chat", "/bin/echo"
@@ -305,7 +358,7 @@ func TestScheduleLifecycleReportCompletesJobWithoutSendingMessage(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.Jobs[0].Status != "completed" || len(responder.prompts) != 0 || len(commander.sends) != 0 || !reflect.DeepEqual(backend.finishDelivered, []bool{true}) {
+	if state.Jobs[0].Status != "completed" || len(responder.prompts) != 1 || len(commander.sends) != 1 || !reflect.DeepEqual(backend.finishDelivered, []bool{true}) {
 		t.Fatalf("job=%#v prompts=%v sends=%v finishes=%v", state.Jobs[0], responder.prompts, commander.sends, backend.finishDelivered)
 	}
 }
@@ -323,7 +376,7 @@ func TestScheduleFailureLifecycleMarksFailureAndSendsOneNotice(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	backend := &fakeDelegationRuntime{reports: []runtimeclient.ParentReport{{ID: "failure", RouterID: scheduleRouterID, ChatID: "chat", RunID: "run-scheduled", Message: "The worker pane closed without sending a final report.", LifecycleOnly: true, LifecycleStatus: "failed"}}}
+	backend := &fakeDelegationRuntime{reports: []runtimeclient.ParentReport{{ID: "failure", RouterID: scheduleRouterID, ChatID: "chat", RunID: "run-scheduled", Message: "The worker pane closed without sending a final report.", Worker: 2, Kind: "failed"}}}
 	commander := &reportCommander{}
 	cfg := imessage.Defaults()
 	cfg.Enabled, cfg.RouterMode, cfg.ChatID, cfg.ImsgPath = true, true, "chat", "/bin/echo"
@@ -398,59 +451,6 @@ func TestReportDeliveryUsesHTTPLeaseAndAbandonsAmbiguousSend(t *testing.T) {
 	}
 }
 
-func TestYoloSensitiveReportAutoAuthorizesWithoutSendingOrSummarizing(t *testing.T) {
-	backend := &fakeDelegationRuntime{reports: []runtimeclient.ParentReport{{ID: "r1", RouterID: imessageRouterID, ChatID: "chat", RunID: "run", Kind: "needs_user", Message: "confirm", SensitiveAction: "payment_or_purchase", ChallengedAction: "buy A", ChallengeToken: "TOKEN"}}}
-	commander := &reportCommander{}
-	responder := &recordingResponder{}
-	cfg := imessage.Defaults()
-	cfg.Enabled, cfg.RouterMode, cfg.YoloMode, cfg.ChatID, cfg.ImsgPath = true, true, true, "chat", "/bin/echo"
-	runner := &Runner{Delegation: backend, IMessage: &imessage.Adapter{Config: cfg, Commander: commander, PersistentResponder: responder}}
-	runner.deliverReportsOnce(context.Background())
-	if backend.autoCalls != 1 || len(commander.sends) != 0 || len(responder.prompts) != 0 || len(backend.finishDelivered) != 1 || !backend.finishDelivered[0] {
-		t.Fatalf("auto=%d sends=%v prompts=%v finishes=%v", backend.autoCalls, commander.sends, responder.prompts, backend.finishDelivered)
-	}
-}
-
-func TestYoloStaleSensitiveReportRoutesThroughOrchestratorWithoutToken(t *testing.T) {
-	backend := &fakeDelegationRuntime{
-		autoErr: &runtimeclient.HTTPError{StatusCode: http.StatusConflict, Code: "task_not_runnable", Body: `{"error":"task ended"}`},
-		reports: []runtimeclient.ParentReport{
-			{ID: "stale", RouterID: imessageRouterID, ChatID: "chat", RunID: "dead", Kind: "needs_user", Message: "could not sign in", SensitiveAction: "password_or_mfa", ChallengedAction: "sign in", ChallengeToken: "OLDTOKEN"},
-			{ID: "new", RouterID: imessageRouterID, ChatID: "chat", RunID: "new", Kind: "completed", Message: "newer result"},
-		},
-	}
-	commander := &reportCommander{}
-	responder := &recordingResponder{}
-	cfg := imessage.Defaults()
-	cfg.Enabled, cfg.RouterMode, cfg.YoloMode, cfg.ChatID, cfg.ImsgPath = true, true, true, "chat", "/bin/echo"
-	runner := &Runner{Delegation: backend, IMessage: &imessage.Adapter{Config: cfg, Commander: commander, PersistentResponder: responder}}
-
-	runner.deliverReportsOnce(context.Background())
-	if backend.autoCalls != 1 || len(backend.finishDelivered) != 1 || !backend.finishDelivered[0] || len(commander.sends) != 1 {
-		t.Fatalf("auto=%d finishes=%v sends=%v", backend.autoCalls, backend.finishDelivered, commander.sends)
-	}
-	if strings.Contains(commander.sends[0], "OLDTOKEN") || strings.Contains(responder.prompts[0], "OLDTOKEN") || responder.prompts[0] != "could not sign in" || strings.Contains(commander.sends[0], "CONTEXT DROP DAEMON") {
-		t.Fatalf("prompt=%q send=%q", responder.prompts[0], commander.sends[0])
-	}
-
-	backend.autoErr = nil
-	runner.deliverReportsOnce(context.Background())
-	if len(backend.finishDelivered) != 2 || !backend.finishDelivered[1] || len(commander.sends) != 2 || len(responder.prompts) != 2 {
-		t.Fatalf("finishes=%v sends=%v prompts=%v", backend.finishDelivered, commander.sends, responder.prompts)
-	}
-}
-
-func TestYoloSafeAutoAuthorizationFailureReleasesForRetry(t *testing.T) {
-	backend := &fakeDelegationRuntime{autoErr: errors.New("safe launch failure"), reports: []runtimeclient.ParentReport{{ID: "r1", RouterID: imessageRouterID, ChatID: "chat", RunID: "run", Kind: "needs_user", SensitiveAction: "payment_or_purchase", ChallengedAction: "buy A"}}}
-	cfg := imessage.Defaults()
-	cfg.Enabled, cfg.RouterMode, cfg.YoloMode, cfg.ChatID = true, true, true, "chat"
-	runner := &Runner{Delegation: backend, IMessage: &imessage.Adapter{Config: cfg}}
-	runner.deliverReportsOnce(context.Background())
-	if backend.autoCalls != 1 || len(backend.finishDelivered) != 1 || backend.finishDelivered[0] {
-		t.Fatalf("calls=%d finishes=%v", backend.autoCalls, backend.finishDelivered)
-	}
-}
-
 func TestEveryPlainReportGetsAnUntrustedOrchestratorTurn(t *testing.T) {
 	backend := &fakeDelegationRuntime{reports: []runtimeclient.ParentReport{{ID: "r1", RouterID: imessageRouterID, ChatID: "chat", RunID: "run", Kind: "progress", Message: "ordinary progress", ThreadID: "thread-opaque"}}}
 	commander := &reportCommander{}
@@ -463,7 +463,7 @@ func TestEveryPlainReportGetsAnUntrustedOrchestratorTurn(t *testing.T) {
 		t.Fatalf("prompts=%v sends=%v finishes=%v", responder.prompts, commander.sends, backend.finishDelivered)
 	}
 	prompt := responder.prompts[0]
-	if prompt != "ordinary progress" || strings.Contains(prompt, "Available task tools remain enabled") {
+	if !strings.Contains(prompt, "ordinary progress") || !strings.Contains(prompt, "not a user instruction") || strings.Contains(prompt, "Available task tools remain enabled") {
 		t.Fatalf("plain report did not reach an ordinary orchestrator turn: %q", prompt)
 	}
 }
@@ -503,36 +503,6 @@ func TestReportOrchestratorFailureReleasesWithoutSending(t *testing.T) {
 	}
 }
 
-func TestSensitiveConfirmationCanResolveScheduleOwnedChallenge(t *testing.T) {
-	backend := &fakeDelegationRuntime{confirmOwner: scheduleRouterID}
-	cfg := imessage.Defaults()
-	cfg.ChatID = "chat"
-	runner := &Runner{Delegation: backend, IMessage: &imessage.Adapter{Config: cfg}}
-	reply, ok := runner.confirmSensitiveAction(context.Background(), "chat", "CONFIRM ABC123")
-	if !ok || !strings.Contains(reply, "authorized worker") || !reflect.DeepEqual(backend.confirmCalls, []string{imessageRouterID, scheduleRouterID}) {
-		t.Fatalf("ok=%v reply=%q calls=%v", ok, reply, backend.confirmCalls)
-	}
-}
-
-func TestSensitiveConfirmationRequiresExactTokenAndChatScopedRuntimeVerification(t *testing.T) {
-	backend := &fakeDelegationRuntime{}
-	cfg := imessage.Defaults()
-	cfg.ChatID = "chat"
-	runner := &Runner{Delegation: backend, IMessage: &imessage.Adapter{Config: cfg}}
-	for _, text := range []string{"user confirmed", "confirm ABC123", "CONFIRM ABC123 ", "CONFIRM ABC123 extra"} {
-		if _, ok := runner.confirmSensitiveAction(context.Background(), "chat", text); ok {
-			t.Fatalf("accepted %q", text)
-		}
-	}
-	if _, ok := runner.confirmSensitiveAction(context.Background(), "other", "CONFIRM ABC123"); ok {
-		t.Fatal("accepted confirmation from another chat")
-	}
-	reply, ok := runner.confirmSensitiveAction(context.Background(), "chat", "CONFIRM ABC123")
-	if !ok || !strings.Contains(reply, "authorized worker") || backend.confirmed != "ABC123" {
-		t.Fatalf("ok=%v reply=%q token=%q", ok, reply, backend.confirmed)
-	}
-}
-
 type recordingResponder struct {
 	prompts  []string
 	fail     int
@@ -559,47 +529,6 @@ func (r *recordingResponder) Respond(_ context.Context, p string, _ int) (imessa
 	return imessage.Response{Reply: reply}, nil
 }
 func (*recordingResponder) Close() error { return nil }
-func TestIncomingMessageRegistersOpaqueThreadAndSuppressesDuplicateReply(t *testing.T) {
-	commander := &reportCommander{}
-	responder := &recordingResponder{response: imessage.Response{Reply: "Already replied in the thread.", ToolCompleted: true, MessagingSideEffectToolCompleted: true, ThreadReplyToolCompleted: true}}
-	backend := &fakeDelegationRuntime{registeredID: "thread-opaque"}
-	cfg := imessage.Defaults()
-	cfg.Enabled = true
-	cfg.Trusted = true
-	cfg.RouterMode = true
-	cfg.ChatID = "chat"
-	cfg.ImsgPath = "/bin/echo"
-	now := time.Now().UTC()
-	store := orchestrator.Store{Path: filepath.Join(t.TempDir(), "state.json")}
-	if err := store.Update(func(st *orchestrator.State) error {
-		st.MessageJobs["42"] = orchestrator.MessageJob{MessageID: "42", ClaimedAt: now}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	runner := &Runner{Store: store, Now: func() time.Time { return now }, Delegation: backend, IMessage: &imessage.Adapter{Config: cfg, Commander: commander, PersistentResponder: responder}}
-	runner.processMessage(context.Background(), imessage.Message{ID: "42", GUID: "message-guid", ThreadRootGUID: "root-guid", ChatID: "chat", ChatGUID: "chat-guid", Text: "investigate", CreatedAt: "2026-08-31T00:00:00Z"})
-	if backend.registeredOwner != [2]string{imessageRouterID, "chat"} || len(backend.registered) != 1 {
-		t.Fatalf("owner=%v registered=%v", backend.registeredOwner, backend.registered)
-	}
-	if got := backend.registered[0]; got["messageGuid"] != "message-guid" || got["threadRootGuid"] != "root-guid" || got["chatGuid"] != "chat-guid" || got["preview"] != "investigate" {
-		t.Fatalf("registered message=%v", got)
-	}
-	if len(responder.prompts) != 1 || !strings.Contains(responder.prompts[0], "Active iMessage thread ID: thread-opaque") || !strings.Contains(responder.prompts[0], "pass this threadId to delegate_task") {
-		t.Fatalf("prompts=%q", responder.prompts)
-	}
-	if len(commander.sends) != 0 {
-		t.Fatalf("duplicate sends=%q", commander.sends)
-	}
-	state, err := store.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if state.MessageJobs["42"].Status != "sent" {
-		t.Fatalf("job=%+v", state.MessageJobs["42"])
-	}
-}
-
 func TestActiveTaskDoesNotInterceptCasualRouterMessage(t *testing.T) {
 	commander := &reportCommander{}
 	responder := &recordingResponder{}
@@ -619,61 +548,6 @@ func TestActiveTaskDoesNotInterceptCasualRouterMessage(t *testing.T) {
 	runner.processMessage(context.Background(), imessage.Message{ID: "1", ChatID: "chat", Text: "thanks"})
 	if len(responder.prompts) != 1 {
 		t.Fatalf("router prompts=%d", len(responder.prompts))
-	}
-}
-
-func TestDelegateAllStartsWorkerWithoutRunningRouterTurn(t *testing.T) {
-	commander := &reportCommander{}
-	responder := &recordingResponder{}
-	backend := &fakeDelegationRuntime{}
-	cfg := imessage.Defaults()
-	cfg.Enabled = true
-	cfg.Trusted = true
-	cfg.RouterMode = true
-	cfg.DelegateAll = true
-	cfg.ChatID = "chat"
-	cfg.ImsgPath = "/bin/echo"
-	cfg.ConversationArchiveFile = "/tmp/chat.jsonl"
-	now := time.Now().UTC()
-	store := orchestrator.Store{Path: filepath.Join(t.TempDir(), "state.json")}
-	_ = store.Update(func(st *orchestrator.State) error {
-		st.MessageJobs["1"] = orchestrator.MessageJob{MessageID: "1", ClaimedAt: now}
-		return nil
-	})
-	runner := &Runner{Store: store, Now: func() time.Time { return now }, Delegation: backend, IMessage: &imessage.Adapter{Config: cfg, Commander: commander, PersistentResponder: responder}, routerCapability: "cap"}
-	runner.processMessage(context.Background(), imessage.Message{ID: "1", ChatID: "chat", Text: "research queues"})
-	if len(responder.prompts) != 0 {
-		t.Fatalf("router unexpectedly ran %d turns", len(responder.prompts))
-	}
-	if len(backend.delegated) != 1 || !strings.Contains(backend.delegated[0], "research queues") || !strings.Contains(backend.delegated[0], cfg.ConversationArchiveFile) {
-		t.Fatalf("delegated prompts=%q", backend.delegated)
-	}
-	if !reflect.DeepEqual(commander.sends, []string{"on it — i started a worker."}) {
-		t.Fatalf("sends=%q", commander.sends)
-	}
-}
-
-func TestDelegateAllPreservesIncomingThreadOnNewWorker(t *testing.T) {
-	backend := &fakeDelegationRuntime{}
-	runner := &Runner{Delegation: backend, IMessage: &imessage.Adapter{Config: imessage.Config{}}, routerCapability: "cap"}
-	reply, err := runner.delegateMessage(context.Background(), imessage.Message{Text: "research", ThreadID: "thread-opaque"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if reply != "on it — i started a worker." || backend.delegatedThread != "thread-opaque" || !reflect.DeepEqual(backend.delegated, []string{"research"}) {
-		t.Fatalf("reply=%q thread=%q delegated=%q", reply, backend.delegatedThread, backend.delegated)
-	}
-}
-
-func TestDelegateAllSteersFollowUpToActiveWorker(t *testing.T) {
-	backend := &fakeDelegationRuntime{activeTask: runtimeclient.ManagedTask{PaneID: "pane-1", Status: "running", FullyManaged: true}}
-	runner := &Runner{Delegation: backend, IMessage: &imessage.Adapter{Config: imessage.Config{}}, routerCapability: "cap"}
-	reply, err := runner.delegateMessage(context.Background(), imessage.Message{Text: "also compare costs"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if reply != "got it — i sent that to the active worker." || !reflect.DeepEqual(backend.continued, []string{"also compare costs"}) || len(backend.delegated) != 0 {
-		t.Fatalf("reply=%q continued=%q delegated=%q", reply, backend.continued, backend.delegated)
 	}
 }
 

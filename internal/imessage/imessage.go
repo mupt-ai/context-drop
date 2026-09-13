@@ -483,9 +483,7 @@ func (a Adapter) RespondMeasured(ctx context.Context, message Message) (Response
 	}
 	promptStarted := time.Now()
 	prompt := message.Text
-	if message.ThreadID != "" {
-		prompt = incomingMessagePrompt(message)
-	}
+
 	promptBuild := time.Since(promptStarted)
 	if a.PersistentResponder != nil {
 		response, respondErr := a.PersistentResponder.Respond(respondCtx, prompt, a.Config.MaxReplyBytes)
@@ -586,16 +584,13 @@ func recentOutboundPrompt(messages []ContextMessage) string {
 
 func incomingMessagePrompt(message Message) string {
 	prompt := "\nIncoming iMessage ID " + message.ID + ":"
-	if message.ThreadID != "" {
-		prompt += "\nActive iMessage thread ID: " + message.ThreadID + ". Send user-facing responses to this message with reply_to_thread, and pass this threadId to delegate_task when starting related background work. You may use react_to_thread when a reaction is appropriate. After a successful thread reply, end the turn without additional text; the daemon automatically prevents duplicate delivery. A successful reaction may also end the turn without text."
-	}
+
 	return prompt + "\n\nThe incoming text:\n\n" + message.Text + "\n"
 }
 
 // RespondToWorkerReport delivers an untrusted worker report as a normal turn to
 // the persistent orchestrator. Unlike the former summary path, this keeps the
-// orchestrator tools available so it can decide whether to reply,
-// delegate follow-up work, continue a pane, ask the user, or take no action.
+// report in the main conversation. Report turns have no delegation tools.
 func (a Adapter) RespondToWorkerReport(ctx context.Context, prompt string, maxOutput int) (string, error) {
 	response, err := a.RespondToWorkerReportMeasured(ctx, prompt, maxOutput)
 	return response.Reply, err

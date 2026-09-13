@@ -1,8 +1,4 @@
-# Local daemon, delegation, and schedules
-
-The Context Drop daemon is the local orchestration core. It owns the persistent conversation responder, supervises a private loopback Node runtime, starts agent panes, observes managed-task lifecycle, delivers reports, and claims scheduled work durably.
-
-## Service management
+# Local daemon and schedules
 
 ```sh
 context-drop daemon install
@@ -11,57 +7,33 @@ context-drop daemon logs --lines 200
 context-drop daemon restart
 ```
 
-On macOS the installer uses a per-user LaunchAgent. On Linux it uses a systemd user service. Foreground `context-drop daemon run` is available for debugging.
+The daemon warms four native Pi workers. Herdr workers live in the configured managed workspace; tmux workers live in the configured session. Each slot keeps its pane for later tasks. Changing tasks switches the Pi conversation without restarting the agent. Unrelated panes are never adopted or controlled.
 
-## Orchestrator task tools
-
-The trusted conversation orchestrator exposes managed task controls and full read-only Herdr inspection:
-
-- `list_tasks`: query every worker in the selected live backend and return public pane IDs, agent, optional name, status, selection state, and whether Context Drop fully manages the task.
-- `delegate_task`: start a fully managed task using configured defaults and an optional configured agent/name; for iMessage work it can retain an opaque active `threadId` so reports return to the originating thread.
-- `continue_task` / `herdr_prompt`: send the message unchanged through the managed continuation boundary to an exact live pane. Context Drop does not add a header, footer, reminder, or other prompt formatting. An authorized-sensitive worker cannot be continued.
-- `herdr_overview` / `herdr_read`: inspect the full configured Herdr session without exposing raw credentials.
-- `herdr_wait`: poll authoritative status client-side with a bounded timeout and cancellation; it never invokes a blocking Herdr wait subprocess and reports timeout separately from observed status.
-- `list_active_threads`: list recent opaque iMessage thread IDs scoped to the configured router conversation; raw chat and message GUIDs are never returned.
-- `reply_to_thread` / `react_to_thread`: send a targeted reply or Tapback through the operator-managed advanced `imsg` bridge. They fail closed if the bridge is unavailable and never fall back to an untargeted message.
-- `repo_list` / `start_agent`: select only a validated alias or unambiguous live workspace cwd, then launch a fully managed, tracked worker with reporting, safety policy, and capacity enforcement.
-
-Manage aliases without editing runtime JSON:
+The main conversation's only tool is `delegate_to_worker(worker, prompt)`, with worker numbers 1–4. Final main responses are texted to the user. Workers have coding tools and report through Context Drop. They cannot create another delegation level.
 
 ```sh
-context-drop repo add context-drop /absolute/path/to/context-drop
-context-drop repo list
-context-drop repo remove context-drop
+context-drop report "Tests are passing; checking the migration."
+context-drop report --question "Which repository should I use?"
 ```
 
-Alias paths are canonicalized and must already be absolute directories.
-
-Continuation is available for every managed or unmanaged live pane, including agents currently marked `idle` or `done`. Pane IDs must come from live status or a trusted report and must never be guessed. Adopting an unmanaged or previously completed pane creates fresh managed tracking and scoped reporting before the prompt is sent.
-
-Managed Herdr work uses new tabs in the reusable `ContextDropManaged` workspace in the configured `CONTEXT_DROP_HERDR_SESSION`; full-AI work never silently switches to another session. Workspace-targeted launches use a new copilot tab in that exact validated workspace. Context Drop must not close or disturb unrelated workspaces, tabs, or panes.
-
-## Worker reports
-
-Workers use one command for reports:
-
-```sh
-context-drop report "Natural-language progress or result"
-```
-
-Managed launches receive scoped reporting values in their environment. For adopted live panes, Context Drop stores scoped credentials by Herdr/tmux pane in its private local state, and `context-drop report` uses the pane environment to discover the right record automatically. Workers do not export variables manually.
-
-The message enters the owning orchestrator conversation. Worker-authored reports are complemented by daemon lifecycle events if a managed pane exits, crashes, or disappears. Reporting credentials cannot control the daemon or upload files.
-
-## Schedules
+Final worker answers are reported automatically. Do not duplicate them with an explicit report. Questions retain the worker's task until the main orchestrator delegates the user's answer to that worker.
 
 ```sh
 context-drop schedule add --name test-watch \
-  --agent pi --repo "$HOME/code/project" \
-  --prompt "Inspect current test failures and report naturally" \
-  --every 30m --notify
+  --repo "$HOME/code/project" \
+  --prompt "Inspect current test failures and report the result" \
+  --every 30m
 context-drop schedule list
+context-drop schedule test-watch
+context-drop schedule test-watch "Updated task prompt"
 context-drop schedule run test-watch
+context-drop schedule pause test-watch
+context-drop schedule resume test-watch
 context-drop schedule remove test-watch
 ```
 
-Calendar schedules use `--cron '0 9 * * 1-5' --timezone America/Los_Angeles`. Schedules persist a prompt snapshot and launch fully managed local work through the daemon. Claims and job outcomes are written durably so overlapping ticks do not launch the same occurrence twice.
+Calendar schedules use `--cron '0 9 * * 1-5' --timezone America/Los_Angeles`. Every agent occurrence claims the shared pool; if all four workers are occupied it waits. Timing is deterministic, overlap is skipped, and missed intervals are bounded. Schedules are not invented from conversation messages or reports.
+
+New schedules contain prompts. Command records execute their argv directly in the daemon; watch records remain worker tasks. Per-schedule agent/backend selection and direct command retries are removed. Select Herdr or tmux for the pool in runtime configuration.
+
+Existing old managed-task records are not adopted into the new pool. Finish old workers before installing this version; their old reporting capabilities do not authorize the new runtime. Native pool workers and their durable outboxes survive ordinary runtime restarts.

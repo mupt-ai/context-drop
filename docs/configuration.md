@@ -35,16 +35,15 @@ The runtime config records absolute executable argv for detected agents. The dae
 There is no public setup command. An administrator provisions `<CONTEXT_DROP_HOME>/imessage/config.json` with mode `0600`. The schema is defined by `internal/imessage.Config`; important fields are:
 
 - `enabled`, `trusted`, and `router_mode`
-- optional `delegate_all`: route every ordinary user message directly to a full-tool managed worker; a follow-up continues the active worker for that chat
 - exact `chat_id` and optional send `recipient`
 - absolute `imsg_path`
 - absolute `responder_command` argv containing `{prompt_file}`
 - positive polling, history, responder, send, message-size, and reply-size limits; trusted persistent responder turns have a five-minute hard ceiling
 - optional absolute persona, memory, archive, and responder-working-directory paths
 
-Router mode requires a trusted private chat. `delegate_all` also requires router mode. In delegate-all mode the persistent orchestrator remains restricted: it routes reports and confirmations, while disposable workers do the actual tool-using work. Keep `yolo_mode` off unless the operator intentionally accepts its documented sensitive-action risk. Restart the daemon after changing adapter configuration. `context-drop daemon status` reports whether iMessage configuration loaded and whether it is enabled.
+Router mode requires a trusted private chat and a persistent Pi responder. The daemon warms the main session and four native Pi workers. The main's only tool is `delegate_to_worker`; final responses use ordinary daemon-owned iMessage delivery. Old `delegate_all` and `yolo_mode` settings no longer select execution paths.
 
-When `imsg` history provides message GUIDs, router mode registers opaque thread IDs for recent inbound messages. The router can list active IDs, send a threaded reply, add a targeted Tapback, and attach a delegated task to its originating thread. Raw chat/message GUIDs stay in private runtime state and are never returned by these tools. Threads remain active for seven days, or while associated work is active. Targeted replies and Tapbacks require the operator-managed advanced `imsg` IMCore bridge (`imsg launch`, SIP disabled). Context Drop does not disable SIP or start the bridge, and fails closed without it.
+The runtime uses the executable in `agents.pi.command[0]`. Other configured agent entries are retained for configuration compatibility but are not worker choices. `defaultBackend` chooses Herdr or tmux for the entire pool. Worker panes and capabilities persist in `runtime/worker-pool.json`; task forks and worker outboxes live alongside it. Do not delete pool state while its native workers are alive.
 
 Telegram is not implemented in this release.
 
