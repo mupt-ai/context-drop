@@ -38,38 +38,34 @@ type PIDInfo struct {
 	StartToken string    `json:"start_token"`
 }
 type Status struct {
-	PID                  int                 `json:"pid,omitempty"`
-	Alive                bool                `json:"alive"`
-	RuntimeHealthy       bool                `json:"runtime_healthy"`
-	Installed            bool                `json:"service_installed"`
-	Loaded               bool                `json:"service_loaded"`
-	ScheduleCount        int                 `json:"schedule_count"`
-	EnabledScheduleCount int                 `json:"enabled_schedule_count"`
-	JobCount             int                 `json:"job_count"`
-	LastRuntimeError     string              `json:"last_runtime_error,omitempty"`
-	IMessageConfigured   bool                `json:"imessage_configured"`
-	IMessageEnabled      bool                `json:"imessage_enabled"`
-	IMessageInitialized  bool                `json:"imessage_initialized"`
-	LastMessagePollAt    *time.Time          `json:"last_message_poll_at,omitempty"`
-	LastMessageError     string              `json:"last_message_error,omitempty"`
-	Runs                 []runtimeclient.Run `json:"runs,omitempty"`
+	PID                  int                    `json:"pid,omitempty"`
+	Alive                bool                   `json:"alive"`
+	RuntimeHealthy       bool                   `json:"runtime_healthy"`
+	Installed            bool                   `json:"service_installed"`
+	Loaded               bool                   `json:"service_loaded"`
+	ScheduleCount        int                    `json:"schedule_count"`
+	EnabledScheduleCount int                    `json:"enabled_schedule_count"`
+	JobCount             int                    `json:"job_count"`
+	LastRuntimeError     string                 `json:"last_runtime_error,omitempty"`
+	IMessageConfigured   bool                   `json:"imessage_configured"`
+	IMessageEnabled      bool                   `json:"imessage_enabled"`
+	IMessageInitialized  bool                   `json:"imessage_initialized"`
+	LastMessagePollAt    *time.Time             `json:"last_message_poll_at,omitempty"`
+	LastMessageError     string                 `json:"last_message_error,omitempty"`
+	Workers              []runtimeclient.Worker `json:"workers,omitempty"`
+	Runs                 []runtimeclient.Run    `json:"runs,omitempty"`
 }
 
 type RuntimeLauncher interface {
-	LaunchManagedSchedule(context.Context, string, string, string, string, string, string, string) (runtimeclient.ManagedTask, error)
+	LaunchManagedSchedule(context.Context, string, string, string, string, string, string, string, string) (runtimeclient.ManagedTask, error)
 	Tasks(context.Context, string) ([]runtimeclient.ManagedTask, error)
 }
 
 type DelegationRuntime interface {
 	Health(context.Context) error
 	IssueRouterCapability(context.Context, string, string) (string, error)
-	Delegate(context.Context, string, string, string) (runtimeclient.ManagedTask, error)
-	ActiveTask(context.Context, string) (runtimeclient.ManagedTask, bool, error)
-	ContinueTask(context.Context, string, string, string) (runtimeclient.ManagedTask, error)
 	LeaseReport(context.Context, string, string) (runtimeclient.ParentReport, bool, error)
 	FinishReport(context.Context, runtimeclient.ParentReport, string, string, bool) error
-	AutoAuthorize(context.Context, runtimeclient.ParentReport, string, string) (runtimeclient.Run, string, error)
-	Confirm(context.Context, string, string, string) (runtimeclient.Run, error)
 }
 
 type Runner struct {
@@ -89,6 +85,8 @@ type Runner struct {
 	messagePollMu            sync.Mutex
 	messageWorkerOnce        sync.Once
 	messageQueue             chan messageBatch
+	messageDebounce          time.Duration
+	commandWorkers           sync.WaitGroup
 }
 
 type messageBatch struct {
@@ -241,7 +239,7 @@ func NewRunner() (*Runner, error) {
 	if err != nil {
 		return nil, err
 	}
-	runner := &Runner{Store: store, Notifier: orchestrator.LocalNotifier{}, Now: func() time.Time { return time.Now().UTC() }, Runtime: client, Delegation: client}
+	runner := &Runner{messageDebounce: 2 * time.Second, Store: store, Notifier: orchestrator.LocalNotifier{}, Now: func() time.Time { return time.Now().UTC() }, Runtime: client, Delegation: client}
 	messageConfig, messageErr := imessage.Load()
 	if messageErr == nil {
 		adapter := &imessage.Adapter{Config: messageConfig}
@@ -265,6 +263,8 @@ func NewRunner() (*Runner, error) {
 }
 
 func Run(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	cleanup, err := claimPID()
 	if err != nil {
 		return err
@@ -277,6 +277,17 @@ func Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := runner.Store.Update(func(st *orchestrator.State) error {
+		for _, job := range st.Jobs {
+			if job.ScheduleType == orchestrator.ScheduleCommand && job.Status == "running" && strings.HasPrefix(job.RuntimeRunID, "local:") {
+				_ = orchestrator.SetJobStatus(st, job.ID, "failed", job.RuntimeRunID, "daemon restarted before script completion; not replayed", runner.Now())
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	defer func() { cancel(); runner.commandWorkers.Wait() }()
 	if runner.IMessage != nil {
 		defer runner.IMessage.Close()
 	}
@@ -315,7 +326,17 @@ func Run(ctx context.Context) error {
 	startMessageReceiver := func() {
 		if runner.IMessage != nil && runner.IMessage.Config.Enabled && routerReady && !messageReceiverStarted {
 			messageReceiverStarted = true
-			go runner.ReceiveMessages(ctx)
+			go func() {
+				if runner.IMessage.PersistentResponder != nil {
+					warmCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+					_, warmErr := runner.IMessage.PersistentResponder.Prepare(warmCtx)
+					cancel()
+					if warmErr != nil {
+						log.Printf("Context Drop main orchestrator warmup failed: %v", warmErr)
+					}
+				}
+				runner.ReceiveMessages(ctx)
+			}()
 		}
 	}
 	startMessageReceiver()
@@ -921,11 +942,55 @@ func (r *Runner) startMessageWorker(ctx context.Context) {
 				case <-ctx.Done():
 					return
 				case batch := <-r.messageQueue:
-					for _, message := range batch.messages {
-						r.processMessage(ctx, message)
+					batches := []messageBatch{batch}
+					if r.messageDebounce > 0 {
+						quiet := time.NewTimer(r.messageDebounce)
+						limit := time.NewTimer(3 * r.messageDebounce)
+					collect:
+						for {
+							select {
+							case next := <-r.messageQueue:
+								batches = append(batches, next)
+								if !quiet.Stop() {
+									select {
+									case <-quiet.C:
+									default:
+									}
+								}
+								quiet.Reset(r.messageDebounce)
+							case <-quiet.C:
+								break collect
+							case <-limit.C:
+								break collect
+							case <-ctx.Done():
+								quiet.Stop()
+								limit.Stop()
+								return
+							}
+						}
+						quiet.Stop()
+						limit.Stop()
 					}
-					if batch.done != nil {
-						close(batch.done)
+					var group []imessage.Message
+					bytes := 0
+					for _, next := range batches {
+						for _, message := range next.messages {
+							if len(group) > 0 && (r.messageDebounce == 0 || message.ChatID != group[0].ChatID || bytes+len(message.Text) > 16000) {
+								r.processMessages(ctx, group)
+								group = nil
+								bytes = 0
+							}
+							group = append(group, message)
+							bytes += len(message.Text) + 2
+						}
+					}
+					if len(group) > 0 {
+						r.processMessages(ctx, group)
+					}
+					for _, next := range batches {
+						if next.done != nil {
+							close(next.done)
+						}
 					}
 				}
 			}
@@ -988,6 +1053,16 @@ func responderFailureReply(err error, response imessage.Response) string {
 }
 
 func (r *Runner) processMessage(ctx context.Context, message imessage.Message) {
+	r.processMessages(ctx, []imessage.Message{message})
+}
+
+func (r *Runner) processMessages(ctx context.Context, messages []imessage.Message) {
+	message := messages[0]
+	texts := make([]string, len(messages))
+	for i, item := range messages {
+		texts[i] = item.Text
+	}
+	message.Text = strings.Join(texts, "\n\n")
 	if state, err := r.Store.Load(); err == nil {
 		message.RecentOutbound = make([]imessage.ContextMessage, 0, len(state.RecentOutbound))
 		for _, outbound := range state.RecentOutbound {
@@ -995,32 +1070,18 @@ func (r *Runner) processMessage(ctx context.Context, message imessage.Message) {
 
 		}
 	}
-	if registrar, ok := r.Delegation.(interface {
-		RegisterIMessageThread(context.Context, string, string, map[string]string) (string, error)
-	}); ok && message.GUID != "" {
-		threadID, err := registrar.RegisterIMessageThread(ctx, imessageRouterID, r.IMessage.Config.ChatID, map[string]string{
-			"messageGuid":    message.GUID,
-			"threadRootGuid": message.ThreadRootGUID,
-			"chatGuid":       message.ChatGUID,
-			"preview":        message.Text,
-			"createdAt":      message.CreatedAt,
-		})
-		if err != nil {
-			log.Printf("Context Drop iMessage thread registration failed: %v", err)
-		} else {
-			message.ThreadID = threadID
-		}
-	}
 	processingStarted := r.Now()
 	if err := r.Store.Update(func(st *orchestrator.State) error {
-		job := st.MessageJobs[message.ID]
-		job.Status = "processing"
-		job.ProcessingStartedAt = &processingStarted
-		job.UpdatedAt = processingStarted
-		if !processingStarted.Before(job.ClaimedAt) {
-			job.Latency.WorkerQueueMS = processingStarted.Sub(job.ClaimedAt).Milliseconds()
+		for _, item := range messages {
+			job := st.MessageJobs[item.ID]
+			job.Status = "processing"
+			job.ProcessingStartedAt = &processingStarted
+			job.UpdatedAt = processingStarted
+			if !processingStarted.Before(job.ClaimedAt) {
+				job.Latency.WorkerQueueMS = processingStarted.Sub(job.ClaimedAt).Milliseconds()
+			}
+			st.MessageJobs[item.ID] = job
 		}
-		st.MessageJobs[message.ID] = job
 		return nil
 	}); err != nil {
 		log.Printf("Context Drop iMessage processing state failed: %v", err)
@@ -1028,17 +1089,7 @@ func (r *Runner) processMessage(ctx context.Context, message imessage.Message) {
 	}
 	var response imessage.Response
 	var responderErr error
-	if r.IMessage.Config.RouterMode {
-		if confirmationReply, handled := r.confirmSensitiveAction(ctx, message.ChatID, message.Text); handled {
-			response.Reply = confirmationReply
-		} else if r.IMessage.Config.DelegateAll {
-			response.Reply, responderErr = r.delegateMessage(ctx, message)
-		} else {
-			response, responderErr = r.IMessage.RespondMeasured(ctx, message)
-		}
-	} else {
-		response, responderErr = r.IMessage.RespondMeasured(ctx, message)
-	}
+	response, responderErr = r.IMessage.RespondMeasured(ctx, message)
 	processErr := responderErr
 	if response.MessagingSideEffectToolCompleted {
 		processErr = nil
@@ -1051,6 +1102,9 @@ func (r *Runner) processMessage(ctx context.Context, message imessage.Message) {
 	}
 	completedAt := r.Now()
 	status := "sent"
+	if response.Reply == "" && !response.MessagingSideEffectToolCompleted {
+		status = "handled"
+	}
 	errorText := ""
 	if processErr != nil {
 		status = "failed"
@@ -1063,33 +1117,37 @@ func (r *Runner) processMessage(ctx context.Context, message imessage.Message) {
 		}
 	}
 	if err := r.Store.Update(func(st *orchestrator.State) error {
-		job := st.MessageJobs[message.ID]
-		job.Status = status
-		job.Input = nil
-		job.UpdatedAt = completedAt
-		job.Error = errorText
-		if status == "sent" {
-			job.SentAt = &completedAt
+		for _, item := range messages {
+			job := st.MessageJobs[item.ID]
+			job.Status = status
+			job.Input = nil
+			job.UpdatedAt = completedAt
+			job.Error = errorText
+			if status == "sent" {
+				job.SentAt = &completedAt
+			}
+			job.Latency.PromptBuildMS = response.Metrics.PromptBuild.Milliseconds()
+			job.Latency.ResponderStartupMS = response.Metrics.ResponderStartup.Milliseconds()
+			job.Latency.ResponderMS = response.Metrics.Responder.Milliseconds()
+			job.Latency.FirstOutputMS = response.Metrics.TimeToFirstOutput.Milliseconds()
+			job.Latency.ToolExecutionMS = response.Metrics.ToolExecution.Milliseconds()
+			job.Latency.CompactionMS = response.Metrics.Compaction.Milliseconds()
+			job.Latency.SendMS = sendDuration.Milliseconds()
+			job.Latency.ServiceMS = completedAt.Sub(job.ClaimedAt).Milliseconds()
+			if job.Latency.MessageCreatedAt != nil && !completedAt.Before(*job.Latency.MessageCreatedAt) {
+				job.Latency.EndToEndMS = completedAt.Sub(*job.Latency.MessageCreatedAt).Milliseconds()
+			}
+			job.Latency.PromptBytes = response.Metrics.PromptBytes
+			job.Latency.ColdStart = response.Metrics.ColdStart
+			job.Latency.ModelRounds = make([]orchestrator.ModelRoundLatency, 0, len(response.Metrics.ModelRounds))
+			for _, round := range response.Metrics.ModelRounds {
+				job.Latency.ModelRounds = append(job.Latency.ModelRounds, orchestrator.ModelRoundLatency{DurationMS: round.Duration.Milliseconds(), Model: round.Model, ResponseID: round.ResponseID, TotalTokens: round.TotalTokens})
+			}
+			st.MessageJobs[item.ID] = job
+		}
+		if status == "sent" && response.Reply != "" {
 			orchestrator.RecordOutbound(st, "", response.Reply, completedAt, "conversation")
 		}
-		job.Latency.PromptBuildMS = response.Metrics.PromptBuild.Milliseconds()
-		job.Latency.ResponderStartupMS = response.Metrics.ResponderStartup.Milliseconds()
-		job.Latency.ResponderMS = response.Metrics.Responder.Milliseconds()
-		job.Latency.FirstOutputMS = response.Metrics.TimeToFirstOutput.Milliseconds()
-		job.Latency.ToolExecutionMS = response.Metrics.ToolExecution.Milliseconds()
-		job.Latency.CompactionMS = response.Metrics.Compaction.Milliseconds()
-		job.Latency.SendMS = sendDuration.Milliseconds()
-		job.Latency.ServiceMS = completedAt.Sub(job.ClaimedAt).Milliseconds()
-		if job.Latency.MessageCreatedAt != nil && !completedAt.Before(*job.Latency.MessageCreatedAt) {
-			job.Latency.EndToEndMS = completedAt.Sub(*job.Latency.MessageCreatedAt).Milliseconds()
-		}
-		job.Latency.PromptBytes = response.Metrics.PromptBytes
-		job.Latency.ColdStart = response.Metrics.ColdStart
-		job.Latency.ModelRounds = make([]orchestrator.ModelRoundLatency, 0, len(response.Metrics.ModelRounds))
-		for _, round := range response.Metrics.ModelRounds {
-			job.Latency.ModelRounds = append(job.Latency.ModelRounds, orchestrator.ModelRoundLatency{DurationMS: round.Duration.Milliseconds(), Model: round.Model, ResponseID: round.ResponseID, TotalTokens: round.TotalTokens})
-		}
-		st.MessageJobs[message.ID] = job
 		return nil
 	}); err != nil {
 		log.Printf("Context Drop iMessage completion state failed: %v", err)
@@ -1143,194 +1201,77 @@ func (r *Runner) Tick(ctx context.Context) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := r.Now()
-	current, loadErr := r.Store.Load()
-	if loadErr != nil {
-		return loadErr
-	}
-	backends := map[string]bool{}
-	for _, schedule := range current.Schedules {
-		if schedule.Enabled {
-			backends[schedule.Backend] = true
-		}
-	}
-	for _, job := range current.Jobs {
-		if job.ScheduleType == orchestrator.ScheduleAgent && job.Status == "running" {
-			backends[job.Backend] = true
-		}
-	}
-	var tasks []runtimeclient.ManagedTask
-	taskErrors := map[string]error{}
-	inspected := map[string]bool{}
-	for backend := range backends {
-		found, err := r.Runtime.Tasks(ctx, backend)
-		if err != nil {
-			taskErrors[backend] = err
-			continue
-		}
-		inspected[backend] = true
-		tasks = append(tasks, found...)
-	}
-	_ = r.reconcile(tasks, inspected, now)
 	var claims []orchestrator.Claim
 	if err := r.Store.Update(func(st *orchestrator.State) error {
-		orchestrator.RecoverStaleLocalJobs(st, now)
-		claims = orchestrator.ClaimDue(st, now)
+		for _, job := range st.Jobs {
+			if job.Status != "queued" && !(job.Status == "running" && job.RuntimeRunID == "") {
+				continue
+			}
+			for _, schedule := range st.Schedules {
+				if schedule.Name == job.ScheduleName {
+					claims = append(claims, orchestrator.Claim{Schedule: schedule, Job: job})
+					break
+				}
+			}
+		}
+		claims = append(claims, orchestrator.ClaimDue(st, now)...)
 		return nil
 	}); err != nil {
 		return err
 	}
 	for _, claim := range claims {
-		if claim.Schedule.Type == orchestrator.ScheduleWatch && taskErrors[claim.Schedule.Backend] != nil {
-			_ = r.Store.Update(func(st *orchestrator.State) error {
-				return orchestrator.SetJobStatus(st, claim.Job.ID, "failed", "", "live task status unavailable", now)
-			})
-			_ = r.Notifier.Notify("Context Drop schedule failed", claim.Schedule.Name+" could not read live task status")
-			continue
+		if claim.Schedule.Type == orchestrator.ScheduleCommand {
+			if err := r.Store.Update(func(st *orchestrator.State) error {
+				return orchestrator.SetJobStatus(st, claim.Job.ID, "running", "local:"+claim.Job.ID, "", now)
+			}); err != nil {
+				return err
+			}
+			r.commandWorkers.Add(1)
+			go func() { defer r.commandWorkers.Done(); r.ExecuteClaim(ctx, claim, nil, now) }()
+		} else {
+			r.ExecuteClaim(ctx, claim, nil, now)
 		}
-		r.ExecuteClaim(ctx, claim, tasks, now)
 	}
 	return nil
 }
 
-// ExecuteClaim runs one already-durably-reserved schedule occurrence.
-func (r *Runner) ExecuteClaim(ctx context.Context, claim orchestrator.Claim, tasks []runtimeclient.ManagedTask, now time.Time) {
+// Agent occurrences use the shared worker pool. Command occurrences execute locally.
+func (r *Runner) ExecuteClaim(ctx context.Context, claim orchestrator.Claim, _ []runtimeclient.ManagedTask, now time.Time) {
 	s, job := claim.Schedule, claim.Job
-	_ = r.Store.Update(func(st *orchestrator.State) error {
+	if s.Type == orchestrator.ScheduleCommand {
+		r.executeCommand(ctx, claim)
+		return
+	}
+	if err := r.Store.Update(func(st *orchestrator.State) error {
 		return orchestrator.SetJobStatus(st, job.ID, "running", "", "", now)
-	})
-	status, runtimeID, errText, attempt := "completed", "", "", 1
+	}); err != nil {
+		return
+	}
+	status, runID, detail := "running", "", ""
+	var err error
+	var routerID, chatID string
+	if r.IMessage == nil {
+		err = fmt.Errorf("schedules require the main orchestrator")
+	} else {
+		routerID, chatID, err = ScheduleReportOwner(r.IMessage.Config)
+	}
+	prompt, repo := s.Prompt, s.Repo
 	switch s.Type {
-	case orchestrator.ScheduleCommand:
-		status, errText, attempt = r.executeCommand(ctx, s)
 	case orchestrator.ScheduleWatch:
-		status, errText = r.executeWatch(s, tasks)
-	default:
-		status = "running"
-		var ownerErr error
-		var routerID, chatID string
-		if r.IMessage == nil {
-			ownerErr = fmt.Errorf("managed schedules require a configured orchestrator destination")
-		} else {
-			routerID, chatID, ownerErr = ScheduleReportOwner(r.IMessage.Config)
-		}
+		prompt = fmt.Sprintf("Scheduled task %s: inspect %s pane %s (task name %s), report its current state, and make no changes. Do not create further schedules.", s.Name, s.Backend, s.WatchPane, s.WatchTarget)
+	}
+	if err == nil {
 		var task runtimeclient.ManagedTask
-		if ownerErr == nil {
-			task, ownerErr = r.Runtime.LaunchManagedSchedule(ctx, s.Agent, s.Repo, s.Prompt, "schedule-"+s.Name, s.Backend, routerID, chatID)
-		}
-		if ownerErr != nil {
-			status, errText = "failed", ownerErr.Error()
-		} else {
-			runtimeID = task.RunID
-			if s.NotifyOnInitiate {
-				_ = r.Notifier.Notify("Context Drop schedule launched", s.Name+" started locally in managed pane "+task.PaneID+".")
-			}
-		}
+		task, err = r.Runtime.LaunchManagedSchedule(ctx, "codex", repo, prompt, "schedule-"+s.Name, "", routerID, chatID, job.ID)
+		runID = task.RunID
+	}
+	if err != nil {
+		status, detail = "queued", err.Error()
 	}
 	_ = r.Store.Update(func(st *orchestrator.State) error {
-		if err := orchestrator.SetJobStatus(st, job.ID, status, runtimeID, errText, now); err != nil {
-			return err
-		}
-		for i := range st.Jobs {
-			if st.Jobs[i].ID == job.ID {
-				st.Jobs[i].Attempt = attempt
-				break
-			}
-		}
-		for i := range st.Schedules {
-			if st.Schedules[i].Name == s.Name {
-				if s.Type == orchestrator.ScheduleWatch {
-					previous := st.Schedules[i].LastWatchState
-					st.Schedules[i].LastWatchState = errText
-					if previous != errText && (errText == "done" || errText == "missing" || errText == "blocked" || errText == "exited" || errText == "failed") {
-						_ = r.Notifier.Notify("Context Drop watch changed", s.Name+": "+errText)
-					}
-				}
-				if status == "failed" || status == "timed_out" {
-					st.Schedules[i].ConsecutiveFailures++
-					if st.Schedules[i].AutoPauseAfter > 0 && st.Schedules[i].ConsecutiveFailures >= st.Schedules[i].AutoPauseAfter {
-						st.Schedules[i].Enabled = false
-					}
-				} else if status == "completed" {
-					st.Schedules[i].ConsecutiveFailures = 0
-				}
-				break
-			}
-		}
-		return nil
+		return orchestrator.SetJobStatus(st, job.ID, status, runID, detail, now)
 	})
-	if status == "failed" || status == "timed_out" {
-		_ = r.Notifier.Notify("Context Drop schedule failed", s.Name+" failed: "+errText)
-	}
-}
 
-func (r *Runner) executeCommand(parent context.Context, s orchestrator.Schedule) (string, string, int) {
-	attempts := s.MaxRetries + 1
-	for attempt := 0; attempt < attempts; attempt++ {
-		ctx := parent
-		cancel := func() {}
-		if s.Timeout > 0 {
-			ctx, cancel = context.WithTimeout(parent, s.Timeout)
-		}
-		cmd := exec.CommandContext(ctx, s.Command[0], s.Command[1:]...)
-		cmd.Dir = s.Cwd
-		output, err := cmd.CombinedOutput()
-		timed := ctx.Err() == context.DeadlineExceeded
-		cancel()
-		if err == nil {
-			return "completed", "", attempt + 1
-		}
-		if timed && attempt == attempts-1 {
-			return "timed_out", "command exceeded timeout", attempt + 1
-		}
-		if attempt == attempts-1 {
-			return "failed", strings.TrimSpace(string(output)) + ": " + err.Error(), attempt + 1
-		}
-	}
-	return "failed", "command failed", attempts
-}
-
-func (r *Runner) executeWatch(s orchestrator.Schedule, tasks []runtimeclient.ManagedTask) (string, string) {
-	matches := make([]runtimeclient.ManagedTask, 0, 1)
-	for _, task := range tasks {
-		if (task.Backend == "" || task.Backend == s.Backend) && ((s.WatchPane != "" && task.PaneID == s.WatchPane) || (s.WatchTarget != "" && task.Name == s.WatchTarget)) {
-			matches = append(matches, task)
-		}
-	}
-	if len(matches) > 1 {
-		return "failed", "ambiguous watch target"
-	}
-	if len(matches) == 1 {
-		return "completed", matches[0].Status
-	}
-	return "completed", "missing"
-}
-
-func (r *Runner) reconcile(tasks []runtimeclient.ManagedTask, inspected map[string]bool, now time.Time) error {
-	live := map[string]string{}
-	for _, t := range tasks {
-		live[t.RunID] = t.Status
-	}
-	return r.Store.Update(func(st *orchestrator.State) error {
-		for i := range st.Jobs {
-			j := &st.Jobs[i]
-			if j.ScheduleType != orchestrator.ScheduleAgent || j.Status != "running" || j.RuntimeRunID == "" {
-				continue
-			}
-			backend := j.Backend
-			if !inspected[backend] {
-				continue
-			}
-			state, ok := live[j.RuntimeRunID]
-			if !ok {
-				_ = orchestrator.SetJobStatus(st, j.ID, "unknown", j.RuntimeRunID, "live task disappeared", now)
-			} else if state == "failed" || state == "exited" {
-				_ = orchestrator.SetJobStatus(st, j.ID, "failed", j.RuntimeRunID, "live task "+state, now)
-			} else if state == "done" || state == "completed" {
-				_ = orchestrator.SetJobStatus(st, j.ID, "completed", j.RuntimeRunID, "", now)
-			}
-		}
-		return nil
-	})
 }
 
 func Start() (PIDInfo, error) {
@@ -1415,6 +1356,7 @@ func CurrentStatus(ctx context.Context) (Status, error) {
 		cancel()
 		if out.RuntimeHealthy {
 			out.Runs, _ = client.Runs(ctx)
+			out.Workers, _ = client.Workers(ctx)
 		}
 	}
 	store, err := orchestrator.NewStore()

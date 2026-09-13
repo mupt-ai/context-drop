@@ -26,7 +26,10 @@ runtime-build:
 install: build
 	mkdir -p $(INSTALL_DIR) $(LIB_DIR)/runtime
 	install -m 0755 bin/$(CLI_BINARY) $(INSTALL_DIR)/$(CLI_BINARY)
+	rm -rf $(LIB_DIR)/runtime/dist
 	cp -R runtime/dist $(LIB_DIR)/runtime/
+	cp runtime/package.json runtime/package-lock.json $(LIB_DIR)/runtime/
+	cd $(LIB_DIR)/runtime && npm ci --omit=dev --workspaces=false
 
 install-smoke:
 	./scripts/install-smoke.sh

@@ -12,7 +12,7 @@ Uploads require `CONTEXT_DROP_UPLOAD_TOKEN` or `upload_token` in the private con
 
 ## `context-drop report [message]`
 
-Send a natural-language update from a managed worker to its owning orchestrator. If the argument is omitted, the message is read from stdin. The daemon injects the required scoped environment values when launching a managed worker; this command is not a general messaging API.
+Send a natural-language progress update from a worker to the main orchestrator. Use `--question` for a question requiring the user’s answer. Final worker answers are reported automatically. If the argument is omitted, the message is read from stdin. The daemon injects the required scoped environment values when launching a managed worker; this command is not a general messaging API.
 
 ## `context-drop schedule`
 
@@ -21,7 +21,7 @@ Send a natural-language update from a managed worker to its owning orchestrator.
 - `schedule run NAME`: launch one occurrence immediately.
 - `schedule remove NAME`: remove a schedule.
 
-A schedule requires a configured agent, absolute repository path, prompt, and exactly one cadence.
+A schedule requires a name, prompt, and exactly one cadence. `--repo` defaults to the current directory. All schedules share the four Pi workers; agent and backend selection are pool-wide. Use `pause` and `resume` to control a saved schedule.
 
 ## `context-drop daemon`
 

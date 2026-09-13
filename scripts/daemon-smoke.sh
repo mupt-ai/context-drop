@@ -16,7 +16,7 @@ if [[ ! -f "$root/runtime/dist/src/main.js" ]]; then
   exit 1
 fi
 
-home="$(mktemp -d "${TMPDIR:-/tmp}/context-drop-daemon-smoke.XXXXXX")"
+task_home="$(mktemp -d "${TMPDIR:-/tmp}/context-drop-daemon-smoke.XXXXXX")"
 port=$((48000 + ($$ % 1000)))
 daemon_pid=""
 cleanup() {
@@ -24,17 +24,25 @@ cleanup() {
     kill -TERM "$daemon_pid" 2>/dev/null || true
     wait "$daemon_pid" 2>/dev/null || true
   fi
-  rm -rf "$home"
+  rm -rf "$task_home"
 }
 trap cleanup EXIT
 
-export CONTEXT_DROP_HOME="$home"
+export CONTEXT_DROP_HOME="$task_home"
 export CONTEXT_DROP_RUNTIME_PORT="$port"
+export CONTEXT_DROP_BACKEND=tmux
+mkdir -p "$task_home/fake-bin"
+cp "$root/scripts/smoke-tmux.sh" "$task_home/fake-bin/tmux"
+chmod +x "$task_home/fake-bin/tmux"
+printf '#!/bin/sh\nexit 1\n' > "$task_home/fake-bin/codex"
+chmod +x "$task_home/fake-bin/codex"
+cp "$task_home/fake-bin/codex" "$task_home/fake-bin/dari"
+export PATH="$task_home/fake-bin:$PATH"
 
-echo "starting isolated daemon (home=$home port=$port)"
-"$bin" daemon run >"$home/test-daemon.log" 2>&1 &
+echo "starting isolated daemon (task_home=$task_home port=$port)"
+"$bin" daemon run >"$task_home/test-daemon.log" 2>&1 &
 daemon_pid=$!
-pid_file="$home/daemon/daemon.pid"
+pid_file="$task_home/daemon/daemon.pid"
 read_pid() {
   if [[ ! -f "$pid_file" ]]; then
     return 1
@@ -57,7 +65,7 @@ for _ in $(seq 1 30); do
 done
 if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
   echo "daemon did not start" >&2
-  cat "$home/daemon/daemon.log" 2>/dev/null >&2 || true
+  cat "$task_home/daemon/daemon.log" 2>/dev/null >&2 || true
   exit 1
 fi
 echo "daemon pid $pid"
@@ -75,7 +83,7 @@ for _ in $(seq 1 40); do
 done
 if [[ "$healthy" != "yes" ]]; then
   echo "daemon/runtime did not become healthy" >&2
-  cat "$home/daemon/daemon.log" 2>/dev/null >&2 || true
+  cat "$task_home/daemon/daemon.log" 2>/dev/null >&2 || true
   exit 1
 fi
 echo "daemon and runtime healthy"

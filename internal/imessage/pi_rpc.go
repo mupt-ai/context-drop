@@ -19,9 +19,6 @@ import (
 	"time"
 )
 
-//go:embed pi_context_filter.mjs
-var piContextFilter []byte
-
 //go:embed pi_router_extension.mjs
 var piRouterExtension []byte
 
@@ -29,7 +26,6 @@ type PiRPCResponder struct {
 	dir                 string
 	argv                []string
 	env                 []string
-	contextFilterPath   string
 	routerExtensionPath string
 
 	mu             sync.Mutex
@@ -111,7 +107,6 @@ func NewPiRPCResponder(cfg Config) (*PiRPCResponder, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	contextFilterPath := filepath.Join(dir, "pi-context-filter.mjs")
 	routerExtensionPath := ""
 	if cfg.RouterMode {
 		argv = restrictedRouterArgv(argv)
@@ -126,14 +121,13 @@ func NewPiRPCResponder(cfg Config) (*PiRPCResponder, bool, error) {
 			argv = append(argv, "--system-prompt", string(basePrompt))
 		}
 		routerExtensionPath = filepath.Join(dir, "pi-router-extension.mjs")
-		argv = append(argv, "--no-builtin-tools", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-context-files", "--extension", routerExtensionPath)
+		argv = append(argv, "--no-builtin-tools", "--no-extensions", "--no-skills", "--no-prompt-templates", "--extension", routerExtensionPath)
 	}
-	argv = append(argv, "--extension", contextFilterPath)
 	argv, err = recoverMissingSessionCwd(argv, cfg.ResponderCwd)
 	if err != nil {
 		return nil, false, err
 	}
-	return &PiRPCResponder{dir: cfg.ResponderCwd, argv: argv, contextFilterPath: contextFilterPath, routerExtensionPath: routerExtensionPath}, true, nil
+	return &PiRPCResponder{dir: cfg.ResponderCwd, argv: argv, routerExtensionPath: routerExtensionPath}, true, nil
 }
 
 func recoverMissingSessionCwd(argv []string, fallbackCwd string) ([]string, error) {
@@ -343,11 +337,6 @@ func (r *PiRPCResponder) ensurePreparedLocked(ctx context.Context) (PersistentRe
 }
 
 func (r *PiRPCResponder) start(ctx context.Context) error {
-	if r.contextFilterPath != "" {
-		if err := writePrivateAsset(r.contextFilterPath, piContextFilter); err != nil {
-			return fmt.Errorf("install Pi RPC context filter: %w", err)
-		}
-	}
 	if r.routerExtensionPath != "" {
 		if err := writePrivateAsset(r.routerExtensionPath, piRouterExtension); err != nil {
 			return fmt.Errorf("install Pi router extension: %w", err)
@@ -475,6 +464,7 @@ func (r *PiRPCResponder) Respond(ctx context.Context, prompt string, maxOutput i
 	accepted := false
 	firstOutput := time.Duration(0)
 	var reply string
+	allowEmpty := false
 	toolStarts := map[string]time.Time{}
 	toolNames := map[string]string{}
 	toolCompleted := false
@@ -511,9 +501,14 @@ func (r *PiRPCResponder) Respond(ctx context.Context, prompt string, maxOutput i
 				firstOutput = time.Since(started)
 			}
 		case "message_end":
-			if text := assistantText(record.Message); text != "" {
-				reply = text
-				if firstOutput == 0 {
+			var message struct {
+				Role       string `json:"role"`
+				StopReason string `json:"stopReason"`
+			}
+			if json.Unmarshal(record.Message, &message) == nil && message.Role == "assistant" {
+				reply = assistantText(record.Message)
+				allowEmpty = message.StopReason == "stop"
+				if reply != "" && firstOutput == 0 {
 					firstOutput = time.Since(started)
 				}
 			}
@@ -536,7 +531,7 @@ func (r *PiRPCResponder) Respond(ctx context.Context, prompt string, maxOutput i
 				name := toolNames[record.ToolCallID]
 				if !record.IsError {
 					toolCompleted = true
-					if name == "delegate_task" || name == "start_agent" || name == "continue_task" || name == "herdr_prompt" || name == "reply_to_thread" || name == "react_to_thread" {
+					if name == "delegate_to_worker" || name == "reply_to_thread" || name == "react_to_thread" {
 						sideEffectCompleted = true
 					}
 					if name == "reply_to_thread" || name == "react_to_thread" {
@@ -560,7 +555,7 @@ func (r *PiRPCResponder) Respond(ctx context.Context, prompt string, maxOutput i
 				return Response{Metrics: startupMetrics}, errors.New("Pi RPC agent settled before accepting the prompt")
 			}
 			reply = strings.TrimSpace(reply)
-			if reply == "" && !messagingSideEffectCompleted {
+			if reply == "" && !allowEmpty && !messagingSideEffectCompleted {
 				return Response{Metrics: startupMetrics, MessagingSideEffectToolCompleted: messagingSideEffectCompleted, ThreadReplyToolCompleted: threadReplyCompleted, ToolCompleted: toolCompleted, SideEffectToolCompleted: sideEffectCompleted}, &ResponderTurnError{Cause: errors.New("Pi RPC responder returned an empty reply"), ToolCompleted: toolCompleted, SideEffectToolCompleted: sideEffectCompleted}
 			}
 			if len(reply) > maxOutput {

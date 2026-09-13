@@ -1,6 +1,6 @@
 # Context Drop
 
-Context Drop is a small, local-first orchestration system for delegating work to coding agents from a private conversation. Its daemon keeps the orchestrator alive, supervises the local runtime, starts visible Herdr or tmux workers, delivers worker updates, runs schedules, and can serve a trusted iMessage chat on macOS.
+Context Drop is a small, local-first orchestration system for delegating work to coding agents from a private conversation. Its daemon keeps the orchestrator alive, supervises the local runtime, maintains four warm Codex workers in native Herdr tabs or tmux panes, delivers worker updates, runs schedules, and can serve a trusted iMessage chat on macOS.
 
 The public CLI deliberately stays small:
 
@@ -17,7 +17,7 @@ The optional hosted component is only a temporary file store. It has no accounts
 ## What it does
 
 - **Message orchestration:** an explicitly configured iMessage chat talks to one persistent local orchestrator.
-- **Agent delegation:** the orchestrator can list live panes, delegate a fully managed task, or continue an exact live pane.
+- **Agent delegation:** the main orchestrator can text you and delegate to workers 1–4.
 - **Natural-language reports:** managed workers run `context-drop report "message"`; scoped credentials route the message back to the owning conversation.
 - **Schedules:** durable local schedules launch managed agent work through the daemon.
 - **Temporary uploads:** authenticated uploads produce opaque, expiring public links.
@@ -64,9 +64,7 @@ context-drop daemon restart
 context-drop daemon status
 ```
 
-The daemon ignores prior history during initial sync, durably deduplicates later messages, and never gives workers iMessage credentials. The persistent orchestrator exposes managed task controls plus constrained Herdr topology/read/status, validated-repository launch tools, and opaque active-thread tools. It can associate delegated work with the originating iMessage thread and route later worker updates back through that thread without exposing chat or message GUIDs.
-
-Targeted replies and Tapbacks require `imsg`'s advanced IMCore bridge (`imsg launch`), which in turn requires the operator to disable SIP. Context Drop never changes SIP or launches that bridge automatically. Thread actions fail closed when it is unavailable; they do not fall back to an untargeted or “most recent message” action.
+The daemon deduplicates incoming messages and owns all texting. The main orchestrator exposes only `delegate_to_worker(worker, prompt)`; its final response is texted to you. Four persistent Codex agents share a durable task queue with schedules. New tasks fork the main conversation, including compaction, without starting another process or generating an extra summary.
 
 ## Worker reports
 
@@ -74,10 +72,10 @@ A fully managed worker receives a task-scoped report URL, capability, and run ID
 
 ```sh
 context-drop report "I reproduced the failure and am checking the parser now."
-printf '%s\n' 'Finished: fixed the parser and all tests pass.' | context-drop report
+printf '%s\n' 'The parser fix is in place; checking the remaining cases.' | context-drop report
 ```
 
-There is no required status taxonomy. The orchestrator decides whether a report calls for a reply, follow-up, clarification, or no interruption. A report capability cannot upload files or control the daemon.
+Worker final answers are reported automatically. The main speaks naturally in the shared AGENTS.md style, asks questions directly, and keeps worker routing internal. Use `context-drop report --question "Your question"` when user input is required, then end the turn. The worker remains waiting; the user’s answer resumes the same task. A report capability cannot delegate, upload, or select a recipient.
 
 ## Temporary uploads
 
@@ -104,11 +102,9 @@ Schedules are private local state and require the daemon/runtime configuration:
 ```sh
 context-drop schedule add \
   --name test-watch \
-  --agent pi \
   --repo "$HOME/code/project" \
   --prompt "Inspect current test failures and report what you find" \
-  --every 1h \
-  --notify
+  --every 1h
 
 context-drop schedule list
 context-drop schedule test-watch        # show a schedule's stored prompt
@@ -117,7 +113,7 @@ context-drop schedule run test-watch
 context-drop schedule remove test-watch
 ```
 
-Calendar schedules use `--cron` with `--timezone`. Each occurrence launches a fresh local agent task; missed intervals are bounded rather than replayed as an unlimited backlog.
+Calendar schedules use `--cron` with `--timezone`. Each occurrence queues work in the same four-worker pool; missed intervals are bounded rather than replayed as an unlimited backlog.
 
 ## Daemon management
 

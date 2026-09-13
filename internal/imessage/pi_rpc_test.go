@@ -44,7 +44,7 @@ func TestRouterModeStructurallyRestrictsPiAndPreservesPinnedSession(t *testing.T
 			t.Fatalf("router retained ambient instruction %q: %q", forbidden, joined)
 		}
 	}
-	for _, preserved := range []string{"--model router/model", "--thinking high", "--session " + session, "--no-context-files"} {
+	for _, preserved := range []string{"--model router/model", "--thinking high", "--session " + session} {
 		if !strings.Contains(joined, preserved) {
 			t.Fatalf("router lost required/tuning flag %q: %q", preserved, joined)
 		}
@@ -82,30 +82,19 @@ func TestPiRPCArgvPreservesPersistentSessionAndRemovesPrintPrompt(t *testing.T) 
 	}
 }
 
-func TestNewPiRPCResponderAddsPrivateContextFilter(t *testing.T) {
+func TestPiRPCPreservesNativeCompaction(t *testing.T) {
 	t.Setenv("CONTEXT_DROP_HOME", t.TempDir())
 	cfg := Defaults()
 	cfg.Trusted = true
 	cfg.ResponderCommand = []string{"/tmp/pi", "--print", "--session-id", "orchestrator", "@{prompt_file}"}
 	responder, ok, err := NewPiRPCResponder(cfg)
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || !ok {
+		t.Fatalf("responder: %v", err)
 	}
-	if !ok {
-		t.Fatal("trusted persistent Pi command was not recognized")
-	}
-	if got := responder.argv[len(responder.argv)-2:]; !reflect.DeepEqual(got, []string{"--extension", responder.contextFilterPath}) {
-		t.Fatalf("extension args = %#v", got)
-	}
-	if err := writePrivateAsset(responder.contextFilterPath, piContextFilter); err != nil {
-		t.Fatal(err)
-	}
-	info, err := os.Stat(responder.contextFilterPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("context filter mode = %o", info.Mode().Perm())
+	for _, arg := range responder.argv {
+		if strings.Contains(arg, "context-filter") {
+			t.Fatal("compaction filter remains enabled")
+		}
 	}
 }
 
@@ -313,7 +302,7 @@ func TestPiRPCResponderAcceptsEmptyFinalAfterSuccessfulMessagingTool(t *testing.
 }
 
 func TestPiRPCResponderDoesNotCountFailedSideEffectTool(t *testing.T) {
-	for _, tool := range []string{"delegate_task", "reply_to_thread", "react_to_thread"} {
+	for _, tool := range []string{"delegate_to_worker", "reply_to_thread", "react_to_thread"} {
 		t.Run(tool, func(t *testing.T) {
 			responder := &PiRPCResponder{argv: []string{os.Args[0], "-test.run=TestPiRPCHelperProcess"}, env: append(os.Environ(), "CONTEXT_DROP_PI_RPC_HELPER=1", "CONTEXT_DROP_PI_RPC_MESSAGE_COUNT=2", "CONTEXT_DROP_PI_RPC_EMPTY_AFTER_TOOL=1", "CONTEXT_DROP_PI_RPC_TOOL_ERROR=1", "CONTEXT_DROP_PI_RPC_TOOL_NAME="+tool)}
 			defer responder.Close()
@@ -325,6 +314,15 @@ func TestPiRPCResponderDoesNotCountFailedSideEffectTool(t *testing.T) {
 				t.Fatalf("response=%#v err=%v", response, err)
 			}
 		})
+	}
+}
+
+func TestPiRPCAllowsIntentionalSilence(t *testing.T) {
+	r := &PiRPCResponder{argv: []string{os.Args[0], "-test.run=TestPiRPCHelperProcess"}, env: append(os.Environ(), "CONTEXT_DROP_PI_RPC_HELPER=1", "CONTEXT_DROP_PI_RPC_SILENT=1")}
+	defer r.Close()
+	response, err := r.Respond(context.Background(), "another detail", 1024)
+	if err != nil || response.Reply != "" {
+		t.Fatalf("intentional silence rejected: reply=%q err=%v", response.Reply, err)
 	}
 }
 
@@ -356,7 +354,7 @@ func TestPiRPCHelperProcess(t *testing.T) {
 			if os.Getenv("CONTEXT_DROP_PI_RPC_EMPTY_AFTER_TOOL") == "1" {
 				toolName := os.Getenv("CONTEXT_DROP_PI_RPC_TOOL_NAME")
 				if toolName == "" {
-					toolName = "delegate_task"
+					toolName = "delegate_to_worker"
 				}
 				_ = enc.Encode(map[string]any{"type": "tool_execution_start", "toolCallId": "tool-1", "toolName": toolName})
 				_ = enc.Encode(map[string]any{"type": "tool_execution_end", "toolCallId": "tool-1", "toolName": toolName, "isError": os.Getenv("CONTEXT_DROP_PI_RPC_TOOL_ERROR") == "1"})
@@ -367,7 +365,10 @@ func TestPiRPCHelperProcess(t *testing.T) {
 				continue
 			}
 			text := fmt.Sprintf("reply %d", prompts)
-			assistant := map[string]any{"role": "assistant", "model": "router", "responseModel": "fast/model", "responseId": fmt.Sprintf("response-%d", prompts), "usage": map[string]any{"totalTokens": 42}, "content": []map[string]any{{"type": "text", "text": text}}}
+			if os.Getenv("CONTEXT_DROP_PI_RPC_SILENT") == "1" {
+				text = ""
+			}
+			assistant := map[string]any{"stopReason": "stop", "role": "assistant", "model": "router", "responseModel": "fast/model", "responseId": fmt.Sprintf("response-%d", prompts), "usage": map[string]any{"totalTokens": 42}, "content": []map[string]any{{"type": "text", "text": text}}}
 			_ = enc.Encode(map[string]any{"type": "turn_start"})
 			_ = enc.Encode(map[string]any{"type": "message_update", "assistantMessageEvent": map[string]any{"type": "text_delta", "delta": text}})
 			_ = enc.Encode(map[string]any{"type": "message_end", "message": assistant})
