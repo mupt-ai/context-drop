@@ -69,8 +69,9 @@ export class WorkerPool {
       const dir = this.dir(slot.id);
       mkdirSync(dir, { recursive: true, mode: 0o700 });
       writePrivate(join(dir, "worker.json"), { worker: slot.id, capability: slot.capability, url: `http://${this.config.host === "::1" ? "[::1]" : this.config.host}:${this.config.port}` });
-      if (slot.pane && slot.agent && slot.agent !== this.config.workerAgent) {
-        // The configured agent changed since this pane was launched; replace it.
+      if (slot.pane && slot.agent !== this.config.workerAgent) {
+        // The configured agent changed since this pane was launched, or the
+        // pane predates agent tracking; either way replace it.
         const task = this.current(slot.id);
         if (task) this.complete(task, `Worker agent changed to ${this.config.workerAgent}. Task was not replayed.`, true);
         await this.native.retire(slot);
