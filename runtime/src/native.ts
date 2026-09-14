@@ -158,7 +158,12 @@ export class NativeWorkers {
     const path = this.assignmentPath(slot.id);
     const previous = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : undefined;
     if (previous?.turnId === turnId) { await this.reconcile(slot); return; }
-    await this.codex.call("thread/resume", { threadId, excludeTurns: true });
+    // Continuations must receive current role instructions too; otherwise an
+    // existing thread retains the developer policy from its original fork.
+    await this.codex.call("thread/resume", {
+      threadId, excludeTurns: true, approvalPolicy: "never", sandbox: "danger-full-access",
+      developerInstructions: [task.instructions || "", WORKER_PROMPT].join("\n\n"),
+    });
     await this.prompt(slot, `/resume ${threadId}`);
     const { thread: before } = await this.codex.call("thread/read", { threadId, includeTurns: true });
     const assignment = { taskId, turnId, threadId, previousTurnIds: before.turns.map((turn: any) => turn.id), codexTurnId: undefined as string | undefined, reported: false };

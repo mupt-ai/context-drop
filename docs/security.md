@@ -4,7 +4,7 @@ The upload token, runtime token, main delegation capability, native worker event
 
 The main agent has one delegation tool and uses its final text for messaging. Worker-report turns expose no delegation tools. Worker output is attributed data, not authorization for new work. The former confirmation-token and automatic-authorization execution paths are removed.
 
-Workers use normal Codex coding tools in native Herdr/tmux panes, with instructions prohibiting another delegation level or direct messaging. These are local agents running as the user, not OS-sandboxed processes; capability separation restricts Context Drop's HTTP APIs, not arbitrary access to the user's filesystem.
+Workers use normal Codex coding tools in native Herdr/tmux panes and execute authorized tasks directly, including API writes. Orchestrator-only delegation instructions do not restrict worker execution. Coding work may use Herdr agents when requested or required by repository instructions; workers do not manage the Context Drop pool. Results return through the report pipeline. These are local agents running as the user, not OS-sandboxed processes; capability separation restricts Context Drop's HTTP APIs, not arbitrary access to the user's filesystem. Current worker instructions are applied on both fork and continuation.
 
 The runtime listens only on loopback. Native operations target exact persisted pane IDs created for the pool. Ambiguous launches and submissions are never automatically replayed. Pending reports use durable outboxes and leased delivery; ambiguous external message delivery is parked rather than retried.
 
