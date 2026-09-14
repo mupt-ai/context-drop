@@ -297,7 +297,7 @@ func TestWorkerQuestionFallbackIsNatural(t *testing.T) {
 }
 
 func TestSilentScheduleReports(t *testing.T) {
-	for _, kind := range []string{"progress", "completed", "needs_user", "failed"} {
+	for _, kind := range []string{"progress", "turn_completed", "completed", "needs_user", "failed"} {
 		t.Run(kind, func(t *testing.T) {
 			now := time.Now().UTC()
 			store := orchestrator.Store{Path: filepath.Join(t.TempDir(), "state.json")}
@@ -328,6 +328,9 @@ func TestSilentScheduleReports(t *testing.T) {
 			}
 			if !reflect.DeepEqual(backend.finishDelivered, []bool{true}) {
 				t.Fatalf("report not acknowledged: %v", backend.finishDelivered)
+			}
+			if kind == "turn_completed" && state.Jobs[0].Status != "running" {
+				t.Fatalf("intermediate result retired scheduled work: %+v", state.Jobs[0])
 			}
 			if kind == "completed" && (state.Jobs[0].Status != "completed" || state.Jobs[0].DeliveryStatus != "silent") {
 				t.Fatalf("silent completion not recorded: %+v", state.Jobs[0])
@@ -605,5 +608,21 @@ func TestConfigureRouterHealthGatesAndRotatesOverHTTP(t *testing.T) {
 	_, second := responder.DelegationEnv()
 	if second != "cap-2" || second == first || runner.routerToken() != second {
 		t.Fatalf("first=%q second=%q runner=%q", first, second, runner.routerToken())
+	}
+}
+
+func TestFinishedTurnDeliveredWhileFollowupsRemain(t *testing.T) {
+	backend := &fakeDelegationRuntime{reports: []runtimeclient.ParentReport{{ID: "turn-result", RouterID: imessageRouterID, ChatID: "chat", RunID: "run", Kind: "turn_completed", Message: "salad corrected"}}}
+	commander := &reportCommander{}
+	cfg := imessage.Defaults()
+	cfg.Enabled, cfg.RouterMode, cfg.ChatID, cfg.ImsgPath = true, true, "chat", "/bin/echo"
+	responder := &recordingResponder{response: imessage.Response{ToolCompleted: true}}
+	runner := &Runner{Delegation: backend, IMessage: &imessage.Adapter{Config: cfg, Commander: commander, PersistentResponder: responder}}
+	runner.deliverReportsOnce(context.Background())
+	if len(responder.prompts) != 1 || !strings.Contains(responder.prompts[0], "kind turn_completed") {
+		t.Fatalf("finished turn was not routed to the orchestrator: %v", responder.prompts)
+	}
+	if !reflect.DeepEqual(commander.sends, []string{"salad corrected"}) || !reflect.DeepEqual(backend.finishDelivered, []bool{true}) {
+		t.Fatalf("answer suppressed while followups remain: sends=%v finishes=%v", commander.sends, backend.finishDelivered)
 	}
 }

@@ -40,11 +40,11 @@ function fixture() {
 const settle = () => new Promise(resolve => setImmediate(resolve));
 const owner = { routerId: "imessage-router", chatId: "chat" };
 
-test("message fragments continue one worker session and only the combined result is reported", async t => {
+test("queued follow-ups preserve the session and publish each finished turn immediately", async t => {
   const { pool, native, config, ready } = fixture(); await ready();
   pool.setConversation({ ...pool.state.conversation!, instructions: "PARENT_AGENTS_STYLE" });
   const task = pool.enqueue({ ...owner, worker: 1, prompt: "A", requestId: "a" }); await settle();
-  const session = task.session, turn = task.turnId;
+  const session = task.session, turn = task.turnId, capability = task.capability;
   assert.equal(task.instructions, "PARENT_AGENTS_STYLE");
   assert.equal(pool.enqueue({ ...owner, worker: 1, prompt: "B", requestId: "b" }).id, task.id);
   pool.enqueue({ ...owner, worker: 1, prompt: "B", requestId: "b" });
@@ -60,10 +60,21 @@ test("message fragments continue one worker session and only the combined result
   assert.equal(continued.prompt, "B\n\nC");
   assert.equal(continued.worker, 1);
   assert.equal(continued.status, "running");
-  assert.equal(restored.state.reports.length, 0);
+  assert.equal(continued.capability, capability);
+  const firstReport = restored.lease(owner.routerId, owner.chatId, 60)!;
+  assert.equal(firstReport.message, "A result");
+  assert.equal(firstReport.kind, "turn_completed");
+  restored.finish(firstReport.id, { ...owner, leaseId: firstReport.leaseId }, true);
+  // Duplicate or stale completion events must not publish the first answer twice.
+  restored.event(slot.capability, { worker: 1, id: "a-final", type: "final", runId: task.id, turnId: turn, message: "A result" });
+  restored.event(slot.capability, { worker: 1, id: "a-final-again", type: "final", runId: task.id, turnId: turn, message: "A result" });
+  assert.equal(restored.state.reports.length, 1);
   assert.equal(native.submissions.length, 2);
   restored.event(slot.capability, { worker: 1, id: "abc-final", type: "final", runId: task.id, turnId: continued.turnId, message: "ABC result" });
-  assert.deepEqual(restored.state.reports.map(r => r.message), ["ABC result"]);
+  assert.deepEqual(restored.state.reports.map(r => r.message), ["A result", "ABC result"]);
+  assert.deepEqual(restored.state.reports.map(r => r.kind), ["turn_completed", "completed"]);
+  assert.equal(continued.status, "completed");
+  assert.equal(continued.capability, "");
 });
 
 test("queued fragments merge, while explicitly separate work remains a new task", t => {

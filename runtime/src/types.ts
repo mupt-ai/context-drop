@@ -41,7 +41,7 @@ export interface ParentReport {
   worker: number;
   routerId: string;
   chatId: string;
-  kind: "progress" | "needs_user" | "completed" | "failed";
+  kind: "progress" | "needs_user" | "turn_completed" | "completed" | "failed";
   message: string;
   createdAt: string;
   leaseId?: string;
