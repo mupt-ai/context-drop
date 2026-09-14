@@ -139,7 +139,7 @@ func (r *Runner) deliverReportsOnceForOwner(ctx context.Context, routerID, chatI
 			return
 		}
 	}
-	if routerID == scheduleRouterID && (report.Kind == "completed" || report.Kind == "progress") {
+	if routerID == scheduleRouterID && (report.Kind == "completed" || report.Kind == "turn_completed" || report.Kind == "progress") {
 		silent, err := r.silentScheduledRun(report.RunID)
 		if err != nil {
 			_ = finishReport(ctx, r.Delegation, report, routerID, chatID, false, "transient")
@@ -164,7 +164,7 @@ func (r *Runner) deliverReportsOnceForOwner(ctx context.Context, routerID, chatI
 	if respondErr != nil {
 		log.Printf("Context Drop report %s orchestrator turn failed: %s", report.ID, safeDeliveryError(respondErr))
 	}
-	if respondErr == nil && response.Reply == "" && (report.Kind == "completed" || report.Kind == "failed" || report.Kind == "needs_user") {
+	if respondErr == nil && response.Reply == "" && (report.Kind == "completed" || report.Kind == "turn_completed" || report.Kind == "failed" || report.Kind == "needs_user") {
 		response.Reply = sanitizeScheduledMessage(report.Message)
 	}
 	var sendErr error

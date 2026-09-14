@@ -242,7 +242,8 @@ export class WorkerPool {
       task.status = "queued";
       task.requestedWorker = task.worker;
       task.turnId = randomUUID();
-      this.save();
+      // Publish this turn's answer without retiring the task or its capability.
+      this.report(task, "turn_completed", message.trim() || "Worker finished without a final answer.");
       return;
     }
     if (!failed && task.question) task.status = "waiting";
