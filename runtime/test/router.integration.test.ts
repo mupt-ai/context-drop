@@ -29,7 +29,7 @@ test("real main Pi exposes one tool, delegates a fork, and cannot delegate repor
   t.after(() => new Promise<void>(resolve => provider.close(() => resolve())));
   writeFileSync(join(agentDir, "models.json"), JSON.stringify({ providers: { fixture: { baseUrl: `http://127.0.0.1:${(provider.address() as any).port}/v1`, api: "openai-completions", apiKey: "local-only", models: [{ id: "fixture", reasoning: false, input: ["text"], contextWindow: 200000, maxTokens: 1000, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }] } } }));
   writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ defaultProvider: "fixture", defaultModel: "fixture", defaultThinkingLevel: "off" }));
-  const server = createRuntimeServer({ host: "127.0.0.1", port: 0, stateDir: join(dir, "runtime"), tokenFile: "unused", agents: { pi: { command: ["pi"] } } }, "daemon-fixture");
+  const server = createRuntimeServer({ host: "127.0.0.1", port: 0, stateDir: join(dir, "runtime"), tokenFile: "unused", workerAgent: "pi", reportCredentialsFile: join(dir, "managed", "report-credentials.json"), agents: { pi: { command: ["pi", "--approve"] } } }, "daemon-fixture");
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise<void>(resolve => server.close(() => resolve())));
   const base = `http://127.0.0.1:${(server.address() as any).port}`;

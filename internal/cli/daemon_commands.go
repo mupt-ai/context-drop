@@ -160,7 +160,7 @@ func newScheduleCommand() *cobra.Command {
 		if err != nil {
 			return err
 		}
-		s := orchestrator.Schedule{Name: name, Type: orchestrator.ScheduleAgent, Agent: "codex", Repo: repo, Prompt: prompt, Every: every, Cron: cron, Timezone: timezone, Enabled: !disabled, Silent: silent, Overlap: orchestrator.OverlapSkip, MissedRunPolicy: "latest"}
+		s := orchestrator.Schedule{Name: name, Type: orchestrator.ScheduleAgent, Agent: "pool", Repo: repo, Prompt: prompt, Every: every, Cron: cron, Timezone: timezone, Enabled: !disabled, Silent: silent, Overlap: orchestrator.OverlapSkip, MissedRunPolicy: "latest"}
 		if err := store.Update(func(st *orchestrator.State) error { return orchestrator.Upsert(st, s, time.Now().UTC()) }); err != nil {
 			return err
 		}

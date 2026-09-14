@@ -22,13 +22,13 @@ The daemon creates `runtime/config.json` and a separate token file on first star
 | Variable | Purpose |
 |---|---|
 | `CONTEXT_DROP_RUNTIME_PORT` | Loopback port, default `47762` |
-| `CONTEXT_DROP_BACKEND` | `herdr` (default) or `tmux` |
+| `CONTEXT_DROP_WORKER_AGENT` | Pool agent: `pi`, `codex`, or `claude` (persisted; also settable with `context-drop config worker-agent`) |
 | `CONTEXT_DROP_HERDR_SESSION` | Herdr session, default `default` |
 | `CONTEXT_DROP_FULL_AI_HERDR_WORKSPACE_LABEL` | Managed workspace label |
 | `CONTEXT_DROP_RUNTIME_ADDRESS` | Advanced loopback client override |
 | `CONTEXT_DROP_RUNTIME_ENTRY` | Advanced built-runtime entry override |
 
-The runtime config records absolute executable argv for detected agents. The daemon needs Node.js 20+. Herdr is optional only when the selected backend is tmux.
+The runtime config records interactive launch argv for detected agents under `agents`, and `workerAgent` names the one the pool runs. The daemon needs Node.js 20+ and Herdr.
 
 ## iMessage adapter
 
@@ -41,9 +41,9 @@ There is no public setup command. An administrator provisions `<CONTEXT_DROP_HOM
 - positive polling, history, responder, send, message-size, and reply-size limits; trusted persistent responder turns have a five-minute hard ceiling
 - optional absolute persona, memory, archive, and responder-working-directory paths
 
-Router mode requires a trusted private chat and a persistent Pi responder. The daemon warms the main session and four native Pi workers. The main's only tool is `delegate_to_worker`; final responses use ordinary daemon-owned iMessage delivery. Old `delegate_all` and `yolo_mode` settings no longer select execution paths.
+Router mode requires a trusted private chat and a persistent Pi responder. The daemon warms the main session and four native workers of the configured agent. The main's only tool is `delegate_to_worker`; final responses use ordinary daemon-owned iMessage delivery. Old `delegate_all` and `yolo_mode` settings no longer select execution paths.
 
-The runtime uses the executable in `agents.pi.command[0]`. Other configured agent entries are retained for configuration compatibility but are not worker choices. `defaultBackend` chooses Herdr or tmux for the entire pool. Worker panes and capabilities persist in `runtime/worker-pool.json`; task forks and worker outboxes live alongside it. Do not delete pool state while its native workers are alive.
+The pool runs `agents[workerAgent].command` in each worker tab. Worker panes, their agent kind, and capabilities persist in `runtime/worker-pool.json`; task forks, briefings, and worker outboxes live alongside it. Do not delete pool state while its native workers are alive.
 
 Telegram is not implemented in this release.
 

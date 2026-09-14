@@ -80,7 +80,9 @@ func TestReportCommandFallsBackToCredentialsFile(t *testing.T) {
 	defer server.Close()
 
 	root := t.TempDir()
-	t.Setenv("CONTEXT_DROP_HOME", root)
+	// Workers launched by the runtime know only the credentials path, not the home.
+	t.Setenv("CONTEXT_DROP_HOME", "")
+	t.Setenv("CONTEXT_DROP_REPORT_CREDENTIALS", root+"/managed/report-credentials.json")
 	t.Setenv("HERDR_PANE_ID", "w9:p4")
 	credsDir := root + "/managed"
 	if err := os.MkdirAll(credsDir, 0o700); err != nil {
@@ -121,5 +123,32 @@ func TestQuestionReportIsExplicit(t *testing.T) {
 	}
 	if got["kind"] != "needs_user" || got["message"] != "Which repository?" {
 		t.Fatalf("report=%v", got)
+	}
+}
+
+func TestReportCommandFinalSendsFinalKindAndExcludesQuestion(t *testing.T) {
+	var got map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+	t.Setenv("CONTEXT_DROP_REPORT_URL", server.URL)
+	t.Setenv("CONTEXT_DROP_REPORT_CAPABILITY", "scoped-cap")
+	t.Setenv("CONTEXT_DROP_RUN_ID", "run-private")
+	cmd := newReportCommand()
+	cmd.SetArgs([]string{"--final", "all done"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if got["kind"] != "final" || got["message"] != "all done" {
+		t.Fatalf("payload = %#v", got)
+	}
+	cmd = newReportCommand()
+	cmd.SetArgs([]string{"--final", "--question", "both"})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected mutually exclusive flag error")
 	}
 }

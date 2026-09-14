@@ -1,6 +1,6 @@
 # Context Drop
 
-Context Drop is a small, local-first orchestration system for delegating work to coding agents from a private conversation. Its daemon keeps the orchestrator alive, supervises the local runtime, maintains four warm Codex workers in native Herdr tabs or tmux panes, delivers worker updates, runs schedules, and can serve a trusted iMessage chat on macOS.
+Context Drop is a small, local-first orchestration system for delegating work to coding agents from a private conversation. Its daemon keeps the orchestrator alive, supervises the local runtime, maintains four warm coding-agent workers (Pi, Codex, or Claude Code) in native Herdr tabs, delivers worker updates, runs schedules, and can serve a trusted iMessage chat on macOS.
 
 The public CLI deliberately stays small:
 
@@ -33,7 +33,7 @@ curl -fsSL https://raw.githubusercontent.com/mupt-ai/context-drop/main/install.s
 context-drop version
 ```
 
-The installer verifies the release checksum and installs the binary plus its Node runtime assets. Node.js 20+ is required by the local runtime. Herdr is the default worker backend; tmux is also supported.
+The installer verifies the release checksum and installs the binary plus its Node runtime assets. Node.js 20+ is required by the local runtime. Herdr hosts and drives the workers.
 
 Build from source with Go 1.26.2+, Node.js 20+, and npm:
 
@@ -55,6 +55,14 @@ context-drop daemon status
 
 On first start, the daemon creates a private loopback runtime configuration, detects installed `pi`, `codex`, and `claude` CLIs, and creates local credentials under the Context Drop home directory. Agent CLIs must already be installed and authenticated. Use `context-drop daemon logs` if startup fails.
 
+All four workers run one agent. Inspect or change it, then restart the daemon to apply:
+
+```sh
+context-drop config worker-agent
+context-drop config worker-agent claude
+context-drop daemon restart
+```
+
 ### Configure iMessage (macOS)
 
 The adapter requires [`imsg`](https://github.com/steipete/imsg), an exact private chat ID, and a responder command. Messaging configuration is daemon-owned rather than a public CLI workflow. Provision the private `imessage/config.json` described in [Configuration](docs/configuration.md), then restart:
@@ -64,7 +72,7 @@ context-drop daemon restart
 context-drop daemon status
 ```
 
-The daemon deduplicates incoming messages and owns all texting. The main orchestrator exposes only `delegate_to_worker(worker, prompt)`; its final response is texted to you. Four persistent Codex agents share a durable task queue with schedules. New tasks fork the main conversation, including compaction, without starting another process or generating an extra summary.
+The daemon deduplicates incoming messages and owns all texting. The main orchestrator exposes only `delegate_to_worker(worker, prompt)`; its final response is texted to you. Four persistent agents of the configured kind share a durable task queue with schedules. New tasks fork the main conversation, including compaction, without starting another process or generating an extra summary.
 
 ## Worker reports
 
@@ -131,7 +139,7 @@ context-drop daemon logs --lines 200
 - Upload authentication is separate from runtime and reporting credentials.
 - Task text and worker reports are untrusted claims, not authorization for payments, account recovery, or changed terms.
 - Public upload links are unguessable bearer URLs with enforced TTL and size limits.
-- Local agents run with the local user's permissions. Preserve unrelated Herdr workspaces and tmux panes.
+- Local agents run with the local user's permissions. Preserve unrelated Herdr workspaces and tabs.
 
 See [Security](docs/security.md) and [Architecture](docs/architecture.md).
 

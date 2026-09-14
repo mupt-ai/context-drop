@@ -30,11 +30,15 @@ func readReportCredentialsFile() (*reportCredentialsFile, error) {
 	if paneID == "" {
 		return nil, fmt.Errorf("worker pane is unknown")
 	}
-	root, err := localhome.Root()
-	if err != nil {
-		return nil, err
+	path := os.Getenv("CONTEXT_DROP_REPORT_CREDENTIALS")
+	if path == "" {
+		root, err := localhome.Root()
+		if err != nil {
+			return nil, err
+		}
+		path = filepath.Join(root, "managed", "report-credentials.json")
 	}
-	data, err := os.ReadFile(filepath.Join(root, "managed", "report-credentials.json"))
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +54,7 @@ func readReportCredentialsFile() (*reportCredentialsFile, error) {
 }
 
 func newReportCommand() *cobra.Command {
-	var question bool
+	var question, final bool
 	cmd := &cobra.Command{
 		Use:   "report [message]",
 		Short: "Report a natural-language update to the owning orchestrator",
@@ -97,6 +101,9 @@ func newReportCommand() *cobra.Command {
 			if question {
 				input["kind"] = "needs_user"
 			}
+			if final {
+				input["kind"] = "final"
+			}
 			payload, err := json.Marshal(input)
 			if err != nil {
 				return err
@@ -121,5 +128,7 @@ func newReportCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().BoolVar(&question, "question", false, "ask the user a question and wait for their answer")
+	cmd.Flags().BoolVar(&final, "final", false, "deliver the finished answer and end the task turn")
+	cmd.MarkFlagsMutuallyExclusive("question", "final")
 	return cmd
 }

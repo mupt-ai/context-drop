@@ -11,7 +11,9 @@ import type { RuntimeConfig, Slot } from "../src/types.js";
 class FakeNative extends NativeWorkers {
   launches: number[] = [];
   submissions: Array<[number, string]> = [];
-  override async launch(slot: Slot, _dir: string, persist: () => void) { slot.pane = `%${slot.id}`; this.launches.push(slot.id); persist(); }
+  retired: string[] = [];
+  override async launch(slot: Slot, _dir: string, persist: () => void) { slot.pane = `%${slot.id}`; slot.agent = this.config.workerAgent; this.launches.push(slot.id); persist(); }
+  override async retire(slot: Slot) { this.retired.push(slot.pane!); }
   override async ready(_slot: Slot) {}
   override async reconcile(_slot: Slot) {}
   override async alive(_slot: Slot) { return true; }
@@ -19,7 +21,7 @@ class FakeNative extends NativeWorkers {
 }
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "context-drop-pool-"));
-  const config: RuntimeConfig = { host: "127.0.0.1", port: 1, stateDir: dir, tokenFile: join(dir, "token"), defaultBackend: "tmux", agents: { pi: { command: ["pi"] } } };
+  const config: RuntimeConfig = { host: "127.0.0.1", port: 1, stateDir: dir, tokenFile: join(dir, "token"), workerAgent: "pi", reportCredentialsFile: join(dir, "managed", "report-credentials.json"), agents: { pi: { command: ["pi", "--approve"] } } };
   const native = new FakeNative(config);
   const pool = new WorkerPool(config, native);
   const source = join(dir, "main.jsonl");
@@ -208,7 +210,39 @@ test("completed main tool loops remain in schedule forks", t => {
  assert.match(readFileSync(task.session,"utf8"),/FULL_MAIN_REPLY/);
 });
 
-test("Codex readiness cannot dispatch before native registration completes", async t => {
+test("a worker's final report completes its task and frees the slot once the pane settles", async t => {
+ const {pool,native,ready}=fixture(); t.after(()=>pool.close()); await ready();
+ const task=pool.enqueue({...owner,worker:1,prompt:"work"}); await settle();
+ const report=pool.reportWithToken(task.capability,{runId:task.id,kind:"final",message:"Here is the answer."});
+ assert.equal(report.kind,"completed"); assert.equal(report.message,"Here is the answer.");
+ assert.equal(task.status,"completed"); assert.equal(task.capability,"");
+ assert.throws(()=>pool.reportWithToken(task.capability,{runId:task.id,kind:"final",message:"again"}),/unauthorized/);
+ // The pane's own idle detection arrives later and must not publish a second completion.
+ pool.event(pool.state.slots[0].capability,{id:"late-idle",worker:1,type:"final",runId:task.id,turnId:task.turnId,message:""});
+ assert.equal(pool.state.reports.length,1);
+ const next=pool.enqueue({...owner,worker:1,prompt:"next"}); await settle();
+ assert.equal(next.status,"running"); assert.equal(native.submissions.length,2);
+ assert.throws(()=>pool.reportWithToken(next.capability,{runId:next.id,kind:"final",message:"   "}),/1–16000/);
+});
+
+test("changing the configured agent retires old panes on restart and relaunches", async t => {
+ const {pool,native,config,ready}=fixture(); await ready();
+ const task=pool.enqueue({...owner,worker:2,prompt:"work"}); await settle();
+ assert.deepEqual(pool.state.slots.map(slot=>slot.agent),["pi","pi","pi","pi"]);
+ pool.close();
+ // A daemon restart builds a fresh runtime from the rewritten config.
+ const switched:RuntimeConfig={...config,workerAgent:"claude",agents:{claude:{command:["claude"]}}};
+ const relaunched=new FakeNative(switched);
+ const restored=new WorkerPool(switched,relaunched); t.after(()=>restored.close()); await restored.start(); await settle();
+ assert.deepEqual(relaunched.retired,["%1","%2","%3","%4"]);
+ assert.deepEqual(relaunched.launches,[1,2,3,4]);
+ assert.deepEqual(restored.state.slots.map(slot=>slot.agent),["claude","claude","claude","claude"]);
+ assert.equal(restored.state.tasks.find(item=>item.id===task.id)?.status,"failed");
+ assert.match(restored.state.reports[0].message,/agent changed to claude/);
+ assert.equal(restored.workers()[0].agent,"claude");
+});
+
+test("readiness cannot dispatch before native registration completes", async t => {
  const {pool,native}=fixture();t.after(()=>pool.close());
  let release!:()=>void;
  const registration=new Promise<void>(resolve=>{release=resolve});

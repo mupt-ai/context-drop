@@ -62,7 +62,7 @@ func TestRuntimePortConflictIsExplicit(t *testing.T) {
 	if err := os.WriteFile(tokenPath, []byte("token\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := runtimeclient.RuntimeConfig{Host: "127.0.0.1", Port: port, StateDir: dir, TokenFile: tokenPath, NodePath: node, TmuxSession: "context-drop", Agents: map[string]runtimeclient.AgentConfig{}}
+	cfg := runtimeclient.RuntimeConfig{Host: "127.0.0.1", Port: port, StateDir: dir, TokenFile: tokenPath, NodePath: node, Agents: map[string]runtimeclient.AgentConfig{}}
 	data, _ := json.Marshal(cfg)
 	if err := os.WriteFile(configPath, data, 0o600); err != nil {
 		t.Fatal(err)
@@ -93,7 +93,7 @@ func TestRuntimeWriterOwnerIsRecognizedBeforeHealthListenerStarts(t *testing.T) 
 	if err := os.WriteFile(node, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cfg := runtimeclient.RuntimeConfig{Host: "127.0.0.1", Port: 47762, StateDir: state, TokenFile: tokenPath, NodePath: node, TmuxSession: "context-drop", Agents: map[string]runtimeclient.AgentConfig{}}
+	cfg := runtimeclient.RuntimeConfig{Host: "127.0.0.1", Port: 47762, StateDir: state, TokenFile: tokenPath, NodePath: node, Agents: map[string]runtimeclient.AgentConfig{}}
 	data, _ := json.Marshal(cfg)
 	if err := os.WriteFile(configPath, data, 0o600); err != nil {
 		t.Fatal(err)

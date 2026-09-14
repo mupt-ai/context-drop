@@ -17,7 +17,7 @@ async function body(req: IncomingMessage): Promise<any> {
   }
   return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
 }
-const publicTask = (task: Task, pool: WorkerPool) => ({ runId: task.id, worker: task.worker, paneId: task.worker ? pool.state.slots[task.worker - 1].pane || "" : "", agent: "codex", name: task.name, status: task.status, fullyManaged: true, selected: false });
+const publicTask = (task: Task, pool: WorkerPool) => ({ runId: task.id, worker: task.worker, paneId: task.worker ? pool.state.slots[task.worker - 1].pane || "" : "", agent: pool.config.workerAgent, name: task.name, status: task.status, fullyManaged: true, selected: false });
 
 export function createRuntimeServer(config: RuntimeConfig, token: string, pool = new WorkerPool(config)) {
   if (!["127.0.0.1", "::1"].includes(config.host) || !token) throw new Error("runtime requires loopback and a private token");
@@ -71,8 +71,8 @@ export function createRuntimeServer(config: RuntimeConfig, token: string, pool =
         pool.finish(finish[1], await body(req), finish[2] === "ack");
         return json(res, 200, { ok: true });
       }
-      if (req.method === "GET" && path === "/v1/agents" && general) return json(res, 200, { agents: [{ name: "codex", command: config.agents.codex?.command[0] || "codex", prompt_mode: "arg" }] });
-      if (req.method === "GET" && path === "/v1/live-tasks" && general) return json(res, 200, { backend: config.defaultBackend || "herdr", tasks: pool.state.tasks.filter(task => ["queued", "running", "waiting"].includes(task.status)).map(task => publicTask(task, pool)) });
+      if (req.method === "GET" && path === "/v1/agents" && general) return json(res, 200, { agents: [{ name: config.workerAgent, command: config.agents[config.workerAgent]?.command[0] || config.workerAgent, prompt_mode: "herdr" }] });
+      if (req.method === "GET" && path === "/v1/live-tasks" && general) return json(res, 200, { backend: "herdr", tasks: pool.state.tasks.filter(task => ["queued", "running", "waiting"].includes(task.status)).map(task => publicTask(task, pool)) });
       if (req.method === "GET" && path === "/v1/runs" && general) return json(res, 200, { runs: pool.state.tasks.map(task => ({ id: task.id, ...publicTask(task, pool), repo: task.repo, createdAt: task.createdAt })) });
       return json(res, 404, { error: "not found" });
     } catch (error) {

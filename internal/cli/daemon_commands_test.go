@@ -128,7 +128,7 @@ func TestSchedulePositionalPromptShowAndSet(t *testing.T) {
 	if err := root.Execute(); err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if !strings.Contains(listOut.String(), "agent=codex") || !strings.Contains(listOut.String(), "1h") {
+	if !strings.Contains(listOut.String(), "agent=pool") || !strings.Contains(listOut.String(), "1h") {
 		t.Fatalf("other fields not preserved: %q", listOut.String())
 	}
 }

@@ -1262,7 +1262,7 @@ func (r *Runner) ExecuteClaim(ctx context.Context, claim orchestrator.Claim, _ [
 	}
 	if err == nil {
 		var task runtimeclient.ManagedTask
-		task, err = r.Runtime.LaunchManagedSchedule(ctx, "codex", repo, prompt, "schedule-"+s.Name, "", routerID, chatID, job.ID)
+		task, err = r.Runtime.LaunchManagedSchedule(ctx, s.Agent, repo, prompt, "schedule-"+s.Name, "", routerID, chatID, job.ID)
 		runID = task.RunID
 	}
 	if err != nil {
