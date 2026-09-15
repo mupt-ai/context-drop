@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Verify an installed daemon/runtime layout with an isolated home and fake tmux.
-# Real native Codex behavior is tested separately against a local model fixture.
+# Verify an installed daemon/runtime layout with an isolated home and a fake Herdr.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 task_tmp="$(mktemp -d)"
@@ -19,15 +18,14 @@ go build -o "$task_tmp/bin/context-drop" "$root/cmd/context-drop"
 cp -R "$root/runtime/dist" "$task_tmp/lib/context-drop/runtime/dist"
 cp "$root/runtime/package.json" "$root/runtime/package-lock.json" "$task_tmp/lib/context-drop/runtime/"
 (cd "$task_tmp/lib/context-drop/runtime" && npm ci --omit=dev --workspaces=false >/dev/null)
-cp "$root/scripts/smoke-tmux.sh" "$task_tmp/fake-bin/tmux"
-chmod +x "$task_tmp/fake-bin/tmux"
+cp "$root/scripts/smoke-herdr.sh" "$task_tmp/fake-bin/herdr"
+chmod +x "$task_tmp/fake-bin/herdr"
 printf '#!/bin/sh\nexit 1\n' > "$task_tmp/fake-bin/codex"
 chmod +x "$task_tmp/fake-bin/codex"
 cp "$task_tmp/fake-bin/codex" "$task_tmp/fake-bin/dari"
 port=$((50000 + RANDOM % 10000))
 export CONTEXT_DROP_HOME="$task_tmp/home"
 export CONTEXT_DROP_RUNTIME_PORT="$port"
-export CONTEXT_DROP_BACKEND=tmux
 export PATH="$task_tmp/fake-bin:$PATH"
 "$task_tmp/bin/context-drop" daemon run >"$task_tmp/runtime.log" 2>&1 &
 daemon_pid=$!

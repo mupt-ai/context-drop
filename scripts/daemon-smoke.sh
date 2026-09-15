@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Isolated Context Drop daemon lifecycle smoke test.
 # Uses a private CONTEXT_DROP_HOME and a non-default runtime port so it never
-# touches the real Context Drop home, a live daemon, or tmux. It launches the
+# touches the real Context Drop home, a live daemon, or Herdr. It launches the
 # runtime supervised by the daemon but never launches a coding agent.
 set -euo pipefail
 
@@ -30,10 +30,9 @@ trap cleanup EXIT
 
 export CONTEXT_DROP_HOME="$task_home"
 export CONTEXT_DROP_RUNTIME_PORT="$port"
-export CONTEXT_DROP_BACKEND=tmux
 mkdir -p "$task_home/fake-bin"
-cp "$root/scripts/smoke-tmux.sh" "$task_home/fake-bin/tmux"
-chmod +x "$task_home/fake-bin/tmux"
+cp "$root/scripts/smoke-herdr.sh" "$task_home/fake-bin/herdr"
+chmod +x "$task_home/fake-bin/herdr"
 printf '#!/bin/sh\nexit 1\n' > "$task_home/fake-bin/codex"
 chmod +x "$task_home/fake-bin/codex"
 cp "$task_home/fake-bin/codex" "$task_home/fake-bin/dari"
@@ -87,6 +86,20 @@ if [[ "$healthy" != "yes" ]]; then
   exit 1
 fi
 echo "daemon and runtime healthy"
+workers=""
+for _ in $(seq 1 40); do
+  workers="$("$bin" daemon status 2>/dev/null | grep -c "^Worker [1-4]: idle (${CONTEXT_DROP_SMOKE_AGENT:-codex}, herdr w1:p" || true)"
+  if [[ "$workers" == "4" ]]; then
+    break
+  fi
+  sleep 0.5
+done
+if [[ "$workers" != "4" ]]; then
+  echo "expected four idle ${CONTEXT_DROP_SMOKE_AGENT:-codex} workers, got $workers" >&2
+  "$bin" daemon status >&2 || true
+  exit 1
+fi
+echo "four ${CONTEXT_DROP_SMOKE_AGENT:-codex} workers warmed through Herdr"
 
 kill -TERM "$daemon_pid"
 wait "$daemon_pid" || true

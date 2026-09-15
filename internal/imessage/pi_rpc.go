@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	_ "embed"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -443,6 +444,16 @@ func (r *PiRPCResponder) read(stdout io.Reader, records chan<- rpcRecord) {
 }
 
 func (r *PiRPCResponder) Respond(ctx context.Context, prompt string, maxOutput int) (Response, error) {
+	return r.RespondWithAttachments(ctx, prompt, nil, maxOutput)
+}
+
+// RespondWithAttachments sends image attachments as Pi image content blocks
+// beside the prompt. Non-image attachments are already named in the prompt.
+func (r *PiRPCResponder) RespondWithAttachments(ctx context.Context, prompt string, attachments []Attachment, maxOutput int) (Response, error) {
+	images, err := imageBlocks(ctx, attachments)
+	if err != nil {
+		return Response{}, &ResponderPrePromptError{Cause: err}
+	}
 	if err := r.acquireTurn(ctx); err != nil {
 		return Response{}, fmt.Errorf("wait for Pi RPC responder: %w", err)
 	}
@@ -457,7 +468,11 @@ func (r *PiRPCResponder) Respond(ctx context.Context, prompt string, maxOutput i
 
 	id := r.requestID("prompt")
 	started := time.Now()
-	if err := r.write(map[string]any{"id": id, "type": "prompt", "message": prompt}); err != nil {
+	command := map[string]any{"id": id, "type": "prompt", "message": prompt}
+	if len(images) > 0 {
+		command["images"] = images
+	}
+	if err := r.write(command); err != nil {
 		r.stopLocked()
 		return Response{Metrics: startupMetrics}, err
 	}
@@ -729,4 +744,56 @@ func (r *PiRPCResponder) stopLocked() {
 	r.done = nil
 	r.stderr = nil
 	r.needsBootstrap = false
+}
+
+// maxInlineImageBytes bounds what is sent through the RPC channel per image.
+const maxInlineImageBytes = 20 << 20
+
+// imageBlocks loads image attachments as Pi ImageContent values. HEIC, which
+// iPhones send by default, is transcoded to JPEG with sips since models do
+// not accept it.
+func imageBlocks(ctx context.Context, attachments []Attachment) ([]map[string]string, error) {
+	var blocks []map[string]string
+	for _, attachment := range attachments {
+		if !attachment.IsImage() {
+			continue
+		}
+		path, mime := attachment.Path, attachment.MimeType
+		if mime == "image/heic" || mime == "image/heif" {
+			converted, err := transcodeImage(ctx, path)
+			if err != nil {
+				return nil, fmt.Errorf("convert %s: %w", filepath.Base(path), err)
+			}
+			defer os.Remove(converted)
+			path, mime = converted, "image/jpeg"
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, err
+		}
+		if info.Size() > maxInlineImageBytes {
+			continue
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		blocks = append(blocks, map[string]string{"type": "image", "mimeType": mime, "data": base64.StdEncoding.EncodeToString(data)})
+	}
+	return blocks, nil
+}
+
+func transcodeImage(ctx context.Context, path string) (string, error) {
+	out, err := os.CreateTemp("", "context-drop-image-*.jpg")
+	if err != nil {
+		return "", err
+	}
+	target := out.Name()
+	_ = out.Close()
+	cmd := exec.CommandContext(ctx, "/usr/bin/sips", "-s", "format", "jpeg", "-s", "formatOptions", "85", path, "--out", target)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		_ = os.Remove(target)
+		return "", fmt.Errorf("sips: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return target, nil
 }

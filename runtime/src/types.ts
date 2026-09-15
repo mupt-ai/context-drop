@@ -1,14 +1,16 @@
+export type WorkerAgent = "pi" | "codex" | "claude";
 export interface RuntimeConfig {
   host: "127.0.0.1" | "::1";
   port: number;
   stateDir: string;
   tokenFile: string;
-  defaultBackend?: "tmux" | "herdr";
-  tmuxSession?: string;
   herdrPath?: string;
   herdrSession?: string;
   fullAIHerdrWorkspaceLabel?: string;
-  agents: Record<string, { command: string[]; promptMode?: string }>;
+  agents: Record<string, { command: string[] }>;
+  workerAgent: WorkerAgent;
+  reportCredentialsFile: string;
+  contextDropPath?: string;
 }
 
 export interface Conversation {
@@ -52,10 +54,9 @@ export interface ParentReport {
 }
 export interface Slot {
   id: number;
-  backend: "tmux" | "herdr";
   capability: string;
   pane?: string;
-  threadId?: string;
+  agent?: string;
   launching?: boolean;
   error?: string;
 }

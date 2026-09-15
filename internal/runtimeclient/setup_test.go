@@ -22,7 +22,7 @@ func TestInitializeHonorsPortAndPrivateModes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Port != 49123 || cfg.Host != "127.0.0.1" || cfg.DefaultBackend != "herdr" || cfg.HerdrSession != "default" || cfg.FullAIHerdrWorkspaceLabel != "ContextDropManaged" {
+	if cfg.Port != 49123 || cfg.Host != "127.0.0.1" || cfg.HerdrSession != "default" || cfg.FullAIHerdrWorkspaceLabel != "ContextDropManaged" {
 		t.Fatalf("config = %#v", cfg)
 	}
 	if cfg.NodePath == "" || !filepath.IsAbs(cfg.NodePath) {
@@ -67,9 +67,11 @@ func TestInitializeWritesAtomically(t *testing.T) {
 	}
 }
 
-func TestInitializeMigratesPiPromptFileSyntax(t *testing.T) {
+func TestInitializeReplacesPromptFileAgentsAndKeepsOverrides(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("CONTEXT_DROP_HOME", home)
+	bin := fakeAgents(t, home, "dari", "pi", "codex", "claude")
+	t.Setenv("PATH", bin)
 	if _, err := Initialize(); err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +80,21 @@ func TestInitializeMigratesPiPromptFileSyntax(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.Agents["pi"] = AgentConfig{Command: []string{"/opt/homebrew/bin/pi", "{prompt_file}"}, PromptMode: "arg"}
+	for _, name := range WorkerAgents {
+		if got := cfg.Agents[name].Command; len(got) != 3 || got[0] != filepath.Join(bin, "dari") || got[1] != "--"+name {
+			t.Fatalf("%s command = %#v", name, got)
+		}
+	}
+	if got := cfg.Agents["claude"].Command[2]; got != "--dangerously-skip-permissions" {
+		t.Fatalf("claude flag = %q", got)
+	}
+	if cfg.WorkerAgent != "codex" {
+		t.Fatalf("workerAgent = %q", cfg.WorkerAgent)
+	}
+	cfg.Agents["pi"] = AgentConfig{Command: []string{"/opt/homebrew/bin/pi", "--approve", "@{prompt_file}"}}
+	cfg.Agents["claude"] = AgentConfig{Command: []string{"/custom/claude", "--dangerously-skip-permissions", "--model", "opus"}}
+	cfg.WorkerAgent = ""
+	cfg.DelegateAgent = "claude"
 	data, err := json.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -93,40 +109,92 @@ func TestInitializeMigratesPiPromptFileSyntax(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := cfg.Agents["pi"].Command; len(got) != 3 || got[1] != "--approve" || got[2] != "@{prompt_file}" {
+	if got := cfg.Agents["pi"].Command; len(got) != 3 || got[1] != "--pi" || got[2] != "--approve" {
 		t.Fatalf("Pi command = %#v", got)
+	}
+	if got := cfg.Agents["claude"].Command; len(got) != 4 || got[0] != "/custom/claude" {
+		t.Fatalf("claude override lost: %#v", got)
+	}
+	if cfg.WorkerAgent != "claude" {
+		t.Fatalf("delegateAgent was not migrated: %q", cfg.WorkerAgent)
 	}
 }
 
-func TestInitializeMigratesPiCommandWithoutApprove(t *testing.T) {
+func TestInitializeHonorsWorkerAgentEnvAndRejectsUnknown(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("CONTEXT_DROP_HOME", home)
+	bin := fakeAgents(t, home, "claude")
+	t.Setenv("PATH", bin)
+	t.Setenv("CONTEXT_DROP_WORKER_AGENT", "claude")
 	if _, err := Initialize(); err != nil {
 		t.Fatal(err)
 	}
-	_, configPath, _, _ := Paths()
 	cfg, err := LoadConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg.Agents["pi"] = AgentConfig{Command: []string{"/opt/homebrew/bin/pi", "@{prompt_file}"}, PromptMode: "arg"}
-	data, err := json.Marshal(cfg)
+	if cfg.WorkerAgent != "claude" || len(cfg.Agents["claude"].Command) != 2 || cfg.Agents["claude"].Command[1] != "--dangerously-skip-permissions" {
+		t.Fatalf("config = %#v", cfg)
+	}
+	if cfg.ReportCredentialsFile != filepath.Join(home, "managed", "report-credentials.json") {
+		t.Fatalf("reportCredentialsFile = %q", cfg.ReportCredentialsFile)
+	}
+	t.Setenv("CONTEXT_DROP_WORKER_AGENT", "codex")
+	if _, err := Initialize(); err == nil || !strings.Contains(err.Error(), "not configured") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestSetWorkerAgent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CONTEXT_DROP_HOME", home)
+	bin := fakeAgents(t, home, "pi", "claude")
+	t.Setenv("PATH", bin)
+	if _, err := Initialize(); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetWorkerAgent("codex"); err == nil || !strings.Contains(err.Error(), "available: claude, pi") {
+		t.Fatalf("err = %v", err)
+	}
+	if err := SetWorkerAgent("pi"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(configPath, data, 0o600); err != nil {
-		t.Fatal(err)
+	if cfg.WorkerAgent != "pi" {
+		t.Fatalf("workerAgent = %q", cfg.WorkerAgent)
 	}
 	if _, err := Initialize(); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err = LoadConfig()
+	if cfg, _ = LoadConfig(); cfg.WorkerAgent != "pi" {
+		t.Fatalf("restart lost the choice: %q", cfg.WorkerAgent)
+	}
+}
+
+// fakeAgents builds a PATH directory holding only node and executable stubs,
+// so Initialize detects exactly the named agents.
+func fakeAgents(t *testing.T, home string, names ...string) string {
+	t.Helper()
+	nodePath, err := ResolveExecutable("node")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := cfg.Agents["pi"].Command; len(got) != 3 || got[1] != "--approve" || got[2] != "@{prompt_file}" {
-		t.Fatalf("Pi command = %#v", got)
+	bin := filepath.Join(home, "bin")
+	if err := os.MkdirAll(bin, 0o700); err != nil {
+		t.Fatal(err)
 	}
+	if err := os.Symlink(nodePath, filepath.Join(bin, "node")); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range names {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return bin
 }
 
 func TestInitializeRejectsInvalidPort(t *testing.T) {
@@ -155,7 +223,7 @@ func TestInitializeUsesPersistedNodePathWhenPATHHasNoNode(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	data, err := json.Marshal(RuntimeConfig{Host: "127.0.0.1", Port: 47762, NodePath: nodePath, DefaultBackend: "tmux", TmuxSession: "context-drop", Agents: map[string]AgentConfig{}})
+	data, err := json.Marshal(RuntimeConfig{Host: "127.0.0.1", Port: 47762, NodePath: nodePath, Agents: map[string]AgentConfig{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +258,6 @@ func TestInitializeHonorsBackendEnvOverrides(t *testing.T) {
 	}
 	t.Setenv("PATH", binDir)
 	t.Setenv("CONTEXT_DROP_HOME", home)
-	t.Setenv("CONTEXT_DROP_BACKEND", "herdr")
 	t.Setenv("CONTEXT_DROP_HERDR_SESSION", "cdx")
 	t.Setenv("CONTEXT_DROP_FULL_AI_HERDR_WORKSPACE_LABEL", "ManagedAI")
 	if _, err := Initialize(); err != nil {
@@ -200,7 +267,7 @@ func TestInitializeHonorsBackendEnvOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.DefaultBackend != "herdr" || cfg.HerdrSession != "cdx" || cfg.FullAIHerdrWorkspaceLabel != "ManagedAI" {
+	if cfg.HerdrSession != "cdx" || cfg.FullAIHerdrWorkspaceLabel != "ManagedAI" {
 		t.Fatalf("config = %#v", cfg)
 	}
 	if cfg.HerdrPath != "" {
@@ -216,7 +283,7 @@ func TestConfigureAgentPreservesArgvAndRequiresReplace(t *testing.T) {
 	if _, err := Initialize(); err != nil {
 		t.Fatal(err)
 	}
-	agent := AgentConfig{Command: []string{"/bin/echo", "--model", "a b", "@{prompt_file}"}, PromptMode: "arg"}
+	agent := AgentConfig{Command: []string{"/bin/echo", "--model", "a b", "--yolo"}}
 	if err := ConfigureAgent("custom", agent, false); err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +291,7 @@ func TestConfigureAgentPreservesArgvAndRequiresReplace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := cfg.Agents["custom"].Command; len(got) != 4 || got[2] != "a b" || got[3] != "@{prompt_file}" {
+	if got := cfg.Agents["custom"].Command; len(got) != 4 || got[2] != "a b" || got[3] != "--yolo" {
 		t.Fatalf("argv = %#v", got)
 	}
 	if err := ConfigureAgent("custom", agent, false); err == nil {
@@ -235,14 +302,14 @@ func TestConfigureAgentPreservesArgvAndRequiresReplace(t *testing.T) {
 	}
 }
 
-func TestConfigureAgentValidatesPromptPlaceholder(t *testing.T) {
+func TestConfigureAgentRejectsPromptFileArgv(t *testing.T) {
 	t.Setenv("CONTEXT_DROP_HOME", t.TempDir())
 	if _, err := Initialize(); err != nil {
 		t.Fatal(err)
 	}
-	for _, command := range [][]string{{"/bin/echo"}, {"/bin/echo", "{prompt_file}", "{prompt_file}"}} {
-		if err := ConfigureAgent("bad", AgentConfig{Command: command, PromptMode: "arg"}, false); err == nil {
-			t.Fatalf("expected placeholder error for %#v", command)
+	for _, command := range [][]string{{}, {"/bin/echo", ""}, {"/bin/echo", "{prompt_file}"}} {
+		if err := ConfigureAgent("bad", AgentConfig{Command: command}, false); err == nil {
+			t.Fatalf("expected error for %#v", command)
 		}
 	}
 }
@@ -268,7 +335,7 @@ func TestConfigureAgentHandlesNilAgentsMap(t *testing.T) {
 	if err := os.WriteFile(configPath, config, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := ConfigureAgent("cmd", AgentConfig{Command: []string{"/bin/echo", "{prompt_file}"}, PromptMode: "arg"}, false); err != nil {
+	if err := ConfigureAgent("cmd", AgentConfig{Command: []string{"/bin/echo"}}, false); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := LoadConfig()
@@ -277,38 +344,6 @@ func TestConfigureAgentHandlesNilAgentsMap(t *testing.T) {
 	}
 	if _, ok := cfg.Agents["cmd"]; !ok {
 		t.Fatalf("agent not persisted: %#v", cfg.Agents)
-	}
-}
-
-func TestInitializeRejectsInvalidBackendEnv(t *testing.T) {
-	t.Setenv("CONTEXT_DROP_HOME", t.TempDir())
-	t.Setenv("CONTEXT_DROP_BACKEND", "screen")
-	if _, err := Initialize(); err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestLoadConfigRejectsInvalidBackend(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("CONTEXT_DROP_HOME", home)
-	if _, err := Initialize(); err != nil {
-		t.Fatal(err)
-	}
-	_, configPath, _, _ := Paths()
-	cfg, err := LoadConfig()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg.DefaultBackend = "screen"
-	data, err := json.Marshal(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(configPath, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := LoadConfig(); err == nil {
-		t.Fatal("expected invalid backend error")
 	}
 }
 

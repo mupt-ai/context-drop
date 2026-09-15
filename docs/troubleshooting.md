@@ -24,11 +24,11 @@ Node.js 20+ and the installed runtime assets are required. A runtime port occupi
 
 ## No configured agent
 
-Install and authenticate a supported agent CLI (`pi`, `codex`, or `claude`), then restart the daemon so initialization can detect it. Advanced installations may provision the runtime JSON directly with an absolute argv containing exactly one `{prompt_file}` placeholder.
+Install and authenticate a supported agent CLI (`pi`, `codex`, or `claude`), then restart the daemon so initialization can detect it. `context-drop config worker-agent` lists what was detected and selects the agent the pool runs; the choice applies on the next `context-drop daemon restart`. Advanced installations may provision an interactive launch argv in the runtime JSON `agents` map.
 
 ## Herdr status is unavailable
 
-Verify `HERDR_ENV=1`, that the configured `default` session is running, and that the configured Herdr executable is valid. Choose tmux during initial runtime creation with `CONTEXT_DROP_BACKEND=tmux` if Herdr is not available.
+Verify that the configured `default` session is running and that the configured Herdr executable is valid. Workers are hosted and driven by Herdr, so the pool cannot warm without it.
 
 ## A schedule completed but no message arrived
 

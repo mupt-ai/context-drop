@@ -98,3 +98,63 @@ func TestRecoverMessagesReplaysOnlyDurablyQueuedInput(t *testing.T) {
 		t.Fatal("completed input retained")
 	}
 }
+
+func TestImageMessagesReachTheResponderWithAttachments(t *testing.T) {
+	store := orchestrator.Store{Path: filepath.Join(t.TempDir(), "state.json")}
+	now := time.Now().UTC()
+	responder := &recordingResponder{response: imessage.Response{ToolCompleted: true}}
+	runner := &Runner{Store: store, Now: time.Now, messageDebounce: 20 * time.Millisecond, IMessage: &imessage.Adapter{Config: messageTestConfig(t), Commander: &messageCommander{}, PersistentResponder: responder}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	photo := imessage.Attachment{Path: "/tmp/photo.jpg", MimeType: "image/jpeg", Name: "photo.jpg"}
+	messages := []imessage.Message{
+		{ID: "1", Text: "\uFFFC", ChatID: "chat", Attachments: []imessage.Attachment{photo}},
+		{ID: "2", Text: "what is this?", ChatID: "chat"},
+	}
+	var done <-chan struct{}
+	for _, message := range messages {
+		message := message
+		if err := store.Update(func(st *orchestrator.State) error {
+			st.MessageJobs[message.ID] = orchestrator.MessageJob{MessageID: message.ID, Status: "queued", ClaimedAt: now, Input: &orchestrator.MessageInput{Text: message.Text, ChatID: "chat", Attachments: storedAttachments(message.Attachments)}}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		var err error
+		done, err = runner.enqueueMessages(ctx, []imessage.Message{message}, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("burst did not settle")
+	}
+	want := []string{"Image attachment (also provided inline): /tmp/photo.jpg (image/jpeg)\n\nwhat is this?"}
+	if !reflect.DeepEqual(responder.prompts, want) {
+		t.Fatalf("prompts = %q", responder.prompts)
+	}
+	if !reflect.DeepEqual(responder.attachments, [][]imessage.Attachment{{photo}}) {
+		t.Fatalf("attachments = %#v", responder.attachments)
+	}
+}
+
+func TestRequeuedMessageJobsKeepAttachments(t *testing.T) {
+	store := orchestrator.Store{Path: filepath.Join(t.TempDir(), "state.json")}
+	photo := orchestrator.MessageAttachment{Path: "/tmp/photo.png", MimeType: "image/png"}
+	if err := store.Update(func(st *orchestrator.State) error {
+		st.MessageJobs["9"] = orchestrator.MessageJob{MessageID: "9", Status: "queued", ClaimedAt: time.Now(), Input: &orchestrator.MessageInput{Text: "\uFFFC", ChatID: "chat", Attachments: []orchestrator.MessageAttachment{photo}}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	state, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := messageAttachments(state.MessageJobs["9"].Input.Attachments)
+	if !reflect.DeepEqual(got, []imessage.Attachment{{Path: "/tmp/photo.png", MimeType: "image/png"}}) {
+		t.Fatalf("attachments = %#v", got)
+	}
+}

@@ -69,7 +69,49 @@ type Message struct {
 	ChatID         string
 	ChatGUID       string
 	FromMe         bool
+	Attachments    []Attachment
+	// Rendered marks Text as already produced by PromptText, so attachment
+	// lines are not added twice when grouped messages reach the responder.
+	Rendered       bool
 	RecentOutbound []ContextMessage
+}
+
+// Attachment is a file iMessage delivered with a message, as reported by imsg
+// with --attachments --convert-attachments (so HEIC and friends arrive as
+// model-compatible files).
+type Attachment struct {
+	Path     string `json:"path"`
+	MimeType string `json:"mime_type,omitempty"`
+	Name     string `json:"name,omitempty"`
+}
+
+func (a Attachment) IsImage() bool { return strings.HasPrefix(a.MimeType, "image/") }
+
+// objectReplacement is what iMessage leaves in the text where an attachment sits.
+const objectReplacement = "\uFFFC"
+
+// PromptText is the message text with attachment placeholders removed and a
+// line per attachment naming its local file, so any responder can act on it.
+func (m Message) PromptText() string {
+	if m.Rendered {
+		return m.Text
+	}
+	text := strings.TrimSpace(strings.ReplaceAll(m.Text, objectReplacement, ""))
+	if len(m.Attachments) == 0 {
+		return text
+	}
+	lines := make([]string, 0, len(m.Attachments)+1)
+	if text != "" {
+		lines = append(lines, text)
+	}
+	for _, attachment := range m.Attachments {
+		kind := "Attachment"
+		if attachment.IsImage() {
+			kind = "Image attachment (also provided inline)"
+		}
+		lines = append(lines, fmt.Sprintf("%s: %s (%s)", kind, attachment.Path, attachment.MimeType))
+	}
+	return strings.Join(lines, "\n")
 }
 
 type ContextMessage struct {
@@ -115,6 +157,12 @@ type PersistentResponder interface {
 	Prepare(context.Context) (PersistentResponderState, error)
 	Respond(context.Context, string, int) (Response, error)
 	Close() error
+}
+
+// ImageResponder is a PersistentResponder that can also receive image content
+// blocks alongside the prompt text.
+type ImageResponder interface {
+	RespondWithAttachments(context.Context, string, []Attachment, int) (Response, error)
 }
 
 // ResponderPrePromptError marks a failure that occurred before a prompt could
@@ -432,7 +480,8 @@ func (a Adapter) ConversationHistory(ctx context.Context) ([]Message, error) {
 }
 
 func (a Adapter) ChatMessage(message Message) (Message, bool) {
-	if strings.TrimSpace(message.Text) == "" || (message.ChatID != "" && message.ChatID != a.Config.ChatID) {
+	empty := strings.TrimSpace(strings.ReplaceAll(message.Text, objectReplacement, "")) == "" && len(message.Attachments) == 0
+	if empty || (message.ChatID != "" && message.ChatID != a.Config.ChatID) {
 		return Message{}, false
 	}
 	if len(message.Text) > a.Config.MaxMessageBytes {
@@ -482,11 +531,17 @@ func (a Adapter) RespondMeasured(ctx context.Context, message Message) (Response
 		}
 	}
 	promptStarted := time.Now()
-	prompt := message.Text
+	prompt := message.PromptText()
 
 	promptBuild := time.Since(promptStarted)
 	if a.PersistentResponder != nil {
-		response, respondErr := a.PersistentResponder.Respond(respondCtx, prompt, a.Config.MaxReplyBytes)
+		var response Response
+		var respondErr error
+		if withImages, ok := a.PersistentResponder.(ImageResponder); ok && len(message.Attachments) > 0 {
+			response, respondErr = withImages.RespondWithAttachments(respondCtx, prompt, message.Attachments, a.Config.MaxReplyBytes)
+		} else {
+			response, respondErr = a.PersistentResponder.Respond(respondCtx, prompt, a.Config.MaxReplyBytes)
+		}
 		response.Metrics.PromptBuild = promptBuild
 		response.Metrics.PromptBytes = len(prompt)
 		response.Metrics.ResponderStartup += responderState.Startup
@@ -730,7 +785,35 @@ func normalize(raw map[string]any, index int) Message {
 		ChatID:         chatValue(raw),
 		ChatGUID:       stringValue(raw, "chatGuid", "chat_guid"),
 		FromMe:         fromMe,
+		Attachments:    attachmentsValue(raw),
 	}
+}
+
+func attachmentsValue(raw map[string]any) []Attachment {
+	items, _ := raw["attachments"].([]any)
+	var attachments []Attachment
+	for _, item := range items {
+		entry, ok := item.(map[string]any)
+		if !ok || boolValue(entry, "missing") || boolValue(entry, "is_sticker", "isSticker") {
+			continue
+		}
+		path := stringValue(entry, "converted_path", "convertedPath", "original_path", "originalPath", "path", "filename")
+		if strings.HasPrefix(path, "~/") {
+			if home, err := os.UserHomeDir(); err == nil {
+				path = filepath.Join(home, path[2:])
+			}
+		}
+		if path == "" || !filepath.IsAbs(path) {
+			continue
+		}
+		mime := stringValue(entry, "mime_type", "mimeType")
+		if mime == "" {
+			// Link previews and other iMessage plugin payloads are not user files.
+			continue
+		}
+		attachments = append(attachments, Attachment{Path: path, MimeType: mime, Name: stringValue(entry, "transfer_name", "transferName", "name")})
+	}
+	return attachments
 }
 
 func chatValue(raw map[string]any) string {

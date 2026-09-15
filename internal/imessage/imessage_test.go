@@ -440,3 +440,45 @@ func TestPollIntervalSupportsLegacySecondsAndSubsecondConfig(t *testing.T) {
 		t.Fatalf("current interval = %s", got)
 	}
 }
+
+func TestParseMessagesReadsAttachmentsAndSkipsPluginPayloads(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	line := `{"id":7,"text":"\uFFFC","is_from_me":false,"chat_id":"1","attachments":[` +
+		`{"missing":false,"is_sticker":false,"transfer_name":"IMG_1.heic","filename":"~/Library/Messages/Attachments/a/IMG_1.heic","original_path":"` + home + `/Library/Messages/Attachments/a/IMG_1.heic","mime_type":"image/heic"},` +
+		`{"missing":false,"is_sticker":false,"transfer_name":"x.pluginPayloadAttachment","original_path":"/x/x.pluginPayloadAttachment","mime_type":""},` +
+		`{"missing":true,"is_sticker":false,"transfer_name":"lost.jpg","original_path":"/x/lost.jpg","mime_type":"image/jpeg"},` +
+		`{"missing":false,"is_sticker":false,"transfer_name":"notes.zip","filename":"~/Library/Messages/Attachments/b/notes.zip","mime_type":"application/zip"}]}`
+	messages, err := ParseMessages([]byte(line))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 1 {
+		t.Fatalf("messages = %#v", messages)
+	}
+	got := messages[0].Attachments
+	want := []Attachment{
+		{Path: home + "/Library/Messages/Attachments/a/IMG_1.heic", MimeType: "image/heic", Name: "IMG_1.heic"},
+		{Path: home + "/Library/Messages/Attachments/b/notes.zip", MimeType: "application/zip", Name: "notes.zip"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("attachments = %#v, want %#v", got, want)
+	}
+	adapter := Adapter{Config: Config{ChatID: "1", MaxMessageBytes: 4000}}
+	if _, ok := adapter.ChatMessage(messages[0]); !ok {
+		t.Fatal("an attachment-only message was dropped as empty")
+	}
+	if _, ok := adapter.ChatMessage(Message{Text: "\uFFFC", ChatID: "1"}); ok {
+		t.Fatal("a placeholder with no attachments was accepted")
+	}
+	prompt := messages[0].PromptText()
+	if strings.Contains(prompt, "\uFFFC") || !strings.HasPrefix(prompt, "Image attachment (also provided inline): "+home+"/Library/Messages/Attachments/a/IMG_1.heic (image/heic)\nAttachment: ") {
+		t.Fatalf("prompt = %q", prompt)
+	}
+	captioned := Message{Text: "see this \uFFFC", Attachments: got[:1]}
+	if p := captioned.PromptText(); !strings.HasPrefix(p, "see this\nImage attachment") {
+		t.Fatalf("captioned prompt = %q", p)
+	}
+	if p := (Message{Text: "hello"}).PromptText(); p != "hello" {
+		t.Fatalf("plain prompt = %q", p)
+	}
+}

@@ -1,8 +1,9 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { NativeWorkers } from "./native.js";
-import type { Conversation, ParentReport, PoolState, RuntimeConfig, Slot, Task } from "./types.js";
+import { writePrivate } from "./state.js";
+import type { Conversation, ParentReport, PoolState, RuntimeConfig, Task } from "./types.js";
 
 export const POOL_SIZE = 4;
 const secret = () => randomBytes(32).toString("base64url");
@@ -10,14 +11,7 @@ export function matches(a: string, b: string): boolean {
   const left = Buffer.from(a), right = Buffer.from(b);
   return left.length > 0 && left.length === right.length && timingSafeEqual(left, right);
 }
-export function writePrivate(path: string, value: unknown): void {
-  const tmp = path + ".tmp";
-  writeFileSync(tmp, JSON.stringify(value), { mode: 0o600 });
-  chmodSync(tmp, 0o600);
-  const fd = openSync(tmp, "r");
-  try { fsyncSync(fd); } finally { closeSync(fd); }
-  renameSync(tmp, path);
-}
+export { writePrivate };
 
 export class WorkerPool {
   readonly state: PoolState;
@@ -47,7 +41,7 @@ export class WorkerPool {
     try { writeFileSync(lock, JSON.stringify({ pid: process.pid, token: this.lockToken })); } finally { closeSync(lock); }
     this.path = join(config.stateDir, "worker-pool.json");
     this.state = existsSync(this.path) ? JSON.parse(readFileSync(this.path, "utf8")) : {
-      slots: Array.from({ length: POOL_SIZE }, (_, i) => ({ id: i + 1, backend: config.defaultBackend || "herdr", capability: secret() })), tasks: [], reports: [], events: [],
+      slots: Array.from({ length: POOL_SIZE }, (_, i) => ({ id: i + 1, capability: secret() })), tasks: [], reports: [], events: [],
     };
     if (this.state.slots.length !== POOL_SIZE) throw new Error("pool state must contain exactly four worker slots");
     this.native.onEvent = (worker, event) => this.event(this.state.slots[worker - 1].capability, event);
@@ -57,7 +51,7 @@ export class WorkerPool {
   private dir(id: number): string { return join(this.config.stateDir, "workers", String(id)); }
   private current(id: number): Task | undefined { return this.state.tasks.find(task => task.worker === id && (task.status === "running" || task.status === "waiting")); }
   workers() {
-    return this.state.slots.map(slot => ({ worker: slot.id, paneId: slot.pane, backend: slot.backend, agent: "codex", ready: this.ready.has(slot.id) && !slot.launching, task: this.current(slot.id)?.id, prompt: this.current(slot.id)?.prompt.slice(0, 500), question: this.current(slot.id)?.question, status: this.current(slot.id)?.status || (this.ready.has(slot.id) && !slot.launching ? "idle" : "starting"), error: slot.error, queued: this.state.tasks.filter(task => task.status === "queued" && task.requestedWorker === slot.id).length }));
+    return this.state.slots.map(slot => ({ worker: slot.id, paneId: slot.pane, backend: "herdr", agent: slot.agent || this.config.workerAgent, ready: this.ready.has(slot.id) && !slot.launching, task: this.current(slot.id)?.id, prompt: this.current(slot.id)?.prompt.slice(0, 500), question: this.current(slot.id)?.question, status: this.current(slot.id)?.status || (this.ready.has(slot.id) && !slot.launching ? "idle" : "starting"), error: slot.error, queued: this.state.tasks.filter(task => task.status === "queued" && task.requestedWorker === slot.id).length }));
   }
   setConversation(value: Conversation): void {
     if (!isAbsolute(value.path) || !statSync(value.path).isFile() || (value.leafId !== null && typeof value.leafId !== "string")) throw new Error("invalid main conversation");
@@ -75,6 +69,16 @@ export class WorkerPool {
       const dir = this.dir(slot.id);
       mkdirSync(dir, { recursive: true, mode: 0o700 });
       writePrivate(join(dir, "worker.json"), { worker: slot.id, capability: slot.capability, url: `http://${this.config.host === "::1" ? "[::1]" : this.config.host}:${this.config.port}` });
+      if (slot.pane && slot.agent !== this.config.workerAgent) {
+        // The configured agent changed since this pane was launched, or the
+        // pane predates agent tracking; either way replace it.
+        const task = this.current(slot.id);
+        if (task) this.complete(task, `Worker agent changed to ${this.config.workerAgent}. Task was not replayed.`, true);
+        await this.native.retire(slot);
+        delete slot.pane;
+        delete slot.agent;
+        slot.launching = false;
+      }
       if (slot.pane) {
         if (await this.native.alive(slot)) { await this.native.ready(slot); await this.native.reconcile(slot); slot.launching = false; this.ready.add(slot.id); this.save(); continue; }
         const task = this.current(slot.id);
@@ -272,7 +276,15 @@ export class WorkerPool {
   reportWithToken(token: string, input: any): ParentReport {
     const task = this.state.tasks.find(task => task.id === input.runId && task.status === "running" && matches(token, task.capability));
     if (!task) throw new Error("unauthorized report");
-    if (input.kind !== undefined && input.kind !== "progress" && input.kind !== "needs_user") throw new Error("only progress and question reports are accepted; final answers are automatic");
+    if (input.kind === "final") {
+      // The worker's own answer beats the eventual idle detection, which only
+      // knows that the turn ended. The slot stays busy until that happens.
+      const message = String(input.message || "");
+      if (!message.trim() || message.length > 16000) throw new Error("report must contain 1–16000 characters");
+      this.complete(task, message, false);
+      return this.state.reports.findLast(report => report.runId === task.id)!;
+    }
+    if (input.kind !== undefined && input.kind !== "progress" && input.kind !== "needs_user") throw new Error("only progress, question, and final reports are accepted");
     return this.report(task, input.kind || "progress", String(input.message || ""));
   }
   lease(routerId: string, chatId: string, seconds: number): ParentReport | null {

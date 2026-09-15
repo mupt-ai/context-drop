@@ -507,10 +507,16 @@ func TestReportOrchestratorFailureReleasesWithoutSending(t *testing.T) {
 }
 
 type recordingResponder struct {
-	prompts  []string
-	fail     int
-	reply    string
-	response imessage.Response
+	prompts     []string
+	attachments [][]imessage.Attachment
+	fail        int
+	reply       string
+	response    imessage.Response
+}
+
+func (r *recordingResponder) RespondWithAttachments(ctx context.Context, p string, attachments []imessage.Attachment, max int) (imessage.Response, error) {
+	r.attachments = append(r.attachments, attachments)
+	return r.Respond(ctx, p, max)
 }
 
 func (*recordingResponder) Prepare(context.Context) (imessage.PersistentResponderState, error) {

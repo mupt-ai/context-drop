@@ -8,13 +8,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 )
 
 type AgentConfig struct {
-	Command    []string `json:"command"`
-	PromptMode string   `json:"promptMode"`
+	Command []string `json:"command"`
 }
 type RuntimeConfig struct {
 	Host                      string                 `json:"host"`
@@ -22,15 +22,35 @@ type RuntimeConfig struct {
 	StateDir                  string                 `json:"stateDir"`
 	TokenFile                 string                 `json:"tokenFile"`
 	NodePath                  string                 `json:"nodePath"`
-	DefaultBackend            string                 `json:"defaultBackend"`
-	TmuxSession               string                 `json:"tmuxSession"`
 	HerdrPath                 string                 `json:"herdrPath,omitempty"`
 	ImsgPath                  string                 `json:"imsgPath,omitempty"`
 	HerdrSession              string                 `json:"herdrSession"`
 	FullAIHerdrWorkspaceLabel string                 `json:"fullAIHerdrWorkspaceLabel"`
 	Agents                    map[string]AgentConfig `json:"agents"`
-	DelegateAgent             string                 `json:"delegateAgent,omitempty"`
-	RepoAliases               map[string]string      `json:"repoAliases,omitempty"`
+	// WorkerAgent selects which configured agent the four pool workers run.
+	// The runtime reads it at start, so a change applies on daemon restart.
+	WorkerAgent           string `json:"workerAgent"`
+	ReportCredentialsFile string `json:"reportCredentialsFile"`
+	// ContextDropPath is the daemon's own binary, put first on each worker's
+	// PATH so `context-drop report` matches the running runtime.
+	ContextDropPath string            `json:"contextDropPath"`
+	RepoAliases     map[string]string `json:"repoAliases,omitempty"`
+	// DelegateAgent is the pre-workerAgent name of the same setting; read only for migration.
+	DelegateAgent string `json:"delegateAgent,omitempty"`
+}
+
+// WorkerAgents lists the agents the pool can run, in default-preference order.
+var WorkerAgents = []string{"codex", "claude", "pi"}
+
+// defaultAgentCommand is the unattended launch argv for a worker agent. Every
+// worker runs inside a Herdr tab under the pool's control, so each agent is
+// started with its own bypass-approvals flag.
+func defaultAgentCommand(name, path, dari string) []string {
+	flag := map[string]string{"codex": "--yolo", "claude": "--dangerously-skip-permissions", "pi": "--approve"}[name]
+	if dari != "" {
+		return []string{dari, "--" + name, flag}
+	}
+	return []string{path, flag}
 }
 
 func Initialize() ([]string, error) {
@@ -79,20 +99,10 @@ func Initialize() ([]string, error) {
 	}
 	agents := map[string]AgentConfig{}
 	detected := []string{}
-	for _, name := range []string{"pi", "codex", "claude"} {
+	dari, _ := exec.LookPath("dari")
+	for _, name := range WorkerAgents {
 		if path, err := exec.LookPath(name); err == nil {
-			promptArg := "{prompt_file}"
-			command := []string{path, promptArg}
-			if name == "codex" {
-				command = []string{path, "--yolo"}
-				if dari, err := exec.LookPath("dari"); err == nil {
-					command = []string{dari, "--codex", "--yolo"}
-				}
-			}
-			if name == "pi" {
-				command = []string{path, "--approve", "@{prompt_file}"}
-			}
-			agents[name] = AgentConfig{Command: command, PromptMode: "arg"}
+			agents[name] = AgentConfig{Command: defaultAgentCommand(name, path, dari)}
 			detected = append(detected, name)
 		}
 	}
@@ -104,13 +114,6 @@ func Initialize() ([]string, error) {
 		}
 		port = parsed
 	}
-	backend := "herdr"
-	if value := os.Getenv("CONTEXT_DROP_BACKEND"); value != "" {
-		if value != "tmux" && value != "herdr" {
-			return nil, fmt.Errorf("CONTEXT_DROP_BACKEND must be tmux or herdr")
-		}
-		backend = value
-	}
 	herdrSession := "default"
 	if value := os.Getenv("CONTEXT_DROP_HERDR_SESSION"); value != "" {
 		herdrSession = value
@@ -121,23 +124,20 @@ func Initialize() ([]string, error) {
 	}
 	herdrPath, _ := ResolveExecutable("herdr")
 	imsgPath, _ := ResolveExecutable("imsg")
-	delegateAgent := ""
-	if _, ok := agents["codex"]; ok {
-		delegateAgent = "codex"
+	self, err := os.Executable()
+	if err != nil {
+		return nil, err
 	}
-	cfg := RuntimeConfig{Host: "127.0.0.1", Port: port, StateDir: dir, TokenFile: tokenPath, NodePath: nodePath, DefaultBackend: backend, TmuxSession: "context-drop", HerdrPath: herdrPath, ImsgPath: imsgPath, HerdrSession: herdrSession, FullAIHerdrWorkspaceLabel: fullAIHerdrWorkspaceLabel, Agents: agents, DelegateAgent: delegateAgent, RepoAliases: map[string]string{}}
+	if resolved, resolveErr := filepath.EvalSymlinks(self); resolveErr == nil {
+		self = resolved
+	}
+	cfg := RuntimeConfig{Host: "127.0.0.1", Port: port, StateDir: dir, TokenFile: tokenPath, NodePath: nodePath, HerdrPath: herdrPath, ImsgPath: imsgPath, HerdrSession: herdrSession, FullAIHerdrWorkspaceLabel: fullAIHerdrWorkspaceLabel, Agents: agents, ReportCredentialsFile: filepath.Join(filepath.Dir(dir), "managed", "report-credentials.json"), ContextDropPath: self, RepoAliases: map[string]string{}}
 	if hasExisting {
 		if existing.Host == "127.0.0.1" || existing.Host == "::1" {
 			cfg.Host = existing.Host
 		}
 		if os.Getenv("CONTEXT_DROP_RUNTIME_PORT") == "" && existing.Port > 0 && existing.Port < 65536 {
 			cfg.Port = existing.Port
-		}
-		if os.Getenv("CONTEXT_DROP_BACKEND") == "" && (existing.DefaultBackend == "tmux" || existing.DefaultBackend == "herdr") {
-			cfg.DefaultBackend = existing.DefaultBackend
-		}
-		if existing.TmuxSession != "" {
-			cfg.TmuxSession = existing.TmuxSession
 		}
 		if validExecutable(existing.HerdrPath) == nil {
 			cfg.HerdrPath = existing.HerdrPath
@@ -151,35 +151,93 @@ func Initialize() ([]string, error) {
 		if os.Getenv("CONTEXT_DROP_FULL_AI_HERDR_WORKSPACE_LABEL") == "" && existing.FullAIHerdrWorkspaceLabel != "" {
 			cfg.FullAIHerdrWorkspaceLabel = existing.FullAIHerdrWorkspaceLabel
 		}
-		if existing.DelegateAgent != "" {
-			cfg.DelegateAgent = existing.DelegateAgent
+		cfg.WorkerAgent = existing.WorkerAgent
+		if cfg.WorkerAgent == "" {
+			cfg.WorkerAgent = existing.DelegateAgent
 		}
 		for alias, repo := range existing.RepoAliases {
 			cfg.RepoAliases[alias] = repo
 		}
 		for k, v := range existing.Agents {
-			if k == "pi" && len(v.Command) == 2 && (v.Command[1] == "{prompt_file}" || v.Command[1] == "@{prompt_file}") {
-				// Managed Pi runs are unattended: load the prompt file and explicitly
-				// trust project-local resources instead of waiting for a TUI prompt.
-				v.Command = []string{v.Command[0], "--approve", "@{prompt_file}"}
+			// Prompt-file argv came from the retired headless launch mode; the
+			// interactive default replaces it. Anything else is a user override.
+			if promptFileArgv(v.Command) {
+				continue
 			}
 			cfg.Agents[k] = v
 		}
 	}
-	if cfg.DelegateAgent == "" {
-		if _, ok := cfg.Agents["pi"]; ok {
-			cfg.DelegateAgent = "pi"
+	if value := os.Getenv("CONTEXT_DROP_WORKER_AGENT"); value != "" {
+		cfg.WorkerAgent = value
+	}
+	if cfg.WorkerAgent == "" {
+		for _, name := range WorkerAgents {
+			if _, ok := cfg.Agents[name]; ok {
+				cfg.WorkerAgent = name
+				break
+			}
 		}
 	}
-	if cfg.DelegateAgent != "" {
-		if _, ok := cfg.Agents[cfg.DelegateAgent]; !ok {
-			return nil, fmt.Errorf("delegateAgent %q is not configured", cfg.DelegateAgent)
+	if cfg.WorkerAgent != "" {
+		if _, ok := cfg.Agents[cfg.WorkerAgent]; !ok {
+			return nil, fmt.Errorf("workerAgent %q is not configured", cfg.WorkerAgent)
 		}
 	}
 	if err := writeRuntimeConfig(configPath, cfg); err != nil {
 		return nil, err
 	}
 	return detected, nil
+}
+
+func promptFileArgv(command []string) bool {
+	for _, arg := range command {
+		if strings.Contains(arg, "{prompt_file}") {
+			return true
+		}
+	}
+	return false
+}
+
+// SetWorkerAgent persists the pool's agent choice. The running daemon keeps
+// its current workers; the change applies on the next daemon restart.
+func SetWorkerAgent(name string) error {
+	_, configPath, _, err := Paths()
+	if err != nil {
+		return err
+	}
+	lock, err := lockConfig(configPath + ".lock")
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	cfg, err := LoadConfig()
+	if err != nil {
+		return err
+	}
+	if _, ok := cfg.Agents[name]; !ok {
+		return fmt.Errorf("agent %q is not configured; available: %s", name, strings.Join(ConfiguredAgents(cfg), ", "))
+	}
+	cfg.WorkerAgent = name
+	cfg.DelegateAgent = ""
+	return writeRuntimeConfig(configPath, cfg)
+}
+
+// ConfiguredAgents lists configured agent names in WorkerAgents order, then any extras.
+func ConfiguredAgents(cfg RuntimeConfig) []string {
+	names := []string{}
+	for _, name := range WorkerAgents {
+		if _, ok := cfg.Agents[name]; ok {
+			names = append(names, name)
+		}
+	}
+	extras := []string{}
+	for name := range cfg.Agents {
+		if !slices.Contains(WorkerAgents, name) {
+			extras = append(extras, name)
+		}
+	}
+	slices.Sort(extras)
+	return append(names, extras...)
 }
 
 func writeRuntimeConfig(configPath string, cfg RuntimeConfig) error {
@@ -221,21 +279,16 @@ func ConfigureAgent(name string, agent AgentConfig, replace bool) error {
 	if strings.TrimSpace(name) == "" || strings.ContainsAny(name, " \t\r\n/") {
 		return fmt.Errorf("agent name must be a non-empty identifier without whitespace or slashes")
 	}
-	if agent.PromptMode != "arg" {
-		return fmt.Errorf("promptMode must be arg")
-	}
 	if len(agent.Command) == 0 {
 		return fmt.Errorf("agent command must be a non-empty argv array")
 	}
-	placeholders := 0
 	for _, arg := range agent.Command {
 		if arg == "" {
 			return fmt.Errorf("agent command arguments must not be empty")
 		}
-		placeholders += strings.Count(arg, "{prompt_file}")
 	}
-	if placeholders != 1 {
-		return fmt.Errorf("agent command must contain exactly one {prompt_file} placeholder")
+	if promptFileArgv(agent.Command) {
+		return fmt.Errorf("agent command must be an interactive launch; workers receive prompts through Herdr, not a {prompt_file}")
 	}
 	_, configPath, _, err := Paths()
 	if err != nil {
@@ -279,15 +332,9 @@ func LoadConfig() (RuntimeConfig, error) {
 	if cfg.Port <= 0 || cfg.Port > 65535 {
 		return RuntimeConfig{}, fmt.Errorf("runtime port must be between 1 and 65535")
 	}
-	if cfg.DefaultBackend == "" {
-		cfg.DefaultBackend = "tmux"
-	}
-	if cfg.DefaultBackend != "tmux" && cfg.DefaultBackend != "herdr" {
-		return RuntimeConfig{}, fmt.Errorf("runtime defaultBackend must be tmux or herdr")
-	}
-	// Herdr is optional. Keep the runtime usable with tmux when it is not
-	// installed; a Herdr launch will report the
-	// missing executable when it is actually requested.
+	// Herdr may be absent at load time (for example on a machine that only
+	// uploads); a worker launch reports the missing executable when it is
+	// actually requested.
 	if cfg.HerdrPath != "" {
 		if err := validExecutable(cfg.HerdrPath); err != nil {
 			return RuntimeConfig{}, fmt.Errorf("runtime herdrPath: %w; run context-drop init again", err)
