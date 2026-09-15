@@ -336,8 +336,13 @@ func TestPiRPCHelperProcess(t *testing.T) {
 	prompts := 0
 	for dec.Scan() {
 		var command struct {
-			ID   string `json:"id"`
-			Type string `json:"type"`
+			ID     string `json:"id"`
+			Type   string `json:"type"`
+			Images []struct {
+				Type     string `json:"type"`
+				MimeType string `json:"mimeType"`
+				Data     string `json:"data"`
+			} `json:"images"`
 		}
 		if json.Unmarshal(dec.Bytes(), &command) != nil {
 			continue
@@ -365,6 +370,9 @@ func TestPiRPCHelperProcess(t *testing.T) {
 				continue
 			}
 			text := fmt.Sprintf("reply %d", prompts)
+			for _, image := range command.Images {
+				text += fmt.Sprintf(" image(%s,%s,%d)", image.Type, image.MimeType, len(image.Data))
+			}
 			if os.Getenv("CONTEXT_DROP_PI_RPC_SILENT") == "1" {
 				text = ""
 			}
@@ -377,4 +385,34 @@ func TestPiRPCHelperProcess(t *testing.T) {
 		}
 	}
 	os.Exit(0)
+}
+
+func TestPiRPCResponderSendsImageAttachmentsAsContent(t *testing.T) {
+	responder := &PiRPCResponder{
+		argv: []string{os.Args[0], "-test.run=TestPiRPCHelperProcess"},
+		env:  append(os.Environ(), "CONTEXT_DROP_PI_RPC_HELPER=1"),
+	}
+	defer responder.Close()
+	dir := t.TempDir()
+	png := filepath.Join(dir, "shot.png")
+	if err := os.WriteFile(png, []byte("\x89PNG fake"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	zip := filepath.Join(dir, "bundle.zip")
+	if err := os.WriteFile(zip, []byte("PK"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	attachments := []Attachment{{Path: png, MimeType: "image/png"}, {Path: zip, MimeType: "application/zip"}}
+	response, err := responder.RespondWithAttachments(context.Background(), "look", attachments, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Reply != "reply 1 image(image,image/png,12)" {
+		t.Fatalf("reply = %q", response.Reply)
+	}
+	if _, err := responder.RespondWithAttachments(context.Background(), "gone", []Attachment{{Path: filepath.Join(dir, "missing.png"), MimeType: "image/png"}}, 1024); err == nil {
+		t.Fatal("expected a pre-prompt error for a missing image")
+	} else if !errors.As(err, new(*ResponderPrePromptError)) {
+		t.Fatalf("err = %T %v", err, err)
+	}
 }

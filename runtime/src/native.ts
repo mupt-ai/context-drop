@@ -147,7 +147,7 @@ export class NativeWorkers {
       "# Context Drop worker briefing",
       task.instructions ? `## Parent instructions\n\n${task.instructions}` : "",
       `## Worker role\n\n${WORKER_PROMPT}`,
-      `## Parent conversation so far\n\n${renderHistory(task.session)}`,
+      `## Parent conversation so far\n\n${renderHistory(task.session, join(this.config.stateDir, "tasks", task.id, "images"))}`,
     ].filter(Boolean).join("\n\n") + "\n", { mode: 0o600 });
     this.grantReporting(slot.pane!, task);
     const before = await this.agentState(slot.pane!);

@@ -97,9 +97,16 @@ type ReportDelivery struct {
 }
 
 type MessageInput struct {
-	Text      string `json:"text"`
-	ChatID    string `json:"chat_id"`
-	CreatedAt string `json:"created_at"`
+	Text        string              `json:"text"`
+	ChatID      string              `json:"chat_id"`
+	CreatedAt   string              `json:"created_at"`
+	Attachments []MessageAttachment `json:"attachments,omitempty"`
+}
+
+type MessageAttachment struct {
+	Path     string `json:"path"`
+	MimeType string `json:"mime_type,omitempty"`
+	Name     string `json:"name,omitempty"`
 }
 
 type MessageJob struct {

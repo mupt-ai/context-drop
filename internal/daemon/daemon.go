@@ -626,7 +626,7 @@ func (r *Runner) PollMessages(ctx context.Context) {
 				latency.QueueMS = claimTime.Sub(*createdAt).Milliseconds()
 			}
 			st.SeenMessageIDs[message.ID] = claimTime.Format(time.RFC3339Nano)
-			st.MessageJobs[message.ID] = orchestrator.MessageJob{Input: &orchestrator.MessageInput{Text: message.Text, ChatID: message.ChatID, CreatedAt: message.CreatedAt}, MessageID: message.ID, Status: "queued", ClaimedAt: claimTime, UpdatedAt: claimTime, Latency: latency}
+			st.MessageJobs[message.ID] = orchestrator.MessageJob{Input: &orchestrator.MessageInput{Text: message.Text, ChatID: message.ChatID, CreatedAt: message.CreatedAt, Attachments: storedAttachments(message.Attachments)}, MessageID: message.ID, Status: "queued", ClaimedAt: claimTime, UpdatedAt: claimTime, Latency: latency}
 			claimedMessages = append(claimedMessages, message)
 		}
 		return nil
@@ -887,7 +887,7 @@ func (r *Runner) claimWatchedMessage(ctx context.Context, message imessage.Messa
 			latency.QueueMS = claimTime.Sub(*createdAt).Milliseconds()
 		}
 		st.SeenMessageIDs[chatMessage.ID] = claimTime.Format(time.RFC3339Nano)
-		st.MessageJobs[chatMessage.ID] = orchestrator.MessageJob{Input: &orchestrator.MessageInput{Text: chatMessage.Text, ChatID: chatMessage.ChatID, CreatedAt: chatMessage.CreatedAt}, MessageID: chatMessage.ID, Status: "queued", ClaimedAt: claimTime, UpdatedAt: claimTime, Latency: latency}
+		st.MessageJobs[chatMessage.ID] = orchestrator.MessageJob{Input: &orchestrator.MessageInput{Text: chatMessage.Text, ChatID: chatMessage.ChatID, CreatedAt: chatMessage.CreatedAt, Attachments: storedAttachments(chatMessage.Attachments)}, MessageID: chatMessage.ID, Status: "queued", ClaimedAt: claimTime, UpdatedAt: claimTime, Latency: latency}
 		claimed = true
 		return nil
 	}); err != nil {
@@ -1028,7 +1028,7 @@ func (r *Runner) recoverMessages(ctx context.Context) error {
 	})
 	for _, job := range queued {
 		input := job.Input
-		if _, err := r.enqueueMessages(ctx, []imessage.Message{{ID: job.MessageID, Text: input.Text, ChatID: input.ChatID, CreatedAt: input.CreatedAt}}, false); err != nil {
+		if _, err := r.enqueueMessages(ctx, []imessage.Message{{ID: job.MessageID, Text: input.Text, ChatID: input.ChatID, CreatedAt: input.CreatedAt, Attachments: messageAttachments(input.Attachments)}}, false); err != nil {
 			return err
 		}
 	}
@@ -1058,11 +1058,16 @@ func (r *Runner) processMessage(ctx context.Context, message imessage.Message) {
 
 func (r *Runner) processMessages(ctx context.Context, messages []imessage.Message) {
 	message := messages[0]
-	texts := make([]string, len(messages))
-	for i, item := range messages {
-		texts[i] = item.Text
+	texts := make([]string, 0, len(messages))
+	message.Attachments = nil
+	for _, item := range messages {
+		// Grouped messages become one turn, so each one's attachments follow
+		// its own text and all of them ride along as content.
+		texts = append(texts, item.PromptText())
+		message.Attachments = append(message.Attachments, item.Attachments...)
 	}
 	message.Text = strings.Join(texts, "\n\n")
+	message.Rendered = true
 	if state, err := r.Store.Load(); err == nil {
 		message.RecentOutbound = make([]imessage.ContextMessage, 0, len(state.RecentOutbound))
 		for _, outbound := range state.RecentOutbound {
@@ -1420,3 +1425,25 @@ func recordRuntimeError(runtimeErr error) error {
 }
 
 func parsePID(value string) int { n, _ := strconv.Atoi(value); return n }
+
+func storedAttachments(items []imessage.Attachment) []orchestrator.MessageAttachment {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]orchestrator.MessageAttachment, len(items))
+	for i, item := range items {
+		out[i] = orchestrator.MessageAttachment{Path: item.Path, MimeType: item.MimeType, Name: item.Name}
+	}
+	return out
+}
+
+func messageAttachments(items []orchestrator.MessageAttachment) []imessage.Attachment {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]imessage.Attachment, len(items))
+	for i, item := range items {
+		out[i] = imessage.Attachment{Path: item.Path, MimeType: item.MimeType, Name: item.Name}
+	}
+	return out
+}

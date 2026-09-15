@@ -59,6 +59,7 @@ function fixture(t: any, agent: WorkerAgent = "claude") {
       { type: "message", id: "a", message: { role: "user", content: "PARENT_ASKED" } },
       { type: "compaction", id: "b", summary: "OLD_SUMMARY", firstKeptEntryId: "a" },
       { type: "message", id: "c", message: { role: "assistant", content: [{ type: "text", text: "PARENT_REPLIED" }] } },
+      { type: "message", id: "d", message: { role: "user", content: [{ type: "image", mimeType: "image/png", data: Buffer.from("PNGDATA").toString("base64") }, { type: "text", text: "what is this?" }] } },
     ].map(v => JSON.stringify(v)).join("\n") + "\n");
     writeFileSync(join(dir, "workers", "1", "task.json"), JSON.stringify(task));
     return task;
@@ -103,6 +104,9 @@ test("submit briefs the worker, grants reporting, and completes when the pane se
   assert.match(briefing, /CURRENT_PARENT_STYLE/);
   assert.ok(briefing.includes(WORKER_PROMPT));
   assert.match(briefing, /OLD_SUMMARY[\s\S]*PARENT_ASKED[\s\S]*PARENT_REPLIED/);
+  const image = join(dir, "tasks", task.id, "images", "image-1.png");
+  assert.match(briefing, new RegExp(`\\[image: ${image}\\]\nwhat is this\\?`));
+  assert.equal(readFileSync(image, "utf8"), "PNGDATA");
   assert.match(briefing, /context-drop report --final/);
   const credentials = JSON.parse(readFileSync(config.reportCredentialsFile, "utf8"));
   assert.deepEqual(credentials["w1:p1"], { url: "http://127.0.0.1:4242/v1/reports", capability: "cap-task-a", runId: "task-a" });
