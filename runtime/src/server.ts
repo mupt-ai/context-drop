@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomBytes } from "node:crypto";
+import { WorkspaceDirectory } from "./workspaces.js";
 import { WorkerPool, matches } from "./pool.js";
 import type { RuntimeConfig, Task } from "./types.js";
 
@@ -17,9 +18,9 @@ async function body(req: IncomingMessage): Promise<any> {
   }
   return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
 }
-const publicTask = (task: Task, pool: WorkerPool) => ({ runId: task.id, worker: task.worker, paneId: task.worker ? pool.state.slots[task.worker - 1].pane || "" : "", agent: pool.config.workerAgent, name: task.name, status: task.status, fullyManaged: true, selected: false });
+const publicTask = (task: Task, pool: WorkerPool) => ({ runId: task.id, worker: task.worker, paneId: task.worker ? pool.state.slots[task.worker - 1].pane || "" : "", agent: pool.config.workerAgent, name: task.name, status: task.status, fullyManaged: true, selected: false, workspaceTarget: task.workspaceTarget });
 
-export function createRuntimeServer(config: RuntimeConfig, token: string, pool = new WorkerPool(config)) {
+export function createRuntimeServer(config: RuntimeConfig, token: string, pool = new WorkerPool(config), workspaces = new WorkspaceDirectory(config)) {
   if (!["127.0.0.1", "::1"].includes(config.host) || !token) throw new Error("runtime requires loopback and a private token");
   let router: { capability: string; routerId: string; chatId: string } | undefined;
   const server = createServer(async (req, res) => {
@@ -49,6 +50,15 @@ export function createRuntimeServer(config: RuntimeConfig, token: string, pool =
         return json(res, 200, { ok: true });
       }
       if (req.method === "GET" && path === "/v1/workers") return json(res, 200, { workers: pool.workers(), queued: pool.state.tasks.filter(task => task.status === "queued").length });
+      if (req.method === "GET" && path === "/v1/workspaces" && owner) return json(res, 200, { workspaces: await workspaces.discover() });
+      if (req.method === "POST" && path === "/v1/workspaces/delegate" && owner) {
+        const input = await body(req);
+        if (input.newTask !== undefined && typeof input.newTask !== "boolean") throw new Error("newTask must be boolean");
+        const workspaceTarget = await workspaces.resolve(input);
+        if (input.conversation) pool.setConversation(input.conversation);
+        const task = pool.enqueue({ worker: input.worker, prompt: input.prompt, repo: workspaceTarget.cwd, workspaceTarget, routerId: owner.routerId, chatId: owner.chatId, requestId: input.requestId, newTask: input.newTask });
+        return json(res, 201, { task: publicTask(task, pool) });
+      }
       if (req.method === "POST" && path === "/v1/workers/delegate" && owner) {
         const input = await body(req);
         if (input.conversation) pool.setConversation(input.conversation);

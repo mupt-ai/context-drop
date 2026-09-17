@@ -51,7 +51,7 @@ export class WorkerPool {
   private dir(id: number): string { return join(this.config.stateDir, "workers", String(id)); }
   private current(id: number): Task | undefined { return this.state.tasks.find(task => task.worker === id && (task.status === "running" || task.status === "waiting")); }
   workers() {
-    return this.state.slots.map(slot => ({ worker: slot.id, paneId: slot.pane, backend: "herdr", agent: slot.agent || this.config.workerAgent, ready: this.ready.has(slot.id) && !slot.launching, task: this.current(slot.id)?.id, prompt: this.current(slot.id)?.prompt.slice(0, 500), question: this.current(slot.id)?.question, status: this.current(slot.id)?.status || (this.ready.has(slot.id) && !slot.launching ? "idle" : "starting"), error: slot.error, queued: this.state.tasks.filter(task => task.status === "queued" && task.requestedWorker === slot.id).length }));
+    return this.state.slots.map(slot => ({ worker: slot.id, paneId: slot.pane, workspaceTarget: this.current(slot.id)?.workspaceTarget, backend: "herdr", agent: slot.agent || this.config.workerAgent, ready: this.ready.has(slot.id) && !slot.launching, task: this.current(slot.id)?.id, prompt: this.current(slot.id)?.prompt.slice(0, 500), question: this.current(slot.id)?.question, status: this.current(slot.id)?.status || (this.ready.has(slot.id) && !slot.launching ? "idle" : "starting"), error: slot.error, queued: this.state.tasks.filter(task => task.status === "queued" && task.requestedWorker === slot.id).length }));
   }
   setConversation(value: Conversation): void {
     if (!isAbsolute(value.path) || !statSync(value.path).isFile() || (value.leafId !== null && typeof value.leafId !== "string")) throw new Error("invalid main conversation");
@@ -152,7 +152,7 @@ export class WorkerPool {
     branch.reverse();
     // A delegation tool call is still in flight. Exclude that unfinished main
     // tool loop rather than giving the worker orphaned tool calls.
-    const inFlight = branch.findLastIndex(entry => entry.type === "message" && entry.message?.role === "assistant" && entry.message?.content?.some?.((block: any) => block.type === "toolCall" && block.name === "delegate_to_worker"));
+    const inFlight = branch.findLastIndex(entry => entry.type === "message" && entry.message?.role === "assistant" && entry.message?.content?.some?.((block: any) => block.type === "toolCall" && ["delegate_to_worker", "delegate_to_workspace"].includes(block.name)));
     if (inFlight >= 0) {
       const calls = branch[inFlight].message.content.filter((block: any) => block.type === "toolCall");
       const results = new Set(branch.slice(inFlight + 1).filter(entry => entry.message?.role === "toolResult").map(entry => entry.message.toolCallId));
@@ -166,12 +166,13 @@ export class WorkerPool {
     writeFileSync(session, [JSON.stringify({ ...header, id: randomUUID(), cwd, timestamp: new Date().toISOString(), parentSession: source.path }), ...branch.map(entry => JSON.stringify(entry))].join("\n") + "\n", { mode: 0o600 });
     return { session, repo: cwd, instructions: source.instructions };
   }
-  enqueue(input: { worker?: number; prompt: string; name?: string; repo?: string; routerId: string; chatId: string; requestId?: string; newTask?: boolean }): Task {
+  enqueue(input: { worker?: number; prompt: string; name?: string; repo?: string; routerId: string; chatId: string; requestId?: string; newTask?: boolean; workspaceTarget?: Task["workspaceTarget"] }): Task {
     if (typeof input.prompt !== "string" || !input.prompt.trim() || input.prompt.length > 16000) throw new Error("prompt must contain 1–16000 characters");
     if (input.worker !== undefined && (!Number.isInteger(input.worker) || input.worker < 1 || input.worker > POOL_SIZE)) throw new Error("worker must be 1, 2, 3, or 4");
     const duplicate = input.requestId && this.state.tasks.find(task => task.requestIds.includes(input.requestId!) && task.routerId === input.routerId && task.chatId === input.chatId);
     if (duplicate) return duplicate;
     const current = input.worker === undefined || input.newTask ? undefined : this.current(input.worker) || this.state.tasks.find(task => task.requestedWorker === input.worker && task.status === "queued");
+    if (current && input.workspaceTarget && JSON.stringify(current.workspaceTarget) !== JSON.stringify(input.workspaceTarget)) throw new Error("worker has a different destination; choose an idle worker or set newTask");
     if (current && current.chatId !== input.chatId) throw new Error("worker belongs to another conversation");
     if (current?.status === "running" || current?.status === "queued") {
       if (current.routerId !== input.routerId) throw new Error("worker is on another task; choose an idle worker or set newTask");
@@ -199,7 +200,7 @@ export class WorkerPool {
     }
     if (this.state.tasks.filter(task => task.status === "queued").length >= 256) throw new Error("worker queue is full");
     const id = randomUUID();
-    const task: Task = { id, ...this.snapshot(id, input.repo), prompt: input.prompt, name: input.name || "User task", requestedWorker: input.worker, routerId: input.routerId, chatId: input.chatId, requestIds: input.requestId ? [input.requestId] : [], turnId: randomUUID(), status: "queued", capability: secret(), createdAt: new Date().toISOString() };
+    const task: Task = { id, ...this.snapshot(id, input.repo), workspaceTarget: input.workspaceTarget, prompt: input.prompt, name: input.name || "User task", requestedWorker: input.worker, routerId: input.routerId, chatId: input.chatId, requestIds: input.requestId ? [input.requestId] : [], turnId: randomUUID(), status: "queued", capability: secret(), createdAt: new Date().toISOString() };
     this.state.tasks.push(task);
     this.save();
     void this.dispatch();

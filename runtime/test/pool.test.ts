@@ -258,3 +258,41 @@ test("readiness cannot dispatch before native registration completes", async t =
  release();await starting;await settle();
  assert.equal(task.status,"running");assert.equal(native.submissions.length,1);
 });
+
+test("workspace destination persists across followups and runtime restart", async t => {
+  const { pool, native, config, ready } = fixture(); await ready();
+  const workspaceTarget = { workspaceId: "project", workspaceLabel: "dari-mono", mode: "continue" as const, paneId: "agent", cwd: config.stateDir };
+  const task = pool.enqueue({ ...owner, worker: 1, prompt: "continue costs", workspaceTarget }); await settle();
+  assert.deepEqual(pool.workers()[0].workspaceTarget, workspaceTarget);
+  pool.enqueue({ ...owner, worker: 1, prompt: "add tests" });
+  assert.deepEqual(task.workspaceTarget, workspaceTarget);
+  assert.throws(() => pool.enqueue({ ...owner, worker: 1, prompt: "other", workspaceTarget: { ...workspaceTarget, paneId: "other" } }), /different destination/);
+  pool.close();
+  const restored = new WorkerPool(config, native); t.after(() => restored.close());
+  assert.deepEqual(restored.state.tasks[0].workspaceTarget, workspaceTarget);
+});
+
+test("workspace endpoints restrict capabilities and enqueue resolved destination", async t => {
+  const { WorkspaceDirectory } = await import("../src/workspaces.js");
+  const { pool, config } = fixture();
+  const directory = new WorkspaceDirectory(config, async () => JSON.stringify({ result: {
+    workspaces: [{ workspace_id: "project", label: "dari-mono" }],
+    panes: [{ workspace_id: "project", pane_id: "user-agent", agent: "codex", cwd: config.stateDir }],
+  } }));
+  const server = createRuntimeServer(config, "secret", pool, directory);
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => server.close());
+  const address = server.address() as { port: number };
+  const call = (path: string, token: string, data?: object) => fetch(`http://127.0.0.1:${address.port}${path}`, { method: data ? "POST" : "GET", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: data ? JSON.stringify(data) : undefined });
+  const { capability } = await (await call("/v1/router-capabilities", "secret", owner)).json() as { capability: string };
+  assert.equal((await call("/v1/workspaces", pool.state.slots[0].capability)).status, 401);
+  assert.equal((await call("/v1/workspaces", capability)).status, 200);
+  const input = { worker: 1, workspace: "project", mode: "continue", paneId: "user-agent", prompt: "continue costs", requestId: "workspace-request" };
+  assert.equal((await call("/v1/workspaces/delegate", pool.state.slots[0].capability, input)).status, 401);
+  assert.equal((await call("/v1/workspaces/delegate", capability, { ...input, paneId: "foreign" })).status, 400);
+  assert.equal(pool.state.tasks.length, 0);
+  for (let i = 0; i < 2; i++) assert.equal((await call("/v1/workspaces/delegate", capability, input)).status, 201);
+  assert.equal(pool.state.tasks.length, 1);
+  assert.equal(pool.state.tasks[0].workspaceTarget?.paneId, "user-agent");
+  assert.equal(pool.state.tasks[0].repo, config.stateDir);
+});

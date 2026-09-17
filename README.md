@@ -72,7 +72,7 @@ context-drop daemon restart
 context-drop daemon status
 ```
 
-The daemon deduplicates incoming messages and owns all texting. The main orchestrator exposes only `delegate_to_worker(worker, prompt)`; its final response is texted to you. Four persistent agents of the configured kind share a durable task queue with schedules. New tasks fork the main conversation, including compaction, without starting another process or generating an extra summary.
+The daemon deduplicates incoming messages and owns all texting. The main orchestrator exposes `delegate_to_worker`, `list_workspaces`, and `delegate_to_workspace`; its final response is texted to you. Four persistent agents of the configured kind share a durable task queue with schedules. New tasks fork the main conversation, including compaction, without starting another process or generating an extra summary.
 
 ## Worker reports
 
@@ -161,3 +161,9 @@ make validate
 ## License
 
 [MIT](LICENSE)
+
+## Existing Herdr workspaces
+
+Requests such as “start a new task in dari-mono” can target an existing workspace. The main discovers workspace and pane IDs, then uses `delegate_to_workspace(worker, workspace, mode, prompt, paneId?, cwd?, newTask?)`. `mode: new` instructs the coordinator to create an isolated gwt worktree and a new, named tab. `mode: continue` requires an exact existing agent pane and preserves its conversation and worktree—no reset, restart, move, or close. Multiple matching workspaces/conversations require clarification; new tasks in multi-directory workspaces require a discovered cwd. Missing targets never silently fall back.
+
+A pool worker still coordinates, monitors, and reports this work; this is not direct runtime-controlled dispatch into user-owned panes. The runtime persists the destination and validates discovery, while the coordinator performs the Herdr actions. Later messages to that worker retain the destination and reuse the same task tab. A changed destination requires a separate task. Report turns cannot initiate either kind of delegation. Schedules and unspecified work retain the default four-slot pool.
