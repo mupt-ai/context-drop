@@ -283,7 +283,7 @@ func TestDeliveredScheduleReportRetriesOnlyAckAfterReceipt(t *testing.T) {
 	}
 }
 
-func TestWorkerQuestionFallbackIsNatural(t *testing.T) {
+func TestWorkerQuestionEmptyResponseIsSilent(t *testing.T) {
 	backend := &fakeDelegationRuntime{reports: []runtimeclient.ParentReport{{ID: "question", RouterID: imessageRouterID, ChatID: "chat", RunID: "run", Worker: 1, Kind: "needs_user", Message: "did you eat breakfast today?"}}}
 	commander := &reportCommander{}
 	cfg := imessage.Defaults()
@@ -291,8 +291,8 @@ func TestWorkerQuestionFallbackIsNatural(t *testing.T) {
 	responder := &recordingResponder{response: imessage.Response{ToolCompleted: true}}
 	runner := &Runner{Now: time.Now, Delegation: backend, IMessage: &imessage.Adapter{Config: cfg, Commander: commander, PersistentResponder: responder}}
 	runner.deliverReportsOnce(context.Background())
-	if !reflect.DeepEqual(commander.sends, []string{"did you eat breakfast today?"}) {
-		t.Fatalf("question was wrapped or lost: %v", commander.sends)
+	if len(commander.sends) != 0 || !reflect.DeepEqual(backend.finishDelivered, []bool{true}) {
+		t.Fatalf("suppressed question resurfaced: %v", commander.sends)
 	}
 }
 
@@ -622,7 +622,7 @@ func TestFinishedTurnDeliveredWhileFollowupsRemain(t *testing.T) {
 	commander := &reportCommander{}
 	cfg := imessage.Defaults()
 	cfg.Enabled, cfg.RouterMode, cfg.ChatID, cfg.ImsgPath = true, true, "chat", "/bin/echo"
-	responder := &recordingResponder{response: imessage.Response{ToolCompleted: true}}
+	responder := &recordingResponder{response: imessage.Response{Reply: "salad corrected"}}
 	runner := &Runner{Delegation: backend, IMessage: &imessage.Adapter{Config: cfg, Commander: commander, PersistentResponder: responder}}
 	runner.deliverReportsOnce(context.Background())
 	if len(responder.prompts) != 1 || !strings.Contains(responder.prompts[0], "kind turn_completed") {
@@ -630,5 +630,29 @@ func TestFinishedTurnDeliveredWhileFollowupsRemain(t *testing.T) {
 	}
 	if !reflect.DeepEqual(commander.sends, []string{"salad corrected"}) || !reflect.DeepEqual(backend.finishDelivered, []bool{true}) {
 		t.Fatalf("answer suppressed while followups remain: sends=%v finishes=%v", commander.sends, backend.finishDelivered)
+	}
+}
+
+func TestNoopReportsAreAcknowledgedWithoutMessaging(t *testing.T) {
+	for _, source := range []string{"worker", "responder"} {
+		t.Run(source, func(t *testing.T) {
+			report := runtimeclient.ParentReport{ID: "noop-test", RouterID: imessageRouterID, ChatID: "chat", RunID: "run", Kind: "completed", Message: "saved"}
+			if source == "worker" {
+				report.Message = " NOOP "
+			}
+			backend := &fakeDelegationRuntime{reports: []runtimeclient.ParentReport{report}}
+			commander := &reportCommander{}
+			cfg := imessage.Defaults()
+			cfg.Enabled, cfg.RouterMode, cfg.ChatID = true, true, "chat"
+			responder := &recordingResponder{response: imessage.Response{Reply: " noop "}}
+			runner := &Runner{Delegation: backend, IMessage: &imessage.Adapter{Config: cfg, Commander: commander, PersistentResponder: responder}}
+			runner.deliverReportsOnce(context.Background())
+			if len(commander.sends) != 0 || !reflect.DeepEqual(backend.finishDelivered, []bool{true}) {
+				t.Fatalf("sends=%v ack=%v", commander.sends, backend.finishDelivered)
+			}
+			if source == "worker" && len(responder.prompts) != 0 {
+				t.Fatal("noop invoked model")
+			}
+		})
 	}
 }

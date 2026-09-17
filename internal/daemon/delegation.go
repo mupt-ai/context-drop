@@ -139,6 +139,14 @@ func (r *Runner) deliverReportsOnceForOwner(ctx context.Context, routerID, chatI
 			return
 		}
 	}
+	if strings.EqualFold(strings.TrimSpace(report.Message), "noop") {
+		if err := r.recordReportHandled(report, false, ""); err != nil {
+			_ = finishReport(ctx, r.Delegation, report, routerID, chatID, false, "transient")
+			return
+		}
+		_ = finishReport(ctx, r.Delegation, report, routerID, chatID, true, "")
+		return
+	}
 	if routerID == scheduleRouterID && (report.Kind == "completed" || report.Kind == "turn_completed" || report.Kind == "progress") {
 		silent, err := r.silentScheduledRun(report.RunID)
 		if err != nil {
@@ -164,8 +172,9 @@ func (r *Runner) deliverReportsOnceForOwner(ctx context.Context, routerID, chatI
 	if respondErr != nil {
 		log.Printf("Context Drop report %s orchestrator turn failed: %s", report.ID, safeDeliveryError(respondErr))
 	}
-	if respondErr == nil && response.Reply == "" && (report.Kind == "completed" || report.Kind == "turn_completed" || report.Kind == "failed" || report.Kind == "needs_user") {
-		response.Reply = sanitizeScheduledMessage(report.Message)
+	// Empty output intentionally suppresses a report; do not resurrect it.
+	if strings.EqualFold(strings.TrimSpace(response.Reply), "noop") {
+		response.Reply = ""
 	}
 	var sendErr error
 	if respondErr == nil && !response.ThreadReplyToolCompleted && response.Reply != "" {
@@ -180,7 +189,7 @@ func (r *Runner) deliverReportsOnceForOwner(ctx context.Context, routerID, chatI
 	}
 	delivered := sendErr == nil
 	if delivered {
-		if err := r.recordReportHandled(report, true, response.Reply); err != nil {
+		if err := r.recordReportHandled(report, response.Reply != "" || response.ThreadReplyToolCompleted, response.Reply); err != nil {
 			log.Printf("Context Drop report %s receipt failed: %s", report.ID, safeDeliveryError(err))
 			delivered = false
 			sendErr = err

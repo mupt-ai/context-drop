@@ -44,6 +44,10 @@ export class WorkerPool {
       slots: Array.from({ length: POOL_SIZE }, (_, i) => ({ id: i + 1, capability: secret() })), tasks: [], reports: [], events: [],
     };
     if (this.state.slots.length !== POOL_SIZE) throw new Error("pool state must contain exactly four worker slots");
+    // Older check-ins retained a worker after asking their scheduled question.
+    for (const task of this.state.tasks) {
+      if (task.status === "waiting" && this.isCheckin(task)) this.complete(task, "noop", false);
+    }
     this.native.onEvent = (worker, event) => this.event(this.state.slots[worker - 1].capability, event);
     this.save();
   }
@@ -239,6 +243,9 @@ export class WorkerPool {
     this.save();
     return report;
   }
+  private isCheckin(task: Task): boolean {
+    return task.routerId === "scheduler" && ["schedule-daily-meal-checkin", "schedule-daily-snack-checkin", "schedule-daily-workout-checkin", "schedule-daily-goals-morning", "schedule-daily-goals-evening"].includes(task.name);
+  }
   private complete(task: Task, message: string, failed: boolean): void {
     if (!failed && task.followups?.length) {
       task.prompt = task.followups.join("\n\n");
@@ -250,6 +257,11 @@ export class WorkerPool {
       // Publish this turn's answer without retiring the task or its capability.
       this.report(task, "turn_completed", message.trim() || "Worker finished without a final answer.");
       return;
+    }
+    if (!failed && task.question && this.isCheckin(task)) {
+      // The question already has its own report. Publish lifecycle only.
+      delete task.question;
+      message = "noop";
     }
     if (!failed && task.question) task.status = "waiting";
     else {
