@@ -176,7 +176,11 @@ export class WorkerPool {
     const duplicate = input.requestId && this.state.tasks.find(task => task.requestIds.includes(input.requestId!) && task.routerId === input.routerId && task.chatId === input.chatId);
     if (duplicate) return duplicate;
     const current = input.worker === undefined || input.newTask ? undefined : this.current(input.worker) || this.state.tasks.find(task => task.requestedWorker === input.worker && task.status === "queued");
-    if (current && input.workspaceTarget && JSON.stringify(current.workspaceTarget) !== JSON.stringify(input.workspaceTarget)) throw new Error("worker has a different destination; choose an idle worker or set newTask");
+    if (current && input.workspaceTarget) {
+      const previous = current.workspaceTarget, next = input.workspaceTarget;
+      const same = previous && previous.workspaceId === next.workspaceId && previous.mode === next.mode && (next.mode === "continue" ? previous.paneId === next.paneId : previous.cwd === next.cwd);
+      if (!same) throw new Error("worker has a different destination; choose an idle worker or set newTask");
+    }
     if (current && current.chatId !== input.chatId) throw new Error("worker belongs to another conversation");
     if (current?.status === "running" || current?.status === "queued") {
       if (current.routerId !== input.routerId) throw new Error("worker is on another task; choose an idle worker or set newTask");

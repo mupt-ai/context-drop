@@ -264,7 +264,7 @@ test("workspace destination persists across followups and runtime restart", asyn
   const workspaceTarget = { workspaceId: "project", workspaceLabel: "dari-mono", mode: "continue" as const, paneId: "agent", cwd: config.stateDir };
   const task = pool.enqueue({ ...owner, worker: 1, prompt: "continue costs", workspaceTarget }); await settle();
   assert.deepEqual(pool.workers()[0].workspaceTarget, workspaceTarget);
-  pool.enqueue({ ...owner, worker: 1, prompt: "add tests" });
+  pool.enqueue({ ...owner, worker: 1, prompt: "add tests", workspaceTarget: { ...workspaceTarget, cwd: "/changed-directory", workspaceLabel: "renamed" } });
   assert.deepEqual(task.workspaceTarget, workspaceTarget);
   assert.throws(() => pool.enqueue({ ...owner, worker: 1, prompt: "other", workspaceTarget: { ...workspaceTarget, paneId: "other" } }), /different destination/);
   pool.close();
