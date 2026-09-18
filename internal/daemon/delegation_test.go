@@ -652,3 +652,31 @@ func TestReportDeliveryReplyRejectsPlaceholdersWithoutLosingResults(t *testing.T
 		})
 	}
 }
+
+func TestNoopReportsAreAcknowledgedWithoutMessaging(t *testing.T) {
+	for _, source := range []string{"worker", "responder"} {
+		t.Run(source, func(t *testing.T) {
+			report := runtimeclient.ParentReport{ID: "noop-test", RouterID: imessageRouterID, ChatID: "chat", RunID: "run", Kind: "completed", Message: "saved"}
+			if source == "worker" {
+				report.Message = " NOOP "
+			}
+			backend := &fakeDelegationRuntime{reports: []runtimeclient.ParentReport{report}}
+			commander := &reportCommander{}
+			cfg := imessage.Defaults()
+			cfg.Enabled, cfg.RouterMode, cfg.ChatID = true, true, "chat"
+			responder := &recordingResponder{response: imessage.Response{Reply: " noop "}}
+			runner := &Runner{Delegation: backend, IMessage: &imessage.Adapter{Config: cfg, Commander: commander, PersistentResponder: responder}}
+			runner.deliverReportsOnce(context.Background())
+			want := []string(nil)
+			if source == "responder" {
+				want = []string{"saved"}
+			}
+			if !reflect.DeepEqual(commander.sends, want) || !reflect.DeepEqual(backend.finishDelivered, []bool{true}) {
+				t.Fatalf("sends=%v ack=%v", commander.sends, backend.finishDelivered)
+			}
+			if source == "worker" && len(responder.prompts) != 0 {
+				t.Fatal("noop invoked model")
+			}
+		})
+	}
+}

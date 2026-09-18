@@ -296,3 +296,24 @@ test("workspace endpoints restrict capabilities and enqueue resolved destination
   assert.equal(pool.state.tasks[0].workspaceTarget?.paneId, "user-agent");
   assert.equal(pool.state.tasks[0].repo, config.stateDir);
 });
+
+ test("scheduled check-in questions release workers and recover once after restart", async t => {
+  const { pool, native, config, ready } = fixture(); await ready();
+  const task = pool.enqueue({ routerId: "scheduler", chatId: "chat", name: "schedule-daily-meal-checkin", worker: 1, prompt: "ask lunch" }); await settle();
+  pool.reportWithToken(task.capability, { runId: task.id, kind: "needs_user", message: "what was lunch?" });
+  pool.event(pool.state.slots[0].capability, { worker: 1, id: "done", type: "final", runId: task.id, turnId: task.turnId, message: "what was lunch?" });
+  assert.equal(task.status, "completed");
+  assert.deepEqual(pool.state.reports.map(r => [r.kind, r.message]), [["needs_user", "what was lunch?"], ["completed", "noop"]]);
+  assert.equal(pool.workers()[0].status, "idle");
+  // Recreate the old persisted waiting state.
+  task.status = "waiting"; task.question = "what was lunch?";
+  pool.state.reports.pop();
+  writeFileSync(join(config.stateDir, "worker-pool.json"), JSON.stringify(pool.state));
+  pool.close();
+  const restored = new WorkerPool(config, native);
+  assert.equal(restored.state.tasks[0].status, "completed");
+  assert.equal(restored.state.reports.length, 2);
+  restored.close();
+  const twice = new WorkerPool(config, native); t.after(() => twice.close());
+  assert.equal(twice.state.reports.length, 2);
+});
