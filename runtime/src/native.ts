@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { renderHistory } from "./history.js";
 import { writePrivate } from "./state.js";
 import type { RuntimeConfig, Slot, Task } from "./types.js";
+import { workspaceInstructions } from "./workspaces.js";
 import { WORKER_PROMPT } from "./prompts.js";
 
 const exec = promisify(execFile);
@@ -147,6 +148,7 @@ export class NativeWorkers {
       "# Context Drop worker briefing",
       task.instructions ? `## Parent instructions\n\n${task.instructions}` : "",
       `## Worker role\n\n${WORKER_PROMPT}`,
+      task.workspaceTarget ? workspaceInstructions(task.workspaceTarget) : "",
       `## Parent conversation so far\n\n${renderHistory(task.session, join(this.config.stateDir, "tasks", task.id, "images"))}`,
     ].filter(Boolean).join("\n\n") + "\n", { mode: 0o600 });
     this.grantReporting(slot.pane!, task);
@@ -155,7 +157,7 @@ export class NativeWorkers {
     this.saveAssignment(slot.id, assignment);
     const text = fresh
       ? `Read ${contextPath} fully before acting; it contains your role, the parent conversation and how to report. Task:\n\n${task.prompt}`
-      : task.prompt;
+      : task.workspaceTarget ? `Read ${contextPath} again for current role and destination instructions. Follow-up:\n\n${task.prompt}` : task.prompt;
     await this.prompt(slot, text);
     this.watch(slot);
   }

@@ -77,9 +77,9 @@ For background maintenance, use `schedule add --silent` or `context-drop schedul
 
 ## Orchestrator behavior
 
-The main conversation orchestrator texts the user through its final response and delegates with one tool: `delegate_to_worker(worker, prompt)`, where `worker` is 1–4. The daemon maintains four warm workers of one configured agent (`context-drop config worker-agent pi|codex|claude`, applied by `context-drop daemon restart`) in native Herdr tabs, launched through `dari` (for example `dari --claude --dangerously-skip-permissions`). Each task briefs the worker with the main conversation, including compaction. Workers finish with `context-drop report --final "answer"`. Do not create additional workers or guess pane IDs.
+The main conversation orchestrator texts the user through its final response and delegates with `delegate_to_worker(worker, prompt)` or `delegate_to_workspace`, using `list_workspaces` to discover destinations first, where `worker` is 1–4. The daemon maintains four warm workers of one configured agent (`context-drop config worker-agent pi|codex|claude`, applied by `context-drop daemon restart`) in native Herdr tabs, launched through `dari` (for example `dari --claude --dangerously-skip-permissions`). Each task briefs the worker with the main conversation, including compaction. Workers finish with `context-drop report --final "answer"`. Do not create additional workers or guess pane IDs.
 
-A worker's final response automatically becomes a report to the main. Relay meaningful results and ask questions naturally in the shared AGENTS.md style, without worker-number wrappers. Worker reports do not authorize new work. Consecutive texts may be one request; keep additions on the same task. An occupied worker accepts extra context by default; use `newTask: true` only for separate work. An empty main final response intentionally sends no text.
+A worker's final response automatically becomes a report to the main. Relay meaningful results and ask questions naturally in the shared AGENTS.md style, without worker-number wrappers. Worker reports do not authorize new work. Consecutive texts may be one request; keep additions on the same task. An occupied worker accepts extra context by default; use `newTask: true` only for separate work. After successfully delegating a new user-requested task, send one brief final acknowledgment (for example, "on it, will lyk when done"). A queued task should be acknowledged without claiming execution has started; failed delegation should be reported honestly. Follow-up fragments, worker reports, and routine background maintenance do not need new-task acknowledgments. An empty main final response intentionally sends no text and is not appropriate for a newly accepted user task.
 
 For an explicit question, run:
 
@@ -98,3 +98,9 @@ The current messaging adapter is iMessage. Telegram is not implemented in this r
 - runtime unavailable: inspect daemon status/logs and restart it.
 - Herdr unavailable: verify `HERDR_ENV=1` and the configured session; workers cannot run without Herdr.
 - clipboard tool missing: upload a file path or install the platform clipboard image utility.
+
+## Existing Herdr workspaces
+
+Requests such as “start a new task in dari-mono” can target an existing workspace. The main discovers workspace and pane IDs, then uses `delegate_to_workspace(worker, workspace, mode, prompt, paneId?, cwd?, newTask?)`. `mode: new` instructs the coordinator to create an isolated gwt worktree and a new, named tab. `mode: continue` requires an exact existing agent pane and preserves its conversation and worktree—no reset, restart, move, or close. Multiple matching workspaces/conversations require clarification; new tasks in multi-directory workspaces require a discovered cwd. Missing targets never silently fall back.
+
+A pool worker still coordinates, monitors, and reports this work; this is not direct runtime-controlled dispatch into user-owned panes. The runtime persists the destination and validates discovery, while the coordinator performs the Herdr actions. Later messages to that worker retain the destination and reuse the same task tab. A changed destination requires a separate task. Report turns cannot initiate either kind of delegation. Schedules and unspecified work retain the default four-slot pool.

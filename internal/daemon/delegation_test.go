@@ -632,3 +632,51 @@ func TestFinishedTurnDeliveredWhileFollowupsRemain(t *testing.T) {
 		t.Fatalf("answer suppressed while followups remain: sends=%v finishes=%v", commander.sends, backend.finishDelivered)
 	}
 }
+
+func TestReportDeliveryReplyRejectsPlaceholdersWithoutLosingResults(t *testing.T) {
+	for _, tt := range []struct{ name, reply, report, kind, want string }{
+		{"placeholder report", "noop", "noop", "completed", ""},
+		{"empty with placeholder fallback", "", " NOOP ", "completed", ""},
+		{"result preserved", "noop", "the fix is ready", "completed", "the fix is ready"},
+		{"turn result preserved", "NO_REPLY", "first part done", "turn_completed", "first part done"},
+		{"question preserved", "noop", "which project?", "needs_user", "which project?"},
+		{"failure preserved", "noop", "build failed", "failed", "build failed"},
+		{"progress remains silent", "noop", "checking", "progress", ""},
+		{"normal reply", "yo", "", "completed", "yo"},
+		{"legitimate noop discussion", "the noop command does nothing", "", "completed", "the noop command does nothing"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := reportDeliveryReply(tt.reply, tt.report, tt.kind); got != tt.want {
+				t.Fatalf("got %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNoopReportsAreAcknowledgedWithoutMessaging(t *testing.T) {
+	for _, source := range []string{"worker", "responder"} {
+		t.Run(source, func(t *testing.T) {
+			report := runtimeclient.ParentReport{ID: "noop-test", RouterID: imessageRouterID, ChatID: "chat", RunID: "run", Kind: "completed", Message: "saved"}
+			if source == "worker" {
+				report.Message = " NOOP "
+			}
+			backend := &fakeDelegationRuntime{reports: []runtimeclient.ParentReport{report}}
+			commander := &reportCommander{}
+			cfg := imessage.Defaults()
+			cfg.Enabled, cfg.RouterMode, cfg.ChatID = true, true, "chat"
+			responder := &recordingResponder{response: imessage.Response{Reply: " noop "}}
+			runner := &Runner{Delegation: backend, IMessage: &imessage.Adapter{Config: cfg, Commander: commander, PersistentResponder: responder}}
+			runner.deliverReportsOnce(context.Background())
+			want := []string(nil)
+			if source == "responder" {
+				want = []string{"saved"}
+			}
+			if !reflect.DeepEqual(commander.sends, want) || !reflect.DeepEqual(backend.finishDelivered, []bool{true}) {
+				t.Fatalf("sends=%v ack=%v", commander.sends, backend.finishDelivered)
+			}
+			if source == "worker" && len(responder.prompts) != 0 {
+				t.Fatal("noop invoked model")
+			}
+		})
+	}
+}

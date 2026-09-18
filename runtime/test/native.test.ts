@@ -180,3 +180,21 @@ test("retire closes the pane and alive reflects Herdr's pane list", async t => {
   assert.deepEqual(herdr.calls.at(-1), ["pane", "close", "w1:p1"]);
   assert.equal(existsSync(join(dir, "managed")), false, "retiring a pane grants nothing");
 });
+
+test("workspace routing is in both fresh briefing and continuation without touching user panes", async t => {
+  const { dir, native, herdr, slot, assign } = fixture(t);
+  const task = assign("workspace-task", "turn-1", "continue costs");
+  task.workspaceTarget = { workspaceId: "project", workspaceLabel: "dari-mono", mode: "continue", paneId: "user-agent", cwd: dir };
+  writeFileSync(join(dir, "workers", "1", "task.json"), JSON.stringify(task));
+  await native.submit(slot, task.id, task.turnId);
+  const briefing = readFileSync(join(dir, "tasks", task.id, "context.md"), "utf8");
+  assert.match(briefing, /user-agent/);
+  assert.match(briefing, /NEVER send \/new or \/clear/);
+  herdr.status = "idle";
+  task.turnId = "turn-2"; task.prompt = "also tests";
+  writeFileSync(join(dir, "workers", "1", "task.json"), JSON.stringify(task));
+  await native.submit(slot, task.id, task.turnId);
+  const prompts = herdr.calls.filter(c => c[0] === "agent" && c[1] === "prompt");
+  assert.ok(prompts.every(c => c[2] === slot.pane));
+  assert.match(prompts.at(-1)![3], /destination instructions/);
+});

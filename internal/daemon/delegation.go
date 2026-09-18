@@ -139,6 +139,14 @@ func (r *Runner) deliverReportsOnceForOwner(ctx context.Context, routerID, chatI
 			return
 		}
 	}
+	if isPlaceholderReply(report.Message) {
+		if err := r.recordReportHandled(report, false, ""); err != nil {
+			_ = finishReport(ctx, r.Delegation, report, routerID, chatID, false, "transient")
+			return
+		}
+		_ = finishReport(ctx, r.Delegation, report, routerID, chatID, true, "")
+		return
+	}
 	if routerID == scheduleRouterID && (report.Kind == "completed" || report.Kind == "turn_completed" || report.Kind == "progress") {
 		silent, err := r.silentScheduledRun(report.RunID)
 		if err != nil {
@@ -164,8 +172,8 @@ func (r *Runner) deliverReportsOnceForOwner(ctx context.Context, routerID, chatI
 	if respondErr != nil {
 		log.Printf("Context Drop report %s orchestrator turn failed: %s", report.ID, safeDeliveryError(respondErr))
 	}
-	if respondErr == nil && response.Reply == "" && (report.Kind == "completed" || report.Kind == "turn_completed" || report.Kind == "failed" || report.Kind == "needs_user") {
-		response.Reply = sanitizeScheduledMessage(report.Message)
+	if respondErr == nil {
+		response.Reply = reportDeliveryReply(response.Reply, report.Message, report.Kind)
 	}
 	var sendErr error
 	if respondErr == nil && !response.ThreadReplyToolCompleted && response.Reply != "" {
@@ -180,7 +188,7 @@ func (r *Runner) deliverReportsOnceForOwner(ctx context.Context, routerID, chatI
 	}
 	delivered := sendErr == nil
 	if delivered {
-		if err := r.recordReportHandled(report, true, response.Reply); err != nil {
+		if err := r.recordReportHandled(report, response.Reply != "" || response.ThreadReplyToolCompleted, response.Reply); err != nil {
 			log.Printf("Context Drop report %s receipt failed: %s", report.ID, safeDeliveryError(err))
 			delivered = false
 			sendErr = err
@@ -368,4 +376,28 @@ func safeDeliveryError(err error) string {
 	}
 	// Fail-closed: unknown error types do not get their message preserved.
 	return fmt.Sprintf("%T (details redacted)", err)
+}
+
+// Legacy placeholders can survive in worker history. Never text them, and never
+// let a placeholder from the orchestrator swallow a meaningful terminal result.
+func reportDeliveryReply(reply, report, kind string) string {
+	if isPlaceholderReply(reply) {
+		reply = ""
+	}
+	if reply == "" && (kind == "completed" || kind == "turn_completed" || kind == "failed" || kind == "needs_user") {
+		report = sanitizeScheduledMessage(report)
+		if !isPlaceholderReply(report) {
+			return report
+		}
+	}
+	return reply
+}
+
+func isPlaceholderReply(reply string) bool {
+	switch strings.ToLower(strings.TrimSpace(reply)) {
+	case "noop", "no_reply":
+		return true
+	default:
+		return false
+	}
 }

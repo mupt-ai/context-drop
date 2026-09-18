@@ -688,6 +688,9 @@ func (a Adapter) Send(ctx context.Context, text string) error {
 		commander = ExecCommander{}
 	}
 	text = strings.TrimSpace(text)
+	if strings.EqualFold(text, "noop") {
+		return nil
+	}
 	if text == "" {
 		return errors.New("refusing to send an empty iMessage reply")
 	}

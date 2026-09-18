@@ -1,3 +1,4 @@
+import type { WorkspaceTarget } from "./workspaces.js";
 export type WorkerAgent = "pi" | "codex" | "claude";
 export interface RuntimeConfig {
   host: "127.0.0.1" | "::1";
@@ -19,6 +20,7 @@ export interface Conversation {
   instructions?: string;
 }
 export interface Task {
+  workspaceTarget?: WorkspaceTarget;
   id: string;
   worker?: number;
   requestedWorker?: number;

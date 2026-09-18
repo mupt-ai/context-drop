@@ -482,3 +482,14 @@ func TestParseMessagesReadsAttachmentsAndSkipsPluginPayloads(t *testing.T) {
 		t.Fatalf("plain prompt = %q", p)
 	}
 }
+
+func TestSendNoopNeverInvokesTransport(t *testing.T) {
+	sender := &fakePersistentSender{}
+	adapter := Adapter{Config: Defaults(), PersistentSender: sender}
+	if err := adapter.Send(context.Background(), " NOOP "); err != nil {
+		t.Fatal(err)
+	}
+	if sender.text != "" || sender.chatID != "" {
+		t.Fatal("noop reached messaging transport")
+	}
+}

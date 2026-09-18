@@ -41,7 +41,7 @@ There is no public setup command. An administrator provisions `<CONTEXT_DROP_HOM
 - positive polling, history, responder, send, message-size, and reply-size limits; trusted persistent responder turns have a five-minute hard ceiling
 - optional absolute persona, memory, archive, and responder-working-directory paths
 
-Router mode requires a trusted private chat and a persistent Pi responder. The daemon warms the main session and four native workers of the configured agent. The main's only tool is `delegate_to_worker`; final responses use ordinary daemon-owned iMessage delivery. Old `delegate_all` and `yolo_mode` settings no longer select execution paths.
+Router mode requires a trusted private chat and a persistent Pi responder. The daemon warms the main session and four native workers of the configured agent. The main has worker delegation, workspace discovery, and workspace delegation tools; final responses use ordinary daemon-owned iMessage delivery. Old `delegate_all` and `yolo_mode` settings no longer select execution paths.
 
 The pool runs `agents[workerAgent].command` in each worker tab. Worker panes, their agent kind, and capabilities persist in `runtime/worker-pool.json`; task forks, briefings, and worker outboxes live alongside it. Do not delete pool state while its native workers are alive.
 
@@ -50,3 +50,9 @@ Telegram is not implemented in this release.
 ## Server
 
 The upload server is environment-only. See [Server and self-hosting](server.md) for the complete variables and examples.
+
+## Existing Herdr workspaces
+
+Requests such as “start a new task in dari-mono” can target an existing workspace. The main discovers workspace and pane IDs, then uses `delegate_to_workspace(worker, workspace, mode, prompt, paneId?, cwd?, newTask?)`. `mode: new` instructs the coordinator to create an isolated gwt worktree and a new, named tab. `mode: continue` requires an exact existing agent pane and preserves its conversation and worktree—no reset, restart, move, or close. Multiple matching workspaces/conversations require clarification; new tasks in multi-directory workspaces require a discovered cwd. Missing targets never silently fall back.
+
+A pool worker still coordinates, monitors, and reports this work; this is not direct runtime-controlled dispatch into user-owned panes. The runtime persists the destination and validates discovery, while the coordinator performs the Herdr actions. Later messages to that worker retain the destination and reuse the same task tab. A changed destination requires a separate task. Report turns cannot initiate either kind of delegation. Schedules and unspecified work retain the default four-slot pool.
