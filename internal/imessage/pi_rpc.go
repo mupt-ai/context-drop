@@ -309,6 +309,18 @@ func (r *PiRPCResponder) acquireTurn(ctx context.Context) error {
 		return nil
 	}
 }
+
+// tryAcquireTurn takes the turn gate without waiting. It reports whether the
+// gate was free and is now held; callers must releaseTurn on true.
+func (r *PiRPCResponder) tryAcquireTurn() bool {
+	r.gateOnce.Do(func() { r.turnGate = make(chan struct{}, 1); r.turnGate <- struct{}{} })
+	select {
+	case <-r.turnGate:
+		return true
+	default:
+		return false
+	}
+}
 func (r *PiRPCResponder) releaseTurn() { r.turnGate <- struct{}{} }
 
 func (r *PiRPCResponder) Prepare(ctx context.Context) (PersistentResponderState, error) {
@@ -587,6 +599,59 @@ func (r *PiRPCResponder) RespondWithAttachments(ctx context.Context, prompt stri
 	}
 }
 
+// CompactIfIdle compacts the orchestrator session while no turn is running.
+// It takes the turn gate without waiting so an inbound message is never queued
+// behind housekeeping: if a turn is in flight, it reports attempted=false and
+// the daemon retries after that turn. While the compaction runs the gate stays
+// held, so a message arriving mid-compaction waits for it rather than
+// interleaving with the summary write.
+func (r *PiRPCResponder) CompactIfIdle(ctx context.Context, instructions string) (CompactionResult, bool, error) {
+	if !r.tryAcquireTurn() {
+		return CompactionResult{}, false, nil
+	}
+	defer r.releaseTurn()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, err := r.ensurePreparedLocked(ctx); err != nil {
+		return CompactionResult{}, true, &ResponderPrePromptError{Cause: err}
+	}
+	command := map[string]any{"id": r.requestID("compact"), "type": "compact"}
+	if instructions != "" {
+		command["customInstructions"] = instructions
+	}
+	if err := r.write(command); err != nil {
+		r.stopLocked()
+		return CompactionResult{}, true, err
+	}
+	for {
+		record, err := r.next(ctx)
+		if err != nil {
+			r.stopLocked()
+			return CompactionResult{}, true, fmt.Errorf("Pi RPC compaction: %w", err)
+		}
+		switch record.Type {
+		case "response":
+			if record.Command != "compact" {
+				continue
+			}
+			if !record.Success {
+				return CompactionResult{}, true, fmt.Errorf("Pi RPC compaction failed: %s", rpcError(record))
+			}
+			var data struct {
+				Summary              string `json:"summary"`
+				FirstKeptEntryID     string `json:"firstKeptEntryId"`
+				TokensBefore         int64  `json:"tokensBefore"`
+				EstimatedTokensAfter int64  `json:"estimatedTokensAfter"`
+			}
+			if err := json.Unmarshal(record.Data, &data); err != nil {
+				return CompactionResult{}, true, fmt.Errorf("decode Pi RPC compaction result: %w", err)
+			}
+			r.needsBootstrap = false
+			return CompactionResult{Summary: data.Summary, FirstKeptEntryID: data.FirstKeptEntryID, TokensBefore: data.TokensBefore, EstimatedTokensAfter: data.EstimatedTokensAfter}, true, nil
+		}
+	}
+}
+
 func assistantRound(raw json.RawMessage) ModelRoundMetrics {
 	var message struct {
 		Role          string `json:"role"`
@@ -595,6 +660,8 @@ func assistantRound(raw json.RawMessage) ModelRoundMetrics {
 		ResponseID    string `json:"responseId"`
 		Usage         struct {
 			TotalTokens int64 `json:"totalTokens"`
+			Input       int64 `json:"input"`
+			CacheRead   int64 `json:"cacheRead"`
 		} `json:"usage"`
 	}
 	if json.Unmarshal(raw, &message) != nil || message.Role != "assistant" {
@@ -604,7 +671,7 @@ func assistantRound(raw json.RawMessage) ModelRoundMetrics {
 	if model == "" {
 		model = message.Model
 	}
-	return ModelRoundMetrics{Model: model, ResponseID: message.ResponseID, TotalTokens: message.Usage.TotalTokens}
+	return ModelRoundMetrics{Model: model, ResponseID: message.ResponseID, TotalTokens: message.Usage.TotalTokens, InputTokens: message.Usage.Input, CacheReadTokens: message.Usage.CacheRead}
 }
 
 func assistantText(raw json.RawMessage) string {

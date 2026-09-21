@@ -350,6 +350,10 @@ func TestPiRPCHelperProcess(t *testing.T) {
 		switch command.Type {
 		case "get_state":
 			_ = enc.Encode(map[string]any{"id": command.ID, "type": "response", "command": "get_state", "success": true, "data": map[string]any{"messageCount": messageCount}})
+		case "compact":
+			_ = enc.Encode(map[string]any{"type": "compaction_start"})
+			_ = enc.Encode(map[string]any{"type": "compaction_end"})
+			_ = enc.Encode(map[string]any{"id": command.ID, "type": "response", "command": "compact", "success": true, "data": map[string]any{"summary": "kept the goals", "firstKeptEntryId": "entry-9", "tokensBefore": 108000, "estimatedTokensAfter": 24000}})
 		case "abort":
 			_ = enc.Encode(map[string]any{"id": command.ID, "type": "response", "command": "abort", "success": true})
 			_ = enc.Encode(map[string]any{"type": "agent_settled"})
@@ -414,5 +418,45 @@ func TestPiRPCResponderSendsImageAttachmentsAsContent(t *testing.T) {
 		t.Fatal("expected a pre-prompt error for a missing image")
 	} else if !errors.As(err, new(*ResponderPrePromptError)) {
 		t.Fatalf("err = %T %v", err, err)
+	}
+}
+
+func TestPiRPCResponderCompactIfIdleCompactsAndStaysWarm(t *testing.T) {
+	responder := &PiRPCResponder{argv: []string{os.Args[0], "-test.run=TestPiRPCHelperProcess"}, env: append(os.Environ(), "CONTEXT_DROP_PI_RPC_HELPER=1")}
+	defer responder.Close()
+	if _, err := responder.Prepare(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	result, attempted, err := responder.CompactIfIdle(context.Background(), "keep goals")
+	if err != nil || !attempted {
+		t.Fatalf("compact attempted=%v err=%v", attempted, err)
+	}
+	if result.TokensBefore != 108000 || result.EstimatedTokensAfter != 24000 || result.FirstKeptEntryID != "entry-9" || result.Summary != "kept the goals" {
+		t.Fatalf("compaction result = %#v", result)
+	}
+	// The warm process must still answer turns after housekeeping.
+	response, err := responder.Respond(context.Background(), "back to conversation", 1024)
+	if err != nil || response.Reply != "reply 1" {
+		t.Fatalf("post-compact response=%#v err=%v", response, err)
+	}
+}
+
+func TestPiRPCResponderCompactIfIdleSkipsWhenTurnInFlight(t *testing.T) {
+	responder := &PiRPCResponder{argv: []string{os.Args[0], "-test.run=TestPiRPCHelperProcess"}, env: append(os.Environ(), "CONTEXT_DROP_PI_RPC_HELPER=1", "CONTEXT_DROP_PI_RPC_MESSAGE_COUNT=2")}
+	defer responder.Close()
+	if _, err := responder.Prepare(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Holding the turn gate is exactly what a live turn does; compaction must
+	// never wait behind it.
+	if err := responder.acquireTurn(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, attempted, err := responder.CompactIfIdle(context.Background(), "keep goals"); err != nil || attempted {
+		t.Fatalf("compact during a live turn attempted=%v err=%v", attempted, err)
+	}
+	responder.releaseTurn()
+	if response, err := responder.Respond(context.Background(), "next", 1024); err != nil || response.Reply != "reply 1" {
+		t.Fatalf("post-skip response=%#v err=%v", response, err)
 	}
 }

@@ -142,6 +142,28 @@ type ModelRoundMetrics struct {
 	Model       string
 	ResponseID  string
 	TotalTokens int64
+	// InputTokens is the prompt size of the round, including any cached
+	// prefix; the final round's value approximates the live session context.
+	InputTokens int64
+	// CacheReadTokens is the prompt portion served from the provider cache.
+	CacheReadTokens int64
+}
+
+// CompactionResult reports a completed context compaction.
+type CompactionResult struct {
+	Summary              string
+	FirstKeptEntryID     string
+	TokensBefore         int64
+	EstimatedTokensAfter int64
+}
+
+// Compactor is a PersistentResponder that can compact its session context
+// between turns. Implementations must not block a concurrently requested
+// turn any longer than the compaction itself.
+type Compactor interface {
+	// CompactIfIdle compacts only when no turn is running, returning
+	// attempted=false immediately otherwise.
+	CompactIfIdle(ctx context.Context, instructions string) (result CompactionResult, attempted bool, err error)
 }
 
 type Response struct {
@@ -675,6 +697,17 @@ func (a Adapter) Close() error {
 		errs = append(errs, a.PersistentSender.Close())
 	}
 	return errors.Join(errs...)
+}
+
+// CompactOrchestratorIfIdle compacts the persistent orchestrator session when
+// the responder supports it and no turn is running. attempted=false means the
+// orchestrator was busy; the caller may retry after the current turn.
+func (a Adapter) CompactOrchestratorIfIdle(ctx context.Context, instructions string) (result CompactionResult, attempted bool, err error) {
+	compactor, ok := a.PersistentResponder.(Compactor)
+	if !ok {
+		return CompactionResult{}, false, nil
+	}
+	return compactor.CompactIfIdle(ctx, instructions)
 }
 
 func isTransientResponderError(stderr []byte) bool {

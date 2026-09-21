@@ -1157,6 +1157,7 @@ func (r *Runner) processMessages(ctx context.Context, messages []imessage.Messag
 	}); err != nil {
 		log.Printf("Context Drop iMessage completion state failed: %v", err)
 	}
+	maybeCompactOrchestrator(r.IMessage, response)
 }
 
 func parseMessageCreatedAt(value string) *time.Time {

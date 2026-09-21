@@ -204,6 +204,7 @@ func (r *Runner) deliverReportsOnceForOwner(ctx context.Context, routerID, chatI
 			}
 		}
 	}
+	maybeCompactOrchestrator(r.IMessage, response)
 }
 
 func sanitizeScheduledMessage(value string) string {
