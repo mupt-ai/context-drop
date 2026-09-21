@@ -47,6 +47,7 @@ func maybeCompactOrchestrator(adapter *imessage.Adapter, response imessage.Respo
 	if inputTokens >= compactLargeContextTokens {
 		idle = compactDeepIdle
 	}
+	log.Printf("Context Drop orchestrator context at %d tokens; compacting in the background in %s", inputTokens, idle)
 	go func() {
 		time.Sleep(idle)
 		ctx, cancel := context.WithTimeout(context.Background(), compactTimeout)
@@ -57,7 +58,8 @@ func maybeCompactOrchestrator(adapter *imessage.Adapter, response imessage.Respo
 			return
 		}
 		if !attempted {
-			return // A turn resumed; the next turn re-checks the budget.
+			log.Printf("Context Drop orchestrator compaction skipped: a turn resumed before the orchestrator went idle")
+			return
 		}
 		log.Printf("Context Drop orchestrator context compacted: %d -> %d tokens", result.TokensBefore, result.EstimatedTokensAfter)
 	}()
