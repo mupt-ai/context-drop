@@ -22,10 +22,11 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
-          cache: true
+          go-version-file: cli/go.mod
+          cache-dependency-path: cli/go.sum
 
       - run: make coverage
+        working-directory: cli
 
       - uses: google-github-actions/auth@v2
         with:
@@ -41,7 +42,7 @@ jobs:
         env:
           IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GAR_REPOSITORY }}/context-drop-server:${{ github.sha }}
         run: |
-          docker build -t "$IMAGE" .
+          docker build -t "$IMAGE" cli
           docker push "$IMAGE"
 
       - name: Deploy Cloud Run

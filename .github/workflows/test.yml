@@ -17,13 +17,16 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
-          cache: true
-
-      - run: make coverage
+          go-version-file: cli/go.mod
+          cache-dependency-path: cli/go.sum
 
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - run: python3 -m unittest discover -s workflows/herdr-activity-summary -p 'test_*.py'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - run: make coverage test
+        working-directory: cli
