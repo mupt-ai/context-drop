@@ -78,5 +78,22 @@ struct SnapshotTests {
         let saved = try Data(contentsOf: cache)
         SnapshotProtocol.payload = try JSONEncoder().encode(old)
         await store.refresh()
-
-[39 more lines in file. Use offset=81 to continue.]
+        precondition(store.snapshot?.currentNight?.day == "2026-09-14")
+        precondition(store.syncError?.contains("older snapshot") == true)
+        let afterStale = try Data(contentsOf: cache)
+        precondition(afterStale == saved)
+        SnapshotProtocol.fails = true
+        await store.refresh()
+        precondition(store.syncError?.contains("Health refresh failed") == true)
+        let afterFailure = try Data(contentsOf: cache)
+        precondition(afterFailure == saved)
+        SnapshotProtocol.fails = false
+        SnapshotProtocol.payload = try JSONEncoder().encode(fallback)
+        await store.refresh()
+        precondition(store.syncError?.contains("Health refresh failed") != true)
+        precondition(SnapshotProtocol.dashboardRequests == 4)
+        let reloaded = HealthStore(directory: directory, session: session)
+        precondition(reloaded.snapshot?.currentNight?.day == "2026-09-14")
+        print("Snapshot tests passed: ordering, fallback, dates, missing data, stale cache, refresh, rollback, failure recovery, persistence")
+    }
+}

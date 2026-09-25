@@ -15,10 +15,12 @@ struct ActiveWorkoutView: View {
     var body: some View {
         if let session = workouts.active {
             VStack(spacing: 0) {
-                header(session)
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(spacing: 16) {
+                            Text(session.startedAt, style: .timer)
+                                .font(.subheadline).monospacedDigit().foregroundStyle(HealthStyle.secondaryInk)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                             HStack {
                                 Text("\(session.completedSets) of \(session.plannedSets) sets").font(.subheadline).monospacedDigit()
                                 Spacer()
@@ -49,7 +51,10 @@ struct ActiveWorkoutView: View {
                 }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) { restBar(session) }
-            .toolbar { ToolbarItemGroup(placement: .keyboard) { Spacer(); Button("Done") { focusedField = nil } } }
+            .toolbar {
+                workoutActions(session)
+                ToolbarItemGroup(placement: .keyboard) { Spacer(); Button("Done") { focusedField = nil } }
+            }
             .sheet(isPresented: $addingExercise) { ExercisePicker(health: health) { workouts.addExercise($0) } }
             .sheet(isPresented: $organizing) { OrganizeExercises(workouts: workouts) }
             .confirmationDialog("Finish Workout?", isPresented: $confirmFinish, titleVisibility: .visible) {
@@ -70,25 +75,20 @@ struct ActiveWorkoutView: View {
             .onChange(of: session.restUntil) { _, deadline in WorkoutRestAlerts.schedule(deadline) }
         }
     }
-    private func header(_ session: WorkoutSession) -> some View {
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Button { name = session.title; renaming = true } label: {
-                    HStack(spacing: 6) { Text(session.title).font(.system(size: 25, weight: .semibold, design: .rounded)).lineLimit(1); Image(systemName: "pencil").font(.caption) }
-                }.buttonStyle(.plain)
-                Text(session.startedAt, style: .timer).font(.subheadline).monospacedDigit().foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 0)
+    @ToolbarContentBuilder private func workoutActions(_ session: WorkoutSession) -> some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
             Menu {
+                Button("Rename Workout", systemImage: "pencil") { name = session.title; renaming = true }
                 Picker("Rest Between Sets", selection: Binding(get: { session.restSeconds }, set: { value in workouts.update { $0.restSeconds = value } })) {
                     Text("No Timer").tag(0); Text("30 Seconds").tag(30); Text("60 Seconds").tag(60); Text("90 Seconds").tag(90); Text("2 Minutes").tag(120); Text("3 Minutes").tag(180)
                 }
                 Button("Discard Workout", role: .destructive) { confirmDiscard = true }
-            } label: { Image(systemName: "ellipsis.circle").font(.title3).frame(width: 36, height: 44) }.accessibilityLabel("Workout Options")
+            } label: { Label("Workout Options", systemImage: "ellipsis.circle") }
+        }
+        ToolbarItem(placement: .topBarTrailing) {
             Button("Finish") { focusedField = nil; confirmFinish = true }
-                .font(.subheadline.weight(.semibold)).buttonStyle(.borderedProminent).tint(workoutInk)
                 .disabled(session.completedSets == 0)
-        }.padding(.horizontal, 20).padding(.vertical, 12)
+        }
     }
     @ViewBuilder private func restBar(_ session: WorkoutSession) -> some View {
         if let deadline = session.restUntil {

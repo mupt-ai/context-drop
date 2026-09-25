@@ -3,13 +3,17 @@ import SwiftUI
 // MARK: - Source and models
 
 enum DigestSource {
-    static let host = URL(string: "http://100.71.240.14:17371")!
-    static var latest: URL { host.appendingPathComponent("latest.json") }
-    static var archive: URL { host.appendingPathComponent("archive.json") }
+    // Build 12 tried the tailnet hostname first. Keep the IP as a fallback when
+    // MagicDNS is unavailable; loopback supports the simulator on the same Mac.
+    static let bases = [
+        URL(string: "http://avyays-mac-mini.tailf3cee5.ts.net:17371")!,
+        URL(string: "http://100.71.240.14:17371")!,
+        URL(string: "http://127.0.0.1:17371")!
+    ]
 
-    static func entry(_ jsonPath: String) -> URL {
+    static func entry(_ jsonPath: String, on base: URL) -> URL {
         let trimmed = jsonPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        return host.appendingPathComponent(trimmed.hasPrefix("/") ? String(trimmed.dropFirst()) : trimmed)
+        return base.appendingPathComponent(trimmed.hasPrefix("/") ? String(trimmed.dropFirst()) : trimmed)
     }
 
     static func fetch<T: Decodable>(_ url: URL) async -> T? {
@@ -24,14 +28,19 @@ enum DigestSource {
         }
     }
 
-    static func fetchArchive() async -> [DigestArchiveEntry]? {
-        let index: DigestArchiveIndex? = await fetch(archive)
-        return index?.digests
+    static func fetch<T: Decodable>(_ path: String, on bases: [URL] = bases) async -> (T, URL)? {
+        for base in bases {
+            if let value: T = await fetch(base.appendingPathComponent(path)) { return (value, base) }
+        }
+        return nil
     }
 
     static func document(for entry: DigestArchiveEntry) async -> DigestDocument? {
         guard let path = entry.jsonPath else { return nil }
-        return await fetch(self.entry(path))
+        for base in bases {
+            if let value: DigestDocument = await fetch(self.entry(path, on: base)) { return value }
+        }
+        return nil
     }
 }
 
@@ -84,12 +93,11 @@ final class DigestStore: ObservableObject {
     func refresh() async {
         isRefreshing = true
         loadError = nil
-        async let latestFetch: DigestDocument? = DigestSource.fetch(DigestSource.latest)
-        async let archiveFetch: [DigestArchiveEntry]? = DigestSource.fetchArchive()
-        let (fetchedLatest, fetchedArchive) = await (latestFetch, archiveFetch)
-        if let fetchedLatest { latest = fetchedLatest }
-        if let fetchedArchive { archive = fetchedArchive }
-        if fetchedLatest == nil && fetchedArchive == nil {
+        let latestFetch: (DigestDocument, URL)? = await DigestSource.fetch("latest.json")
+        let archiveFetch: (DigestArchiveIndex, URL)? = await DigestSource.fetch("archive.json", on: latestFetch.map { [$0.1] } ?? DigestSource.bases)
+        if let latestFetch { latest = latestFetch.0 }
+        if let archiveFetch { archive = archiveFetch.0.digests ?? [] }
+        if latestFetch == nil && archiveFetch == nil {
             loadError = "Couldn't reach your digest. Make sure Tailscale is connected, then try again."
         }
         isRefreshing = false

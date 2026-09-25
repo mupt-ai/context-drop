@@ -9,8 +9,10 @@ struct WorkoutsView: View {
     @State private var starting = false
     @State private var historyOpen = false
     @State private var summary: WorkoutHistoryItem?
+    @State private var finishedID: String?
     @State private var animationTitle: String?
     @State private var bodyWeight: HealthRecord?
+    @State private var bodyGoalsOpen = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var history: [WorkoutHistoryItem] { workoutHistory(health.records) }
     var body: some View {
@@ -18,7 +20,7 @@ struct WorkoutsView: View {
             ZStack {
                 workoutPaper.ignoresSafeArea()
                 if workouts.active != nil {
-                    ActiveWorkoutView(workouts: workouts, health: health) { item in summary = item }
+                    ActiveWorkoutView(workouts: workouts, health: health) { item in finishedID = item.id; summary = item }
                 } else {
                     home
                 }
@@ -31,6 +33,13 @@ struct WorkoutsView: View {
                         }
                 }
             }.foregroundStyle(HealthStyle.ink).healthNavigationTitle(workouts.active?.title ?? "Weights")
+                .toolbar {
+                    if workouts.active == nil {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("Workout History", systemImage: "clock.arrow.circlepath") { historyOpen = true }
+                        }
+                    }
+                }
                 .sheet(isPresented: $starting) {
                     StartWorkoutSheet(history: history) { title, exercises in
                         guard workouts.start(title: title, exercises: exercises) else { return false }
@@ -42,25 +51,22 @@ struct WorkoutsView: View {
                 }
                 .sheet(isPresented: $historyOpen) { NavigationStack { WorkoutHistoryList(health: health) } }
                 .sheet(item: $summary) { item in
-                    NavigationStack { WorkoutSummaryView(item: item, isJustFinished: true) }
+                    NavigationStack { WorkoutSummaryView(item: item, isJustFinished: item.id == finishedID) }
                 }
+                .sheet(isPresented: $bodyGoalsOpen) { BodyWeightGoalsView(health: health) }
                 .sheet(item: $bodyWeight) { EntryEditor(health: health, record: $0) }
         }.tint(workoutInk)
     }
     private var home: some View {
         GeometryReader { geometry in
             let compact = geometry.size.height < 650
-            VStack(alignment: .leading, spacing: compact ? 14 : 22) {
-                HStack {
-                    Text("Weights").font(.system(size: 34, weight: .semibold, design: .rounded))
-                    Spacer()
-                    Button { historyOpen = true } label: { Image(systemName: "clock.arrow.circlepath").font(.title3).frame(width: 44, height: 44) }.accessibilityLabel("Workout History")
-                }
-                HStack(spacing: 26) {
-                    let week = history.filter { Calendar.current.isDate(healthDate($0.day), equalTo: Date(), toGranularity: .weekOfYear) }
-                    workoutStat("This Week", "\(week.count) Workouts")
-                    workoutStat("Completed", "\(week.reduce(0) { $0 + $1.completedSets }) Sets")
-                }
+            ScrollView {
+                VStack(alignment: .leading, spacing: compact ? 14 : HealthStyle.sectionGap) {
+                    HealthAdaptiveStack {
+                        let week = history.filter { Calendar.current.isDate(healthDate($0.day), equalTo: Date(), toGranularity: .weekOfYear) }
+                        workoutStat("This Week", "\(week.count) \(week.count == 1 ? "Workout" : "Workouts")")
+                        workoutStat("Completed", "\(week.reduce(0) { $0 + $1.completedSets }) Sets")
+                    }
                 VStack(alignment: .leading, spacing: compact ? 14 : 22) {
                     HStack {
                         Image(systemName: "dumbbell.fill").font(.system(size: 34, weight: .medium))
@@ -89,13 +95,21 @@ struct WorkoutsView: View {
                 }.background(.white, in: RoundedRectangle(cornerRadius: 20))
                 Spacer(minLength: 0)
                 HStack {
-                    Text("Body Weight").font(.subheadline)
+                    Button { bodyGoalsOpen = true } label: {
+                        HStack {
+                            Text("Body Weight").font(.subheadline)
+                            if let weight = health.entries("bodyweight").first {
+                                Text("\(healthNumber(weight.value)) \(weight.unit ?? "lb")").font(.subheadline).foregroundStyle(HealthStyle.secondaryInk)
+                            }
+                            Image(systemName: "chevron.right").font(.caption)
+                        }
+                    }.buttonStyle(.plain)
                     Spacer()
-                    if let weight = health.entries("bodyweight").first { Text("\(healthNumber(weight.value)) \(weight.unit ?? "lb")").font(.subheadline).foregroundStyle(.secondary) }
                     Button { bodyWeight = HealthRecord(kind: "bodyweight", day: healthDay(), title: "Body Weight", unit: "lb") } label: { Image(systemName: "plus.circle").font(.title3).frame(width: 40, height: 40) }.accessibilityLabel("Log Body Weight")
                 }
                 if let error = workouts.error ?? health.storageError { Text(error).font(.caption).foregroundStyle(.red).lineLimit(2) }
-            }.padding(.horizontal, 22).padding(.vertical, 12).frame(width: geometry.size.width, height: geometry.size.height)
+                }.padding(.horizontal, HealthStyle.pageInset).padding(.vertical, 12)
+            }
         }
     }
 }
