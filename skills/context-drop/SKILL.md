@@ -24,7 +24,7 @@ Pick the target by name, tab title, or cwd. If more than one agent plausibly mat
 context-drop send TARGET "what to do next" --wait
 ```
 
-Run it as a background command. When it returns, it prints the agent's status and output; relay what the agent actually did or asked. `send` refuses a `working`, `blocked`, or `unknown` agent. Tell Avyay it is busy and offer to queue it; only pass `--force` when he says to. Continuing an agent keeps its conversation and worktree: never send `/clear` or `/new`, restart, close, or move it.
+Run it as a background command with no exec timeout (in OpenClaw: `background: true, timeoutSeconds: 0`; context-drop enforces its own six-hour limit). When it returns, it prints the agent's status and output; relay what the agent actually did or asked. `send` refuses a `working`, `blocked`, or `unknown` agent. Tell Avyay it is busy and offer to queue it; only pass `--force` when he says to. Continuing an agent keeps its conversation and worktree: never send `/clear` or `/new`, restart, close, or move it.
 
 If an agent is already `working` and you just need to know when it finishes, run `context-drop wait TARGET` in the background.
 
