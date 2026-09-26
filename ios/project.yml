@@ -20,7 +20,7 @@ targets:
         DEVELOPMENT_TEAM: 6SMT972MY9
         PRODUCT_BUNDLE_IDENTIFIER: com.avyay.faceguard
         INFOPLIST_KEY_CFBundleDisplayName: Context Drop
-        CURRENT_PROJECT_VERSION: 14
+        CURRENT_PROJECT_VERSION: 15
         MARKETING_VERSION: 0.6.0
     info:
       path: Info.plist

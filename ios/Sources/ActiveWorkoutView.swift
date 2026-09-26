@@ -26,12 +26,12 @@ struct ActiveWorkoutView: View {
                                 Spacer()
                                 Button("Exercises") { organizing = true }.font(.subheadline)
                             }
-                            ProgressView(value: Double(session.completedSets), total: Double(max(1, session.plannedSets))).tint(workoutInk)
+                            ProgressView(value: Double(session.completedSets), total: Double(max(1, session.plannedSets))).tint(HealthStyle.ink)
                             if session.exercises.isEmpty {
                                 VStack(spacing: 16) {
                                     Image(systemName: "dumbbell").font(.system(size: 42))
                                     Text("Add Your First Exercise").font(.title3.weight(.semibold))
-                                    Text("Choose a previous lift or add a new one.").font(.subheadline).foregroundStyle(.secondary)
+                                    Text("Choose a previous lift or add a new one.").font(.subheadline).foregroundStyle(HealthStyle.secondaryInk)
                                 }.frame(maxWidth: .infinity).padding(.vertical, 50)
                             }
                             ForEach(session.exercises) { exercise in
@@ -39,7 +39,7 @@ struct ActiveWorkoutView: View {
                             }
                             Button { addingExercise = true } label: {
                                 Label("Add Exercise", systemImage: "plus").font(.headline).frame(maxWidth: .infinity).padding(18)
-                                    .background(.white, in: RoundedRectangle(cornerRadius: 16))
+                                    .background(HealthStyle.surface, in: RoundedRectangle(cornerRadius: 16))
                             }.buttonStyle(.plain)
                             if let error = workouts.error ?? health.storageError { Text(error).font(.caption).foregroundStyle(.red) }
                         }.padding(.horizontal, 20).padding(.top, 14).padding(.bottom, 22)
@@ -105,8 +105,8 @@ struct ActiveWorkoutView: View {
                         Button("+30s") { workouts.update { $0.restUntil = deadline.addingTimeInterval(30) } }.font(.subheadline.weight(.semibold))
                     }
                     Button(remaining > 0 ? "Skip" : "Done") { workouts.update { $0.restUntil = nil } }.font(.subheadline.weight(.semibold)).padding(.leading, 6)
-                }.padding(16).foregroundStyle(.white).background(workoutInk, in: RoundedRectangle(cornerRadius: 20))
-            }.padding(.horizontal, 16).padding(.bottom, 8).background(workoutPaper)
+                }.padding(16).foregroundStyle(HealthStyle.onAccent).background(HealthStyle.ink, in: RoundedRectangle(cornerRadius: 20))
+            }.padding(.horizontal, 16).padding(.bottom, 8).background(HealthStyle.paper)
         }
     }
 }
@@ -121,7 +121,7 @@ struct WorkoutExerciseCard: View {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(exercise.title).font(.title3.weight(.semibold))
-                    Text(exercise.loadType == "assisted" ? "Assistance Weight" : exercise.loadType == "bodyweight" ? "Bodyweight" : exercise.unit.uppercased()).font(.caption).foregroundStyle(.secondary)
+                    Text(exercise.loadType == "assisted" ? "Assistance Weight" : exercise.loadType == "bodyweight" ? "Bodyweight" : exercise.unit.uppercased()).font(.caption).foregroundStyle(HealthStyle.secondaryInk)
                 }
                 Spacer()
                 Menu {
@@ -140,18 +140,18 @@ struct WorkoutExerciseCard: View {
                 Text(exercise.loadType == "bodyweight" ? "Load" : exercise.unit.uppercased()).frame(width: 63)
                 Text("Reps").frame(width: 48)
                 Image(systemName: "checkmark").frame(width: 40)
-            }.font(.caption2.weight(.medium)).foregroundStyle(.secondary)
+            }.font(.caption2.weight(.medium)).foregroundStyle(HealthStyle.secondaryInk)
             ForEach(Array(exercise.sets.enumerated()), id: \.element.id) { index, set in
                 WorkoutSetRow(set: set, index: index, exercise: exercise, workouts: workouts, focusedField: focusedField)
             }
             Button { workouts.addSet(exercise: exercise.id) } label: {
                 Label("Add Set", systemImage: "plus").font(.subheadline.weight(.medium)).frame(maxWidth: .infinity).padding(.vertical, 10)
-            }.buttonStyle(.plain).background(workoutInk.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
+            }.buttonStyle(.plain).background(HealthStyle.ink.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
             if showNotes || !exercise.notes.isEmpty {
                 TextField("Exercise Notes", text: Binding(get: { exercise.notes }, set: { value in workouts.editExercise(exercise.id) { $0.notes = value } }), axis: .vertical)
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(2...5).focused(focusedField, equals: exercise.id + "-notes")
+                    .font(.caption).foregroundStyle(HealthStyle.secondaryInk).lineLimit(2...5).focused(focusedField, equals: exercise.id + "-notes")
             }
-        }.padding(16).background(.white, in: RoundedRectangle(cornerRadius: 22))
+        }.padding(16).background(HealthStyle.surface, in: RoundedRectangle(cornerRadius: 22))
     }
 }
 
@@ -169,19 +169,19 @@ struct WorkoutSetRow: View {
                 if !set.completed { Button("Remove Set", role: .destructive) { workouts.editExercise(exercise.id) { $0.sets.removeAll { $0.id == set.id } } } }
             } label: { Text(set.warmup ? "W" : "\(index + 1)").font(.caption.weight(.semibold)).frame(width: 28, height: 44) }
                 .accessibilityLabel("Set \(index + 1) Options")
-            Text(set.previous ?? "—").font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
+            Text(set.previous ?? "—").font(.system(size: 11)).foregroundStyle(HealthStyle.secondaryInk).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
             if exercise.loadType == "bodyweight" {
                 Text("BW").font(.subheadline).frame(width: 63, height: 40)
             } else {
                 TextField("—", text: Binding(get: { set.weight }, set: { value in workouts.editSet(exercise: exercise.id, set: set.id) { $0.weight = value } }))
                     .keyboardType(.decimalPad).multilineTextAlignment(.center).font(.subheadline).monospacedDigit()
-                    .frame(width: 63, height: 40).background(workoutInk.opacity(0.055), in: RoundedRectangle(cornerRadius: 9))
+                    .frame(width: 63, height: 40).background(HealthStyle.ink.opacity(0.055), in: RoundedRectangle(cornerRadius: 9))
                     .focused(focusedField, equals: set.id + "-weight").disabled(set.completed)
                     .accessibilityLabel("\(exercise.title), Set \(index + 1), Weight in \(exercise.unit)")
             }
             TextField("—", text: Binding(get: { set.reps }, set: { value in workouts.editSet(exercise: exercise.id, set: set.id) { $0.reps = value } }))
                 .keyboardType(.numberPad).multilineTextAlignment(.center).font(.subheadline).monospacedDigit()
-                .frame(width: 48, height: 40).background(workoutInk.opacity(0.055), in: RoundedRectangle(cornerRadius: 9))
+                .frame(width: 48, height: 40).background(HealthStyle.ink.opacity(0.055), in: RoundedRectangle(cornerRadius: 9))
                 .focused(focusedField, equals: set.id + "-reps").disabled(set.completed)
                 .accessibilityLabel("\(exercise.title), Set \(index + 1), Reps")
             Button {
@@ -191,12 +191,12 @@ struct WorkoutSetRow: View {
                 }
             } label: {
                 Image(systemName: set.completed ? "checkmark.circle.fill" : "checkmark.circle")
-                    .font(.system(size: 27)).foregroundStyle(set.completed ? workoutInk : workoutInk.opacity(0.28)).frame(width: 40, height: 44)
+                    .font(.system(size: 27)).foregroundStyle(set.completed ? HealthStyle.ink : HealthStyle.ink.opacity(0.28)).frame(width: 40, height: 44)
                     .scaleEffect(set.completed ? 1.04 : 1)
             }.buttonStyle(.plain).disabled(!set.completed && !set.isValid(loadType: exercise.loadType))
                 .accessibilityLabel(set.completed ? "Undo Set \(index + 1)" : "Complete Set \(index + 1)")
         }.padding(.vertical, 1)
-            .background(set.completed ? workoutInk.opacity(0.045) : .clear, in: RoundedRectangle(cornerRadius: 10))
+            .background(set.completed ? HealthStyle.ink.opacity(0.045) : .clear, in: RoundedRectangle(cornerRadius: 10))
     }
 }
 
@@ -223,7 +223,7 @@ struct ExercisePicker: View {
                             Button { select(exercise) } label: {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(exercise.title).font(.body.weight(.medium))
-                                    if let last = exercise.sets.first?.previous { Text("Last: \(last) · \(exercise.sets.count) sets").font(.caption).foregroundStyle(.secondary) }
+                                    if let last = exercise.sets.first?.previous { Text("Last: \(last) · \(exercise.sets.count) sets").font(.caption).foregroundStyle(HealthStyle.secondaryInk) }
                                 }.padding(.vertical, 4)
                             }.buttonStyle(.plain)
                         }
@@ -234,10 +234,10 @@ struct ExercisePicker: View {
                         Button(name) { select(WorkoutExercise(title: name, loadType: name == "Pull-Ups" ? "bodyweight" : "weight")) }
                     }
                 }
-            }.scrollContentBackground(.hidden).background(workoutPaper).searchable(text: $search, prompt: "Find or Add an Exercise")
+            }.scrollContentBackground(.hidden).background(HealthStyle.paper).searchable(text: $search, prompt: "Find or Add an Exercise")
                 .healthNavigationTitle("Add Exercise")
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
-        }.tint(workoutInk)
+        }.tint(HealthStyle.ink)
     }
     private func select(_ exercise: WorkoutExercise) { add(exercise); dismiss() }
 }
@@ -249,7 +249,7 @@ struct OrganizeExercises: View {
         NavigationStack {
             List {
                 ForEach(workouts.active?.exercises ?? []) { exercise in
-                    HStack { Text(exercise.title); Spacer(); Text("\(exercise.completedSets)/\(exercise.sets.count)").foregroundStyle(.secondary) }
+                    HStack { Text(exercise.title); Spacer(); Text("\(exercise.completedSets)/\(exercise.sets.count)").foregroundStyle(HealthStyle.secondaryInk) }
                         .deleteDisabled(exercise.completedSets > 0)
                 }
                 .onMove { source, destination in workouts.update { $0.exercises.move(fromOffsets: source, toOffset: destination) } }
@@ -257,10 +257,10 @@ struct OrganizeExercises: View {
                     let removable = offsets.filter { session.exercises[$0].completedSets == 0 }
                     session.exercises.remove(atOffsets: IndexSet(removable))
                 } }
-            }.environment(\.editMode, .constant(.active)).scrollContentBackground(.hidden).background(workoutPaper)
+            }.environment(\.editMode, .constant(.active)).scrollContentBackground(.hidden).background(HealthStyle.paper)
                 .healthNavigationTitle("Exercises")
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
-        }.tint(workoutInk)
+        }.tint(HealthStyle.ink)
     }
 }
 

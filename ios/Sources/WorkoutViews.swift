@@ -1,8 +1,5 @@
 import SwiftUI
 
-let workoutInk = Color(red: 0.16, green: 0.22, blue: 0.18)
-let workoutPaper = Color(red: 0.95, green: 0.95, blue: 0.90)
-
 struct WorkoutsView: View {
     @ObservedObject var health: HealthStore
     @ObservedObject var workouts: WorkoutStore
@@ -18,7 +15,7 @@ struct WorkoutsView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                workoutPaper.ignoresSafeArea()
+                HealthStyle.paper.ignoresSafeArea()
                 if workouts.active != nil {
                     ActiveWorkoutView(workouts: workouts, health: health) { item in finishedID = item.id; summary = item }
                 } else {
@@ -55,7 +52,7 @@ struct WorkoutsView: View {
                 }
                 .sheet(isPresented: $bodyGoalsOpen) { BodyWeightGoalsView(health: health) }
                 .sheet(item: $bodyWeight) { EntryEditor(health: health, record: $0) }
-        }.tint(workoutInk)
+        }.tint(HealthStyle.ink)
     }
     private var home: some View {
         GeometryReader { geometry in
@@ -75,24 +72,24 @@ struct WorkoutsView: View {
                     }
                     Text("Start a Session").font(.system(size: 28, weight: .semibold, design: .rounded))
                     Button { starting = true } label: {
-                        HStack { Text("Start Workout"); Spacer(); Image(systemName: "arrow.up.right") }.font(.headline).padding(16).foregroundStyle(.white).background(workoutInk, in: RoundedRectangle(cornerRadius: 16))
+                        HStack { Text("Start Workout"); Spacer(); Image(systemName: "arrow.up.right") }.font(.headline).padding(16).foregroundStyle(HealthStyle.onAccent).background(HealthStyle.ink, in: RoundedRectangle(cornerRadius: 16))
                     }.buttonStyle(.plain)
-                }.padding(22).background(.white, in: RoundedRectangle(cornerRadius: 24))
+                }.padding(22).background(HealthStyle.surface, in: RoundedRectangle(cornerRadius: 24))
                 HStack { Text("Recent Workouts").font(.headline); Spacer(); Button("See All") { historyOpen = true }.font(.caption) }
                 VStack(spacing: 0) {
-                    if history.isEmpty { Text("Your finished workouts will appear here.").font(.subheadline).foregroundStyle(.secondary).padding(18).frame(maxWidth: .infinity, alignment: .leading) }
+                    if history.isEmpty { Text("Your finished workouts will appear here.").font(.subheadline).foregroundStyle(HealthStyle.secondaryInk).padding(18).frame(maxWidth: .infinity, alignment: .leading) }
                     ForEach(Array(history.prefix(compact ? 2 : 3).enumerated()), id: \.element.id) { index, item in
                         if index > 0 { Divider().padding(.horizontal, 16) }
                         Button { summary = item } label: {
                             HStack {
-                                VStack(alignment: .leading, spacing: 4) { Text(item.title).font(.subheadline.weight(.semibold)); Text("\(item.completedSets) sets · \(item.exerciseNames.count) exercises").font(.caption).foregroundStyle(.secondary) }
+                                VStack(alignment: .leading, spacing: 4) { Text(item.title).font(.subheadline.weight(.semibold)); Text("\(item.completedSets) sets · \(item.exerciseNames.count) exercises").font(.caption).foregroundStyle(HealthStyle.secondaryInk) }
                                 Spacer()
-                                Text(healthDate(item.day), format: .dateTime.month(.abbreviated).day()).font(.caption).foregroundStyle(.secondary)
+                                Text(healthDate(item.day), format: .dateTime.month(.abbreviated).day()).font(.caption).foregroundStyle(HealthStyle.secondaryInk)
                                 Image(systemName: "chevron.right").font(.caption2)
                             }.padding(16)
                         }.buttonStyle(.plain)
                     }
-                }.background(.white, in: RoundedRectangle(cornerRadius: 20))
+                }.background(HealthStyle.surface, in: RoundedRectangle(cornerRadius: 20))
                 Spacer(minLength: 0)
                 HStack {
                     Button { bodyGoalsOpen = true } label: {
@@ -115,7 +112,7 @@ struct WorkoutsView: View {
 }
 
 func workoutStat(_ title: String, _ value: String) -> some View {
-    VStack(alignment: .leading, spacing: 5) { Text(value).font(.headline).monospacedDigit(); Text(title).font(.caption).foregroundStyle(.secondary) }
+    VStack(alignment: .leading, spacing: 5) { Text(value).font(.headline).monospacedDigit(); Text(title).font(.caption).foregroundStyle(HealthStyle.secondaryInk) }
 }
 
 struct WorkoutStartAnimation: View {
@@ -125,13 +122,13 @@ struct WorkoutStartAnimation: View {
     var body: some View {
         VStack(spacing: 24) {
             ZStack {
-                Circle().stroke(workoutInk.opacity(0.1), lineWidth: 3)
-                Circle().trim(from: 0, to: appeared ? 1 : 0).stroke(workoutInk, style: StrokeStyle(lineWidth: 3, lineCap: .round)).rotationEffect(.degrees(-90))
+                Circle().stroke(HealthStyle.ink.opacity(0.1), lineWidth: 3)
+                Circle().trim(from: 0, to: appeared ? 1 : 0).stroke(HealthStyle.ink, style: StrokeStyle(lineWidth: 3, lineCap: .round)).rotationEffect(.degrees(-90))
                 Image(systemName: "dumbbell.fill").font(.system(size: 52)).rotationEffect(.degrees(appeared ? 0 : -25)).scaleEffect(appeared ? 1 : 0.65)
             }.frame(width: 132, height: 132)
             Text(title).font(.system(size: 30, weight: .semibold, design: .rounded))
-            Text("Session Started").font(.subheadline).foregroundStyle(.secondary)
-        }.frame(maxWidth: .infinity, maxHeight: .infinity).background(workoutPaper)
+            Text("Session Started").font(.subheadline).foregroundStyle(HealthStyle.secondaryInk)
+        }.frame(maxWidth: .infinity, maxHeight: .infinity).background(HealthStyle.paper)
             .onAppear { withAnimation(reduceMotion ? nil : .spring(response: 0.65, dampingFraction: 0.65)) { appeared = true } }
             .accessibilityElement(children: .combine)
     }
@@ -160,8 +157,8 @@ struct StartWorkoutSheet: View {
                             Button { begin(item.title, item.repeated()) } label: {
                                 VStack(alignment: .leading, spacing: 5) {
                                     HStack { Text(item.title).font(.headline); Spacer(); Image(systemName: "arrow.clockwise") }
-                                    Text(item.exerciseNames.joined(separator: " · ")).font(.caption).foregroundStyle(.secondary).lineLimit(3)
-                                    Text("Last: \(item.day) · \(item.completedSets) sets").font(.caption2).foregroundStyle(.secondary)
+                                    Text(item.exerciseNames.joined(separator: " · ")).font(.caption).foregroundStyle(HealthStyle.secondaryInk).lineLimit(3)
+                                    Text("Last: \(item.day) · \(item.completedSets) sets").font(.caption2).foregroundStyle(HealthStyle.secondaryInk)
                                 }.padding(.vertical, 6)
                             }.buttonStyle(.plain)
                         }
@@ -170,7 +167,7 @@ struct StartWorkoutSheet: View {
                 if let error { Text(error).foregroundStyle(.red) }
             }.healthListStyle().healthNavigationTitle("Start Workout")
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
-        }.tint(workoutInk)
+        }.tint(HealthStyle.ink)
     }
     private func begin(_ title: String, _ exercises: [WorkoutExercise]) {
         if !start(title.trimmingCharacters(in: .whitespacesAndNewlines), exercises) { error = "Couldn’t start the workout. Please try again." }
@@ -186,7 +183,7 @@ struct WorkoutHistoryList: View {
                 NavigationLink { WorkoutSummaryView(item: item) } label: {
                     VStack(alignment: .leading, spacing: 5) {
                         Text(item.title).font(.headline)
-                        Text("\(item.day) · \(item.completedSets) sets · \(item.exerciseNames.count) exercises").font(.caption).foregroundStyle(.secondary)
+                        Text("\(item.day) · \(item.completedSets) sets · \(item.exerciseNames.count) exercises").font(.caption).foregroundStyle(HealthStyle.secondaryInk)
                     }.padding(.vertical, 5)
                 }
             }
@@ -203,9 +200,9 @@ struct WorkoutSummaryView: View {
         List {
             Section {
                 VStack(alignment: .leading, spacing: 18) {
-                    if isJustFinished { Image(systemName: "checkmark.circle.fill").font(.system(size: 42)).foregroundStyle(workoutInk) }
+                    if isJustFinished { Image(systemName: "checkmark.circle.fill").font(.system(size: 42)).foregroundStyle(HealthStyle.ink) }
                     Text(isJustFinished ? "Workout Saved" : item.title).font(.system(size: 28, weight: .semibold, design: .rounded))
-                    Text(item.day).foregroundStyle(.secondary)
+                    Text(item.day).foregroundStyle(HealthStyle.secondaryInk)
                     HStack(spacing: 24) {
                         workoutStat("Sets", "\(item.completedSets)")
                         workoutStat("Exercises", "\(item.exerciseNames.count)")
@@ -217,7 +214,7 @@ struct WorkoutSummaryView: View {
                 Section(title) {
                     ForEach(item.lifts.filter { $0.title == title }) { record in
                         HStack {
-                            Text(record.warmup == true ? "Warm-Up" : "\(Int(record.sets ?? 1)) \(record.sets == 1 ? "Set" : "Sets")").foregroundStyle(.secondary)
+                            Text(record.warmup == true ? "Warm-Up" : "\(Int(record.sets ?? 1)) \(record.sets == 1 ? "Set" : "Sets")").foregroundStyle(HealthStyle.secondaryInk)
                             Spacer(); Text(workoutSetDescription(record)).monospacedDigit()
                         }
                     }
