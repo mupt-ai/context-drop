@@ -16,17 +16,11 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
-          cache: true
+          go-version-file: cli/go.mod
+          cache-dependency-path: cli/go.sum
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: runtime/package-lock.json
-
-      - run: npm ci --prefix runtime && npm run build --prefix runtime
       - run: make coverage
+        working-directory: cli
 
       - name: Build archives
         run: |
@@ -41,16 +35,11 @@ jobs:
             local archive_arch="$4"
             local out="dist/context-drop_${version}_${archive_os}_${archive_arch}.tar.gz"
 
-            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build \
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go -C cli build \
               -trimpath \
               -ldflags "-s -w -X main.version=${GITHUB_REF_NAME} -X main.commit=${GITHUB_SHA::7} -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-              -o dist/context-drop ./cmd/context-drop
-            stage="$(mktemp -d)"
-            mkdir -p "$stage/runtime"
-            cp dist/context-drop "$stage/context-drop"
-            cp -R runtime/dist "$stage/runtime/dist"
-            tar -C "$stage" -czf "$out" context-drop runtime
-            rm -rf "$stage"
+              -o "$PWD/dist/context-drop" ./cmd/context-drop
+            tar -C dist -czf "$out" context-drop
             rm dist/context-drop
           }
 

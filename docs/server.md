@@ -18,7 +18,7 @@ CONTEXT_DROP_STORAGE=local \
 CONTEXT_DROP_DATA_DIR=.data \
 CONTEXT_DROP_BASE_URL=http://localhost:8080 \
 CONTEXT_DROP_ADDR=:8080 \
-go run ./cmd/context-drop-server
+(cd cli && go run ./cmd/context-drop-server)
 ```
 
 Configure the same token for uploads:
@@ -41,7 +41,7 @@ CONTEXT_DROP_ADDR=:8080 \
 CONTEXT_DROP_DEFAULT_TTL=24h \
 CONTEXT_DROP_MAX_TTL=168h \
 CONTEXT_DROP_MAX_BYTES=26214400 \
-go run ./cmd/context-drop-server
+(cd cli && go run ./cmd/context-drop-server)
 ```
 
 The GCS backend uses normal Google Cloud authentication. Put production deployments behind HTTPS and pass the upload token through your platform's secret manager. The token is never logged by Context Drop.

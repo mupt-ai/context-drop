@@ -1,7 +1,7 @@
 # Binaries
-/bin/
-/context-drop
-/context-drop-server
+/cli/bin/
+/cli/context-drop
+/cli/context-drop-server
 
 # Local env/secrets
 .env
@@ -11,23 +11,15 @@
 *gcp-service-account*.json
 
 # Local dev storage
-/.data/
+/cli/.data/
 
 # Go build/test artifacts
 *.test
 *.out
 coverage.out
 
-# Dependency directories
-/vendor/
-/runtime/node_modules
-/runtime/dist/
-
 # OS/editor files
 .DS_Store
 .idea/
 .vscode/
-
-/runtime/token
-
-/.pi-subagents/
+__pycache__/

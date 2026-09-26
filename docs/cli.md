@@ -1,6 +1,30 @@
 # CLI reference
 
-The public top-level command surface is intentionally limited to five commands.
+## Herdr agents
+
+These commands drive coding agents that run in [Herdr](https://herdr.dev) tabs. They are what a chat assistant such as OpenClaw calls to start, continue, and check on your work. A target is a herdr agent name or pane ID; nothing ever falls back to the focused pane.
+
+### `context-drop agents [--json]`
+
+List every agent herdr sees: name (or pane ID), kind, status (`idle`, `working`, `blocked`, `done`, `unknown`), tab title, and working directory.
+
+### `context-drop new NAME PROMPT --workspace LABEL --cwd DIR [--agent claude|codex|pi] [--wait]`
+
+Open a tab in the herdr workspace labeled `LABEL`, launch the agent in `DIR` through `dari`, name it `NAME`, and submit `PROMPT`. Claude Code's trust prompt for a new directory is accepted automatically. Anything else that blocks startup is an error, and the tab is left open for inspection.
+
+The workspace label must match exactly one workspace, and `NAME` must not already be taken. Create the worktree first and pass it as `--cwd`.
+
+### `context-drop send TARGET TEXT [--force] [--wait]`
+
+Submit a prompt to an existing agent. Refuses unless the agent is `idle` or `done`; `--force` sends anyway.
+
+### `context-drop wait TARGET` and `--wait`
+
+Block until the agent is `idle`, `done`, or `blocked`, then print its status and recent output. `blocked` usually means it is asking a question. `--wait` on `new` and `send` tracks the turn that prompt started; standalone `wait` is for an agent that is already working and returns immediately if it is idle. Both default to a six-hour `--timeout`.
+
+### `context-drop read TARGET [--lines N]`
+
+Print the agent's recent terminal output.
 
 ## `context-drop upload [path]`
 
@@ -8,24 +32,7 @@ Upload one file to the configured TTL store. With no path, `--clipboard` uploads
 
 Flags: `--endpoint`, `--ttl`, `--filename`, `--content-type`, `--clipboard`, `--no-clipboard`, and `--json`.
 
-Uploads require `CONTEXT_DROP_UPLOAD_TOKEN` or `upload_token` in the private config file. The token is independent from daemon and worker-report credentials.
-
-## `context-drop report [message]`
-
-Send a natural-language progress update from a worker to the main orchestrator. Use `--question` for a question requiring the user’s answer. Final worker answers are reported automatically. If the argument is omitted, the message is read from stdin. The daemon injects the required scoped environment values when launching a managed worker; this command is not a general messaging API.
-
-## `context-drop schedule`
-
-- `schedule add`: add or replace a durable interval (`--every`) or calendar (`--cron` and `--timezone`) schedule.
-- `schedule list`: print schedules; `--json` also includes recent jobs.
-- `schedule run NAME`: launch one occurrence immediately.
-- `schedule remove NAME`: remove a schedule.
-
-A schedule requires a name, prompt, and exactly one cadence. `--repo` defaults to the current directory. All schedules share the four Pi workers; agent and backend selection are pool-wide. Use `pause` and `resume` to control a saved schedule.
-
-## `context-drop daemon`
-
-Use `status`, `restart`, and `logs` for routine administration. Service lifecycle commands (`install`, `uninstall`, `start`, `stop`) and foreground `run` are also available for installation and debugging.
+Uploads require `CONTEXT_DROP_UPLOAD_TOKEN` or `upload_token` in `~/.context-drop/config.toml`.
 
 ## `context-drop version`
 
