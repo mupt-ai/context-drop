@@ -15,14 +15,14 @@ struct FoodGoalProgress: View {
                             Spacer()
                             Text("\(healthNumber(total)) / \(healthNumber(value)) \(goal.unit)").font(.subheadline).monospacedDigit()
                         }
-                        ProgressView(value: min(total ?? 0, value), total: value).tint(workoutInk)
+                        ProgressView(value: min(total ?? 0, value), total: value).tint(HealthStyle.ink)
                         Text(HealthGoal.remaining(total: total, target: value).map { $0 == 0 ? "Goal reached from logged food" : "\(healthNumber($0)) \(goal.unit) left from logged food" } ?? "No nutrition logged yet")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.caption).foregroundStyle(HealthStyle.secondaryInk)
                     }
                 }
             }
             if HealthGoal.record(.calories, in: health.records) == nil && HealthGoal.record(.protein, in: health.records) == nil {
-                Text("Set calorie and protein targets to see your daily progress.").font(.subheadline).foregroundStyle(.secondary)
+                Text("Set calorie and protein targets to see your daily progress.").font(.subheadline).foregroundStyle(HealthStyle.secondaryInk)
             }
         }.padding(.vertical, 4)
     }
@@ -53,7 +53,7 @@ struct HealthGoalsEditor: View {
                             if let value = number(weight) { weight = String(format: "%.1f", HealthGoal.convertedWeight(value, from: old, to: new)) }
                         }
                 }
-                Section { Text("Leave a target blank to remove it. These goals are shared with Context Drop.").font(.caption).foregroundStyle(.secondary) }
+                Section { Text("Leave a target blank to remove it. These goals are shared with Context Drop.").font(.caption).foregroundStyle(HealthStyle.secondaryInk) }
                 if let error = health.storageError { Text(error).foregroundStyle(.red) }
             }.healthListStyle().healthNavigationTitle("Goals")
                 .toolbar {
@@ -67,10 +67,10 @@ struct HealthGoalsEditor: View {
                     unit = goal?.unit ?? "lb"
                     weight = goal?.value.map { String($0) } ?? ""
                 }
-        }.tint(workoutInk)
+        }.tint(HealthStyle.ink)
     }
     private func field(_ label: String, text: Binding<String>, unit: String) -> some View {
-        HStack { Text(label); Spacer(); TextField("Not Set", text: text).keyboardType(.decimalPad).multilineTextAlignment(.trailing); Text(unit).foregroundStyle(.secondary) }
+        HStack { Text(label); Spacer(); TextField("Not Set", text: text).keyboardType(.decimalPad).multilineTextAlignment(.trailing); Text(unit).foregroundStyle(HealthStyle.secondaryInk) }
     }
     private func save() {
         let input: [(HealthGoal, String)] = [(.calories, calories), (.protein, protein), (.bodyweight, weight)]
@@ -100,8 +100,8 @@ struct BodyWeightGoalsView: View {
                     HStack { metric("Latest", weights.first.map { value($0) }); Spacer(); metric("Goal", target?.value) }
                     if let latest = weights.first, let goal = target?.value {
                         let difference = goal - value(latest)
-                        Text(abs(difference) < 0.05 ? "At your goal weight" : "\(healthNumber(abs(difference))) \(unit) \(difference > 0 ? "to gain" : "above goal")").font(.subheadline).foregroundStyle(.secondary)
-                        Text("Last logged \(healthDate(latest.day).formatted(date: .abbreviated, time: .omitted))").font(.caption).foregroundStyle(.secondary)
+                        Text(abs(difference) < 0.05 ? "At your goal weight" : "\(healthNumber(abs(difference))) \(unit) \(difference > 0 ? "to gain" : "above goal")").font(.subheadline).foregroundStyle(HealthStyle.secondaryInk)
+                        Text("Last logged \(healthDate(latest.day).formatted(date: .abbreviated, time: .omitted))").font(.caption).foregroundStyle(HealthStyle.secondaryInk)
                     }
                     Button(target == nil ? "Set Goals" : "Edit Goals") { editingGoals = true }
                 }
@@ -112,8 +112,8 @@ struct BodyWeightGoalsView: View {
                                 LineMark(x: .value("Day", healthDate(record.day)), y: .value("Weight", value(record)))
                                 PointMark(x: .value("Day", healthDate(record.day)), y: .value("Weight", value(record)))
                             }
-                            if let target = target?.value { RuleMark(y: .value("Goal", target)).lineStyle(StrokeStyle(dash: [5, 4])).foregroundStyle(.secondary).annotation(position: .top, alignment: .leading) { Text("Goal").font(.caption) } }
-                        }.chartYScale(domain: .automatic(includesZero: false)).frame(height: 190).foregroundStyle(workoutInk)
+                            if let target = target?.value { RuleMark(y: .value("Goal", target)).lineStyle(StrokeStyle(dash: [5, 4])).foregroundStyle(HealthStyle.secondaryInk).annotation(position: .top, alignment: .leading) { Text("Goal").font(.caption).foregroundStyle(HealthStyle.secondaryInk) } }
+                        }.chartYScale(domain: .automatic(includesZero: false)).frame(height: 190).foregroundStyle(HealthStyle.ink)
                     }
                 }
                 Section {
@@ -126,10 +126,10 @@ struct BodyWeightGoalsView: View {
                 .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
                 .sheet(isPresented: $editingGoals) { HealthGoalsEditor(health: health) }
                 .sheet(item: $entry) { EntryEditor(health: health, record: $0) }
-        }.tint(workoutInk)
+        }.tint(HealthStyle.ink)
     }
     @Environment(\.dismiss) private var dismiss
     private func metric(_ label: String, _ number: Double?) -> some View {
-        VStack(alignment: .leading, spacing: 6) { Text(label).font(.caption).foregroundStyle(.secondary); Text("\(healthNumber(number)) \(unit)").font(.title2.weight(.semibold)).monospacedDigit() }
+        VStack(alignment: .leading, spacing: 6) { Text(label).font(.caption).foregroundStyle(HealthStyle.secondaryInk); Text("\(healthNumber(number)) \(unit)").font(.title2.weight(.semibold)).monospacedDigit() }
     }
 }

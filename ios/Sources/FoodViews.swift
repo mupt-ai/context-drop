@@ -33,7 +33,7 @@ struct FoodView: View {
                 .sheet(isPresented: $recentOpen) {
                     RecentMealsView(health: health, day: healthDay(date))
                 }
-        }.tint(workoutInk)
+        }.tint(HealthStyle.ink)
     }
 }
 
@@ -132,7 +132,7 @@ struct MealDetailView: View {
                     ToolbarItem(placement: .confirmationAction) { Button("Edit") { editing = true } }
                 }
                 .sheet(isPresented: $editing) { MealEditor(health: health, meal: current) }
-        }.tint(workoutInk)
+        }.tint(HealthStyle.ink)
     }
 }
 
@@ -159,7 +159,7 @@ struct RecentMealsView: View {
             }.healthListStyle().healthNavigationTitle("Recent Meals")
                 .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } } }
                 .sheet(item: $selected) { MealEditor(health: health, meal: $0) }
-        }.tint(workoutInk)
+        }.tint(HealthStyle.ink)
     }
 }
 
@@ -208,7 +208,7 @@ struct MealEditor: View {
                     foods = meal.foodItems ?? []
                     calories = text(meal.value); protein = text(meal.protein); carbs = text(meal.carbs); fat = text(meal.fat); estimated = meal.nutritionEstimated ?? false
                 }
-        }.tint(workoutInk)
+        }.tint(HealthStyle.ink)
     }
     private func text(_ value: Double?) -> String { value.map { String(format: "%g", $0) } ?? "" }
     private func number(_ value: String) -> Double? { Double(value.replacingOccurrences(of: ",", with: ".")) }
