@@ -9,5 +9,5 @@ State defaults to `~/.context-drop/managed/state/health-dashboard`, overridable 
 Tests (mock transport; no real messages):
 
 ```
-python3 -m unittest discover -s workflows/health-alerts
+python3 -m unittest discover -s jobs/health-alerts
 ```
