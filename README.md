@@ -1,46 +1,40 @@
 # Context Drop
 
-Context Drop is two things:
+Context Drop lets a chat assistant start, message, and read coding agents in [Herdr](https://herdr.dev) tabs. Its CLI also uploads files to a temporary file store. The assistant handles messaging, scheduling, and memory; Context Drop has no daemon.
 
-- `cli/`: the `context-drop` command. It lets a chat assistant such as [OpenClaw](https://openclaw.ai) drive coding agents that run in [Herdr](https://herdr.dev) tabs, and it uploads files to a small TTL file store. The store's server lives here too.
-- `ios/`: the Context Drop iPhone app (health, workouts, goals, and digests).
+## Build and try it
 
-Messaging, scheduling, and memory belong to the assistant. Context Drop has no daemon.
-
-## CLI
-
-```text
-context-drop agents                          list herdr agents and their status
-context-drop new NAME PROMPT --workspace LABEL --cwd DIR [--agent claude|codex|pi] [--wait]
-context-drop send TARGET TEXT [--force] [--wait]
-context-drop wait TARGET
-context-drop read TARGET
-context-drop upload [path] [--ttl 1h]
-context-drop version
-```
-
-`new` opens a tab in an existing herdr workspace, launches the agent through `dari`, names it, and submits the prompt. `send` continues an existing agent by name or pane ID, and refuses if it is busy unless you pass `--force`. `--wait` and `wait` block until the agent finishes its turn or stops to ask something, then print its output. That makes them easy to run as a background command that wakes the assistant when it returns. See [docs/cli.md](docs/cli.md).
-
-Install a release:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/mupt-ai/context-drop/main/cli/install.sh | bash
-```
-
-Or build from source with Go 1.26.2+:
+Requires Go 1.26.2+, [Herdr](https://herdr.dev), and the `dari` agent launcher. Set up Herdr and `dari` before using the agent commands. From this repository:
 
 ```sh
 cd cli
-make install   # installs to ~/.local/bin
-make test
+make install                 # installs context-drop to ~/.local/bin
+~/.local/bin/context-drop --help
 ```
 
-`cli/jobs/` holds small standalone jobs that run from launchd: a Herdr activity journal, a tab auto-namer, and a health-dashboard alert cooldown. Each has its own README.
+Add `~/.local/bin` to your `PATH` if it is not already there. No release binaries are published yet.
 
-## Upload server
+To start an agent, first create a Herdr workspace and choose an existing project directory (or Git worktree). Replace `YOUR_WORKSPACE` with that workspace's label and `/absolute/path/to/project` with the directory's absolute path. The example uses `pi`; `claude` (the default) and `codex` are also supported if installed through `dari`:
 
-The hosted component is a temporary file store: one authenticated upload endpoint and opaque, expiring download links. See [docs/server.md](docs/server.md).
+```sh
+context-drop new my-task 'Inspect the failing tests' --workspace YOUR_WORKSPACE --cwd /absolute/path/to/project --agent pi --wait
+context-drop send my-task 'Summarize your findings' --wait
+context-drop read my-task
+context-drop agents
+```
 
-## iOS app
+`new` opens a tab in the named workspace and launches the agent through `dari`. `send` addresses an existing agent by name or pane ID; it refuses while the agent is busy unless you use `--force`. `--wait` prints the result when the agent finishes or needs input. See the [CLI reference](docs/cli.md) for other commands and options.
 
-See [ios/README.md](ios/README.md). The project is generated with xcodegen from `ios/project.yml`.
+## File uploads
+
+```sh
+context-drop upload ./report.txt --ttl 1h
+```
+
+Uploads need a running server and its upload token. Set `CONTEXT_DROP_ENDPOINT` and `CONTEXT_DROP_UPLOAD_TOKEN` to the server URL and the same token configured on that server. The [upload server guide](docs/server.md) shows how to run it locally; the [CLI reference](docs/cli.md) covers other configuration options. The server lives in `cli/` and provides authenticated uploads and expiring download links.
+
+`cli/jobs/` contains optional standalone launchd jobs for a Herdr activity journal, tab naming, and health-dashboard alert cooldown. Each has its own README. Run the CLI and server tests with `cd cli && make test`.
+
+## License
+
+[MIT](LICENSE).
