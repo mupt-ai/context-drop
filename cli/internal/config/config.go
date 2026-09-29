@@ -23,7 +23,6 @@ type CLIConfig struct {
 
 func DefaultCLIConfig() CLIConfig {
 	return CLIConfig{
-		Endpoint:   "https://contextdrop.dev",
 		DefaultTTL: 24 * time.Hour,
 		Clipboard:  false,
 	}

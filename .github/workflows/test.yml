@@ -20,13 +20,5 @@ jobs:
           go-version-file: cli/go.mod
           cache-dependency-path: cli/go.sum
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-
       - run: make coverage test
         working-directory: cli
