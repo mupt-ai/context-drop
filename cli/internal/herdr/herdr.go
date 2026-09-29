@@ -114,19 +114,8 @@ func (c Client) CreateTab(ctx context.Context, workspaceID, cwd, label string) (
 	return result.RootPane.PaneID, nil
 }
 
-func (c Client) RunInPane(ctx context.Context, pane, command string) error {
-	_, err := c.Run(ctx, "pane", "run", pane, command)
-	return err
-}
-
-func (c Client) PaneKeys(ctx context.Context, pane string, keys ...string) error {
-	_, err := c.Run(ctx, append([]string{"pane", "send-keys", pane}, keys...)...)
-	return err
-}
-
-func (c Client) Rename(ctx context.Context, target, name string) error {
-	_, err := c.Run(ctx, "agent", "rename", target, name)
-	return err
+func (c Client) Start(ctx context.Context, name, kind, pane string) error {
+	return c.call(ctx, nil, "agent", "start", name, "--kind", kind, "--pane", pane)
 }
 
 // Prompt submits text. With wait it blocks until herdr sees the agent settle

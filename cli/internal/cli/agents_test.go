@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"contextdrop.dev/context-drop/internal/herdr"
 )
@@ -46,10 +45,9 @@ func (f *fakeHerdr) called(prefix ...string) [][]string {
 func useFakeHerdr(t *testing.T, answers map[string][]string) *fakeHerdr {
 	t.Helper()
 	f := &fakeHerdr{answers: answers}
-	prevHerdr, prevSleep := newHerdr, sleep
+	prevHerdr := newHerdr
 	newHerdr = func() herdr.Client { return herdr.Client{Run: f.run} }
-	sleep = func(context.Context, time.Duration) error { return nil }
-	t.Cleanup(func() { newHerdr, sleep = prevHerdr, prevSleep })
+	t.Cleanup(func() { newHerdr = prevHerdr })
 	return f
 }
 
@@ -57,7 +55,7 @@ func agentJSON(kind, status string) string {
 	return fmt.Sprintf(`{"result":{"agent":{"agent":%q,"agent_status":%q,"pane_id":"w1:p9"}}}`, kind, status)
 }
 
-const workspacesJSON = `{"result":{"workspaces":[{"workspace_id":"w1","label":"dari-mono"},{"workspace_id":"w2","label":"evals"}]}}`
+const workspacesJSON = `{"result":{"workspaces":[{"workspace_id":"w1","label":"project"},{"workspace_id":"w2","label":"other"}]}}`
 
 func TestAgentsListsNamesOrPanes(t *testing.T) {
 	useFakeHerdr(t, map[string][]string{"agent list": {`{"result":{"agents":[
@@ -74,16 +72,14 @@ func TestAgentsListsNamesOrPanes(t *testing.T) {
 	}
 }
 
-func TestNewLaunchesTrustsNamesAndPrompts(t *testing.T) {
+func TestNewStartsAndPrompts(t *testing.T) {
 	f := useFakeHerdr(t, map[string][]string{
 		"agent list":     {`{"result":{"agents":[]}}`},
 		"workspace list": {workspacesJSON},
 		"tab create":     {`{"result":{"root_pane":{"pane_id":"w1:p9"}}}`},
-		"agent get":      {"ERR:not an agent yet", agentJSON("claude", "blocked"), agentJSON("claude", "idle")},
-		"agent read":     {"Is this a project you trust?\n ❯ No, exit\n   Yes, I trust this folder\n"},
 	})
 	cwd := t.TempDir()
-	out, _, err := executeRoot(t, "new", "fix-router", "fix the router", "--workspace", "dari-mono", "--cwd", cwd)
+	out, _, err := executeRoot(t, "new", "fix-router", "fix the router", "--workspace", "project", "--cwd", cwd)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,14 +90,8 @@ func TestNewLaunchesTrustsNamesAndPrompts(t *testing.T) {
 	if len(tab) != 1 || strings.Join(tab[0], " ") != "tab create --workspace w1 --cwd "+cwd+" --label fix-router --no-focus" {
 		t.Fatalf("tab create = %v", tab)
 	}
-	if run := f.called("pane", "run", "w1:p9", "dari --claude --dangerously-skip-permissions"); len(run) != 1 {
-		t.Fatalf("launch calls = %v", f.calls)
-	}
-	if keys := f.called("pane", "send-keys", "w1:p9", "down", "enter"); len(keys) != 1 {
-		t.Fatalf("trust dialog not accepted: %v", f.calls)
-	}
-	if rename := f.called("agent", "rename", "w1:p9", "fix-router"); len(rename) != 1 {
-		t.Fatalf("rename calls = %v", f.calls)
+	if starts := f.called("agent", "start", "fix-router", "--kind", "claude", "--pane", "w1:p9"); len(starts) != 1 {
+		t.Fatalf("start calls = %v", f.calls)
 	}
 	prompt := f.called("agent", "prompt")
 	if len(prompt) != 1 || strings.Join(prompt[0], " ") != "agent prompt fix-router fix the router" {
@@ -118,7 +108,7 @@ func TestNewRefusesAmbiguousOrMissingTargets(t *testing.T) {
 		want    string
 	}{
 		{"unknown workspace", map[string][]string{"agent list": {`{"result":{"agents":[]}}`}, "workspace list": {workspacesJSON}},
-			[]string{"new", "task", "p", "--workspace", "nope", "--cwd", cwd}, `no herdr workspace labeled "nope"; have: dari-mono, evals`},
+			[]string{"new", "task", "p", "--workspace", "nope", "--cwd", cwd}, `no herdr workspace labeled "nope"; have: project, other`},
 		{"duplicate workspace", map[string][]string{"agent list": {`{"result":{"agents":[]}}`}, "workspace list": {`{"result":{"workspaces":[{"workspace_id":"w1","label":"x"},{"workspace_id":"w2","label":"x"}]}}`}},
 			[]string{"new", "task", "p", "--workspace", "x", "--cwd", cwd}, "2 herdr workspaces are labeled"},
 		{"name taken", map[string][]string{"agent list": {`{"result":{"agents":[{"name":"task","pane_id":"w1:p1"}]}}`}},
@@ -141,17 +131,19 @@ func TestNewRefusesAmbiguousOrMissingTargets(t *testing.T) {
 	}
 }
 
-func TestNewFailsWhenAgentBlocksOnSomethingElse(t *testing.T) {
-	useFakeHerdr(t, map[string][]string{
+func TestNewLeavesTabOpenWhenStartFails(t *testing.T) {
+	f := useFakeHerdr(t, map[string][]string{
 		"agent list":     {`{"result":{"agents":[]}}`},
 		"workspace list": {workspacesJSON},
 		"tab create":     {`{"result":{"root_pane":{"pane_id":"w1:p9"}}}`},
-		"agent get":      {agentJSON("codex", "blocked")},
-		"agent read":     {"Sign in with ChatGPT\n"},
+		"agent start":    {"ERR:agent needs sign-in"},
 	})
-	_, _, err := executeRoot(t, "new", "task", "p", "--workspace", "dari-mono", "--cwd", t.TempDir(), "--agent", "codex")
-	if err == nil || !strings.Contains(err.Error(), "Sign in with ChatGPT") || !strings.Contains(err.Error(), "tab left open at w1:p9") {
+	_, _, err := executeRoot(t, "new", "task", "p", "--workspace", "project", "--cwd", t.TempDir(), "--agent", "codex")
+	if err == nil || !strings.Contains(err.Error(), "agent needs sign-in") || !strings.Contains(err.Error(), "tab left open at w1:p9") {
 		t.Fatalf("err = %v", err)
+	}
+	if len(f.called("agent", "prompt")) != 0 {
+		t.Fatal("prompted agent after failed start")
 	}
 }
 

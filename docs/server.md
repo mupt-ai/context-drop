@@ -1,6 +1,6 @@
 # Server and self-hosting
 
-The hosted Context Drop service is a small TTL file store. It exposes health checks, one authenticated upload endpoint, and opaque public download URLs. It has no chains, machine pairing, inboxes, handoffs, listing, pull, or delete APIs.
+The Context Drop server is a self-hosted TTL file store. It exposes health checks, one authenticated upload endpoint, and opaque public download URLs. It has no chains, machine pairing, inboxes, handoffs, listing, pull, or delete APIs.
 
 ## API
 

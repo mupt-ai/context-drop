@@ -15,36 +15,15 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// Launch commands for coding agents started by `new`, keyed by herdr agent kind.
-var agentCommands = map[string]string{
-	"claude": "dari --claude --dangerously-skip-permissions",
-	"codex":  "dari --codex --yolo",
-	"pi":     "dari --pi --approve",
-}
-
 var agentName = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
 
-const (
-	startupTimeout = 90 * time.Second
-	pollInterval   = 500 * time.Millisecond
-	outputLines    = 60
-)
+const outputLines = 60
 
 var newHerdr = func() herdr.Client {
 	if bin := os.Getenv("HERDR_BIN"); bin != "" {
 		return herdr.New(bin)
 	}
 	return herdr.New("herdr")
-}
-
-// sleep is swapped out in tests.
-var sleep = func(ctx context.Context, d time.Duration) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-time.After(d):
-		return nil
-	}
 }
 
 func newAgentsCommand() *cobra.Command {
@@ -84,8 +63,8 @@ func newNewCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "new NAME PROMPT",
 		Short: "Start a coding agent in a new herdr tab and give it a task",
-		Long: "Opens a tab in the herdr workspace with the given label, launches the agent in --cwd through dari, " +
-			"names it NAME, and submits PROMPT. Create any worktree first and pass it as --cwd.",
+		Long: "Opens a tab in the herdr workspace with the given label, starts the agent using herdr, " +
+			"and submits PROMPT. Create any worktree first and pass it as --cwd.",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runNew(cmd, args[0], args[1], workspace, cwd, kind, wait, timeout)
@@ -104,8 +83,7 @@ func newNewCommand() *cobra.Command {
 func runNew(cmd *cobra.Command, name, prompt, label, cwd, kind string, wait bool, timeout time.Duration) error {
 	ctx := cmd.Context()
 	h := newHerdr()
-	launch, ok := agentCommands[kind]
-	if !ok {
+	if kind != "claude" && kind != "codex" && kind != "pi" {
 		return fmt.Errorf("unknown agent %q; use claude, codex, or pi", kind)
 	}
 	if !agentName.MatchString(name) {
@@ -134,14 +112,8 @@ func runNew(cmd *cobra.Command, name, prompt, label, cwd, kind string, wait bool
 	if err != nil {
 		return err
 	}
-	if err := h.RunInPane(ctx, pane, launch); err != nil {
-		return err
-	}
-	if err := awaitReady(ctx, h, pane, kind); err != nil {
-		return fmt.Errorf("%w (tab left open at %s)", err, pane)
-	}
-	if err := h.Rename(ctx, pane, name); err != nil {
-		return err
+	if err := h.Start(ctx, name, kind, pane); err != nil {
+		return fmt.Errorf("start %s: %w (tab left open at %s)", kind, err, pane)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "started %s (%s) at %s in %s\n", name, kind, pane, cwd)
 	return submit(cmd, h, name, prompt, wait, timeout)
@@ -168,39 +140,6 @@ func resolveWorkspace(ctx context.Context, h herdr.Client, label string) (string
 	default:
 		return "", fmt.Errorf("%d herdr workspaces are labeled %q; rename one", len(matches), label)
 	}
-}
-
-// awaitReady waits for the launched agent to register and accept input. A
-// fresh directory makes Claude Code ask whether to trust it; the directory
-// was chosen by the caller, so accept.
-func awaitReady(ctx context.Context, h herdr.Client, pane, kind string) error {
-	deadline := time.Now().Add(startupTimeout)
-	trusted := false
-	for time.Now().Before(deadline) {
-		a, err := h.Agent(ctx, pane)
-		if err == nil && a.Kind == kind {
-			switch a.Status {
-			case "idle", "done":
-				return nil
-			case "blocked":
-				screen, err := h.Read(ctx, pane, 30)
-				if err != nil {
-					return err
-				}
-				if kind != "claude" || trusted || !strings.Contains(screen, "trust this folder") {
-					return fmt.Errorf("%s is blocked during startup:\n%s", kind, lastLines(screen, 20))
-				}
-				if err := h.PaneKeys(ctx, pane, "down", "enter"); err != nil {
-					return err
-				}
-				trusted = true
-			}
-		}
-		if err := sleep(ctx, pollInterval); err != nil {
-			return err
-		}
-	}
-	return fmt.Errorf("%s did not become ready within %s", kind, startupTimeout)
 }
 
 func newSendCommand() *cobra.Command {
@@ -310,12 +249,4 @@ func readOutput(ctx context.Context, h herdr.Client, target string, n int) (stri
 		return "", nil
 	}
 	return strings.Join(lines, "\n") + "\n", nil
-}
-
-func lastLines(text string, n int) string {
-	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
-	if len(lines) > n {
-		lines = lines[len(lines)-n:]
-	}
-	return strings.Join(lines, "\n")
 }

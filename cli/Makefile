@@ -28,9 +28,6 @@ run-server:
 
 test:
 	go test ./...
-	python3 -m unittest discover -s jobs/herdr-activity-summary -p 'test_*.py'
-	python3 -m unittest discover -s jobs/health-alerts -p 'test_*.py'
-	node --test jobs/herdr-tab-namer/namer.test.mjs
 
 race:
 	go test -race ./...

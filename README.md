@@ -1,10 +1,10 @@
 # Context Drop
 
-Context Drop lets a chat assistant start, message, and read coding agents in [Herdr](https://herdr.dev) tabs. Its CLI also uploads files to a temporary file store. The assistant handles messaging, scheduling, and memory; Context Drop has no daemon.
+Context Drop starts, messages, and reads coding agents in [Herdr](https://herdr.dev) tabs. It also uploads files to a self-hosted temporary file store with expiring links. It does not provide messaging or scheduling; an assistant or script can call its CLI.
 
-## Build and try it
+## Build from source
 
-Requires Go 1.26.2+, [Herdr](https://herdr.dev), and the `dari` agent launcher. Set up Herdr and `dari` before using the agent commands. From this repository:
+Requires Go 1.26.2+ and Herdr. Run agent commands inside a Herdr-managed pane. To start an agent, install and configure the corresponding agent CLI (Claude, Codex, or Pi) for Herdr. From this repository:
 
 ```sh
 cd cli
@@ -12,9 +12,9 @@ make install                 # installs context-drop to ~/.local/bin
 ~/.local/bin/context-drop --help
 ```
 
-Add `~/.local/bin` to your `PATH` if it is not already there. No release binaries are published yet.
+Add `~/.local/bin` to your `PATH` if necessary. No release binaries are published yet.
 
-To start an agent, first create a Herdr workspace and choose an existing project directory (or Git worktree). Replace `YOUR_WORKSPACE` with that workspace's label and `/absolute/path/to/project` with the directory's absolute path. The example uses `pi`; `claude` (the default) and `codex` are also supported if installed through `dari`:
+To start an agent, create a Herdr workspace and choose a project directory. Replace `YOUR_WORKSPACE` with the workspace label and `/absolute/path/to/project` with your directory:
 
 ```sh
 context-drop new my-task 'Inspect the failing tests' --workspace YOUR_WORKSPACE --cwd /absolute/path/to/project --agent pi --wait
@@ -23,7 +23,7 @@ context-drop read my-task
 context-drop agents
 ```
 
-`new` opens a tab in the named workspace and launches the agent through `dari`. `send` addresses an existing agent by name or pane ID; it refuses while the agent is busy unless you use `--force`. `--wait` prints the result when the agent finishes or needs input. See the [CLI reference](docs/cli.md) for other commands and options.
+`new` opens a tab and uses Herdr to start the selected agent (`claude` by default; `codex` and `pi` are also supported). `agents` lists names and pane IDs. `send` refuses an agent that is working, blocked, or in an unknown state unless you use `--force`. `--wait` prints the result when the agent finishes or needs input. See the [CLI reference](docs/cli.md).
 
 ## File uploads
 
@@ -31,9 +31,9 @@ context-drop agents
 context-drop upload ./report.txt --ttl 1h
 ```
 
-Uploads need a running server and its upload token. Set `CONTEXT_DROP_ENDPOINT` and `CONTEXT_DROP_UPLOAD_TOKEN` to the server URL and the same token configured on that server. The [upload server guide](docs/server.md) shows how to run it locally; the [CLI reference](docs/cli.md) covers other configuration options. The server lives in `cli/` and provides authenticated uploads and expiring download links.
+Uploads require a running server and its upload token. Set `CONTEXT_DROP_ENDPOINT` to the server URL and `CONTEXT_DROP_UPLOAD_TOKEN` to its token. The [server guide](docs/server.md) shows how to run the bundled server with local storage; the [CLI reference](docs/cli.md) covers other configuration options. Download links are accessible to anyone who has the URL until they expire.
 
-`cli/jobs/` contains optional standalone launchd jobs for a Herdr activity journal, tab naming, and health-dashboard alert cooldown. Each has its own README. Run the CLI and server tests with `cd cli && make test`.
+Run tests with `cd cli && make test`.
 
 ## License
 

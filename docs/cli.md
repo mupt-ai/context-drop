@@ -2,7 +2,7 @@
 
 ## Herdr agents
 
-These commands drive coding agents that run in [Herdr](https://herdr.dev) tabs. They are what a chat assistant such as OpenClaw calls to start, continue, and check on your work. A target is a herdr agent name or pane ID; nothing ever falls back to the focused pane.
+These commands drive coding agents that run in [Herdr](https://herdr.dev) tabs. An assistant or script can call them to start, continue, and check on work. A target is a Herdr agent name or pane ID; nothing ever falls back to the focused pane.
 
 ### `context-drop agents [--json]`
 
@@ -10,9 +10,9 @@ List every agent herdr sees: name (or pane ID), kind, status (`idle`, `working`,
 
 ### `context-drop new NAME PROMPT --workspace LABEL --cwd DIR [--agent claude|codex|pi] [--wait]`
 
-Open a tab in the herdr workspace labeled `LABEL`, launch the agent in `DIR` through `dari`, name it `NAME`, and submit `PROMPT`. Claude Code's trust prompt for a new directory is accepted automatically. Anything else that blocks startup is an error, and the tab is left open for inspection.
+Open a tab in the Herdr workspace labeled `LABEL`, start the agent in `DIR` through Herdr, name it `NAME`, and submit `PROMPT`. Install and configure the selected agent CLI in Herdr first. If startup fails, the tab is left open for inspection.
 
-The workspace label must match exactly one workspace, and `NAME` must not already be taken. Create the worktree first and pass it as `--cwd`.
+The workspace label must match exactly one workspace, and `NAME` must not already be taken. If using a Git worktree, create it first and pass its absolute path as `--cwd`.
 
 ### `context-drop send TARGET TEXT [--force] [--wait]`
 

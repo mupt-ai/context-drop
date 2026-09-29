@@ -32,7 +32,7 @@ func TestLoadCLIConfigDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Endpoint != "https://contextdrop.dev" || cfg.DefaultTTL != 24*time.Hour || cfg.Clipboard {
+	if cfg.Endpoint != "" || cfg.DefaultTTL != 24*time.Hour || cfg.Clipboard {
 		t.Fatalf("defaults = %+v", cfg)
 	}
 }
