@@ -118,6 +118,17 @@ func (c Client) Start(ctx context.Context, name, kind, pane string) error {
 	return c.call(ctx, nil, "agent", "start", name, "--kind", kind, "--pane", pane)
 }
 
+// RunCommand types command into the pane's shell and presses Enter.
+func (c Client) RunCommand(ctx context.Context, pane, command string) error {
+	_, err := c.Run(ctx, "pane", "run", pane, command)
+	return err
+}
+
+func (c Client) Rename(ctx context.Context, target, name string) error {
+	_, err := c.Run(ctx, "agent", "rename", target, name)
+	return err
+}
+
 // Prompt submits text. With wait it blocks until herdr sees the agent settle
 // (idle, done, or blocked) after the submission started work.
 func (c Client) Prompt(ctx context.Context, target, text string, wait bool, timeout time.Duration) error {

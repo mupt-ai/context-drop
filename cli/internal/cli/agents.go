@@ -19,6 +19,15 @@ var agentName = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
 
 const outputLines = 60
 
+// herdr agent start only runs an agent's canonical executable, so dari-claude
+// is typed into the tab's shell and then detected as a claude agent.
+const dariClaude = "dari-claude"
+
+var (
+	dariReadyTimeout = time.Minute
+	dariReadyPoll    = 500 * time.Millisecond
+)
+
 var newHerdr = func() herdr.Client {
 	if bin := os.Getenv("HERDR_BIN"); bin != "" {
 		return herdr.New(bin)
@@ -64,7 +73,7 @@ func newNewCommand() *cobra.Command {
 		Use:   "new NAME PROMPT",
 		Short: "Start a coding agent in a new herdr tab and give it a task",
 		Long: "Opens a tab in the herdr workspace with the given label, starts the agent using herdr, " +
-			"and submits PROMPT. Create any worktree first and pass it as --cwd.",
+			"and submits PROMPT. Use --agent dari-claude to launch Claude Code through Dari. Create any worktree first and pass it as --cwd.",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runNew(cmd, args[0], args[1], workspace, cwd, kind, wait, timeout)
@@ -72,7 +81,7 @@ func newNewCommand() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&workspace, "workspace", "", "label of the herdr workspace to open the tab in (required)")
 	cmd.Flags().StringVar(&cwd, "cwd", "", "absolute directory to run the agent in (required)")
-	cmd.Flags().StringVar(&kind, "agent", "claude", "agent to launch: claude, codex, or pi")
+	cmd.Flags().StringVar(&kind, "agent", "claude", "agent to launch: claude, dari-claude, codex, or pi")
 	cmd.Flags().BoolVar(&wait, "wait", false, "block until the agent finishes its turn or needs input, then print its output")
 	cmd.Flags().DurationVar(&timeout, "timeout", 6*time.Hour, "maximum time to wait with --wait")
 	_ = cmd.MarkFlagRequired("workspace")
@@ -83,8 +92,8 @@ func newNewCommand() *cobra.Command {
 func runNew(cmd *cobra.Command, name, prompt, label, cwd, kind string, wait bool, timeout time.Duration) error {
 	ctx := cmd.Context()
 	h := newHerdr()
-	if kind != "claude" && kind != "codex" && kind != "pi" {
-		return fmt.Errorf("unknown agent %q; use claude, codex, or pi", kind)
+	if kind != "claude" && kind != dariClaude && kind != "codex" && kind != "pi" {
+		return fmt.Errorf("unknown agent %q; use claude, dari-claude, codex, or pi", kind)
 	}
 	if !agentName.MatchString(name) {
 		return fmt.Errorf("invalid name %q: use lowercase letters, digits, - or _, starting with a letter (max 32)", name)
@@ -112,11 +121,65 @@ func runNew(cmd *cobra.Command, name, prompt, label, cwd, kind string, wait bool
 	if err != nil {
 		return err
 	}
-	if err := h.Start(ctx, name, kind, pane); err != nil {
+	target := name
+	if kind == dariClaude {
+		if target, err = startDariClaude(cmd, h, name, pane); err != nil {
+			return err
+		}
+	} else if err := h.Start(ctx, name, kind, pane); err != nil {
 		return fmt.Errorf("start %s: %w (tab left open at %s)", kind, err, pane)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "started %s (%s) at %s in %s\n", name, kind, pane, cwd)
-	return submit(cmd, h, name, prompt, wait, timeout)
+	return submit(cmd, h, target, prompt, wait, timeout)
+}
+
+// startDariClaude runs `dari claude` in pane, waits for herdr to detect a
+// ready claude agent there, and names it. It returns the target to prompt.
+// Failures leave the tab open and are never retried, so a slow start cannot
+// open a second tab or a second Claude session.
+func startDariClaude(cmd *cobra.Command, h herdr.Client, name, pane string) (string, error) {
+	ctx := cmd.Context()
+	fail := func(reason string) error {
+		return fmt.Errorf("start dari-claude: %s; tab left open at %s and no prompt was sent. "+
+			"Inspect it with `context-drop read %s`. If Claude becomes ready, run `herdr agent rename %s %s` "+
+			"and then `context-drop send %s PROMPT`; otherwise close it with `herdr pane close %s` before running new again",
+			reason, pane, pane, pane, name, name, pane)
+	}
+	if err := h.RunCommand(ctx, pane, "dari claude"); err != nil {
+		return "", fail(err.Error())
+	}
+	deadline := time.Now().Add(dariReadyTimeout)
+	last := "no agent detected"
+	for {
+		agents, err := h.Agents(ctx)
+		if err != nil {
+			return "", fail(err.Error())
+		}
+		for _, a := range agents {
+			if a.PaneID != pane || a.Kind != "claude" {
+				continue
+			}
+			last = "claude is " + a.Status
+			switch a.Status {
+			case "idle", "done":
+				if err := h.Rename(ctx, pane, name); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "warning: could not name the agent %s (%v); use %s as its target\n", name, err, pane)
+					return pane, nil
+				}
+				return name, nil
+			case "blocked":
+				return "", fail("claude is waiting for input (for example a trust or login prompt)")
+			}
+		}
+		if time.Now().After(deadline) {
+			return "", fail(fmt.Sprintf("claude was not ready after %s (%s)", dariReadyTimeout, last))
+		}
+		select {
+		case <-ctx.Done():
+			return "", fail(ctx.Err().Error())
+		case <-time.After(dariReadyPoll):
+		}
+	}
 }
 
 func resolveWorkspace(ctx context.Context, h herdr.Client, label string) (string, error) {

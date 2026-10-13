@@ -32,9 +32,11 @@ Choose or create a project directory (for isolated coding work, a Git worktree i
 ```bash
 context-drop new NAME "the task and relevant context" \
   --workspace LABEL --cwd /absolute/path/to/project --agent pi --wait
+context-drop new NAME "the task and relevant context" \
+  --workspace LABEL --cwd /absolute/path/to/project --agent dari-claude --wait
 ```
 
-Supported agent kinds are `claude` (default), `codex`, and `pi`. Brief the new agent fully: it may not have access to this conversation. If startup fails, inspect the tab left open by the command rather than assuming an agent is running.
+Supported agent kinds are `claude` (default), `dari-claude`, `codex`, and `pi`. Use `dari-claude` to launch Claude Code through `dari claude`; Herdr detects and names the agent before Context Drop submits the prompt. Brief the new agent fully: it may not have access to this conversation. If startup fails, inspect the tab left open by the command rather than assuming an agent is running.
 
 If the agent needs input, relay its question to the user and send the user's answer with `context-drop send TARGET "answer" --wait`. Do not interrupt or close an existing agent without permission.
 
