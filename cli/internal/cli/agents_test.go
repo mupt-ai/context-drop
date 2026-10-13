@@ -117,6 +117,7 @@ func TestNewRefusesAmbiguousOrMissingTargets(t *testing.T) {
 		{"relative cwd", nil, []string{"new", "task", "p", "--workspace", "x", "--cwd", "rel"}, "absolute"},
 		{"bad name", nil, []string{"new", "Bad Name", "p", "--workspace", "x", "--cwd", cwd}, "invalid name"},
 		{"bad agent", nil, []string{"new", "task", "p", "--workspace", "x", "--cwd", cwd, "--agent", "gpt"}, "unknown agent"},
+		{"command arg without command", nil, []string{"new", "task", "p", "--workspace", "x", "--cwd", cwd, "--command-arg", "x"}, "requires --command"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -152,14 +153,14 @@ func listJSON(kind, status string) string {
 	return fmt.Sprintf(`{"result":{"agents":[{"agent":"claude","agent_status":"idle","pane_id":"w1:p1"},{"agent":%q,"agent_status":%q,"pane_id":"w1:p9"}]}}`, kind, status)
 }
 
-func useFastDariReady(t *testing.T, timeout time.Duration) {
+func useFastCustomReady(t *testing.T, timeout time.Duration) {
 	t.Helper()
-	prevTimeout, prevPoll := dariReadyTimeout, dariReadyPoll
-	dariReadyTimeout, dariReadyPoll = timeout, time.Millisecond
-	t.Cleanup(func() { dariReadyTimeout, dariReadyPoll = prevTimeout, prevPoll })
+	prevTimeout, prevPoll := customReadyTimeout, customReadyPoll
+	customReadyTimeout, customReadyPoll = timeout, time.Millisecond
+	t.Cleanup(func() { customReadyTimeout, customReadyPoll = prevTimeout, prevPoll })
 }
 
-func dariAnswers(list ...string) map[string][]string {
+func customAnswers(list ...string) map[string][]string {
 	return map[string][]string{
 		"agent list":     append([]string{`{"result":{"agents":[]}}`}, list...),
 		"workspace list": {workspacesJSON},
@@ -167,31 +168,31 @@ func dariAnswers(list ...string) map[string][]string {
 	}
 }
 
-func TestNewDariClaudeRunsDariInTheTabThenNamesAndPrompts(t *testing.T) {
-	useFastDariReady(t, time.Second)
-	f := useFakeHerdr(t, dariAnswers(
+func TestNewCustomCommandRunsInPaneThenNamesAndPrompts(t *testing.T) {
+	useFastCustomReady(t, time.Second)
+	f := useFakeHerdr(t, customAnswers(
 		`{"result":{"agents":[]}}`,
 		listJSON("claude", "working"),
 		listJSON("claude", "idle"),
 	))
-	out, _, err := executeRoot(t, "new", "fix-router", "fix the router", "--workspace", "project", "--cwd", t.TempDir(), "--agent", "dari-claude")
+	out, _, err := executeRoot(t, "new", "fix-router", "fix the router", "--workspace", "project", "--cwd", t.TempDir(), "--command", "/tmp/launcher with spaces", "--command-arg=--route", "--command-arg", "it's")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "started fix-router (dari-claude) at w1:p9") {
+	if !strings.Contains(out, "started fix-router (claude)") {
 		t.Fatalf("output = %q", out)
 	}
 	if len(f.called("agent", "start")) != 0 {
-		t.Fatal("used herdr agent start, which launches plain claude")
+		t.Fatal("used herdr agent start with custom executable")
 	}
 	want := []string{
-		"pane run w1:p9 dari claude",
+		`pane run w1:p9 '/tmp/launcher with spaces' '--route' 'it'\''s'`,
 		"agent rename w1:p9 fix-router",
 		"agent prompt fix-router fix the router",
 	}
 	var got []string
 	for _, call := range f.calls {
-		if call[0] == "pane" || call[1] == "rename" || call[1] == "prompt" {
+		if len(call) >= 2 && (call[0] == "pane" || call[1] == "rename" || call[1] == "prompt") {
 			got = append(got, strings.Join(call, " "))
 		}
 	}
@@ -203,25 +204,25 @@ func TestNewDariClaudeRunsDariInTheTabThenNamesAndPrompts(t *testing.T) {
 	}
 }
 
-func TestNewDariClaudeFailsWithoutRetryingOrPrompting(t *testing.T) {
+func TestNewCustomCommandFailsWithoutRetryingOrPrompting(t *testing.T) {
 	cases := []struct {
 		name    string
 		answers map[string][]string
 		want    string
 	}{
-		{"timeout", dariAnswers(listJSON("pi", "idle")), "claude was not ready after"},
-		{"blocked", dariAnswers(listJSON("claude", "blocked")), "claude is waiting for input"},
+		{"timeout", customAnswers(listJSON("pi", "idle")), "claude was not ready after"},
+		{"blocked", customAnswers(listJSON("claude", "blocked")), "claude is waiting for input"},
 		{"pane run fails", func() map[string][]string {
-			a := dariAnswers(listJSON("claude", "idle"))
+			a := customAnswers(listJSON("claude", "idle"))
 			a["pane run"] = []string{"ERR:pane is busy"}
 			return a
 		}(), "pane is busy"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			useFastDariReady(t, 20*time.Millisecond)
+			useFastCustomReady(t, 20*time.Millisecond)
 			f := useFakeHerdr(t, tc.answers)
-			out, _, err := executeRoot(t, "new", "task", "p", "--workspace", "project", "--cwd", t.TempDir(), "--agent", "dari-claude")
+			out, _, err := executeRoot(t, "new", "task", "p", "--workspace", "project", "--cwd", t.TempDir(), "--agent", "claude", "--command", "launcher")
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want %q", err, tc.want)
 			}
@@ -243,12 +244,12 @@ func TestNewDariClaudeFailsWithoutRetryingOrPrompting(t *testing.T) {
 	}
 }
 
-func TestNewDariClaudePromptsByPaneWhenRenameFails(t *testing.T) {
-	useFastDariReady(t, time.Second)
-	answers := dariAnswers(listJSON("claude", "idle"))
+func TestNewCustomCommandPromptsByPaneWhenRenameFails(t *testing.T) {
+	useFastCustomReady(t, time.Second)
+	answers := customAnswers(listJSON("claude", "idle"))
 	answers["agent rename"] = []string{"ERR:name taken"}
 	f := useFakeHerdr(t, answers)
-	_, errOut, err := executeRoot(t, "new", "task", "p", "--workspace", "project", "--cwd", t.TempDir(), "--agent", "dari-claude")
+	_, errOut, err := executeRoot(t, "new", "task", "p", "--workspace", "project", "--cwd", t.TempDir(), "--agent", "claude", "--command", "launcher")
 	if err != nil {
 		t.Fatal(err)
 	}
