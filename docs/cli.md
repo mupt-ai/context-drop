@@ -8,9 +8,11 @@ These commands drive coding agents that run in [Herdr](https://herdr.dev) tabs. 
 
 List every agent herdr sees: name (or pane ID), kind, status (`idle`, `working`, `blocked`, `done`, `unknown`), tab title, and working directory.
 
-### `context-drop new NAME PROMPT --workspace LABEL --cwd DIR [--agent claude|codex|pi] [--wait]`
+### `context-drop new NAME PROMPT --workspace LABEL --cwd DIR [--agent claude|codex|pi] [--command EXECUTABLE] [--command-arg ARG] [--wait]`
 
 Open a tab in the Herdr workspace labeled `LABEL`, start the agent in `DIR` through Herdr, name it `NAME`, and submit `PROMPT`. Install and configure the selected agent CLI in Herdr first. If startup fails, the tab is left open for inspection.
+
+`--command EXECUTABLE` launches a custom executable instead of using `herdr agent start`; repeat `--command-arg ARG` for each argument (write `--command-arg=--flag` for values that start with `-`). Context Drop quotes each word for a POSIX-compatible shell and runs the result in the new pane, waits up to a minute for Herdr to detect the selected `--agent` kind there, names it `NAME`, then submits `PROMPT`. If the agent does not become ready or is blocked on input, `new` fails without retrying or sending the prompt and prints the pane ID. Inspect it with `context-drop read PANE`; if usable, run `herdr agent rename PANE NAME` and then `context-drop send NAME PROMPT`, otherwise close it with `herdr pane close PANE` before retrying. If only rename fails, `new` warns and submits to the pane ID.
 
 The workspace label must match exactly one workspace, and `NAME` must not already be taken. If using a Git worktree, create it first and pass its absolute path as `--cwd`.
 

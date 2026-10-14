@@ -23,7 +23,7 @@ context-drop read my-task
 context-drop agents
 ```
 
-`new` opens a tab and uses Herdr to start the selected agent (`claude` by default; `codex` and `pi` are also supported). `agents` lists names and pane IDs. `send` refuses an agent that is working, blocked, or in an unknown state unless you use `--force`. `--wait` prints the result when the agent finishes or needs input. See the [CLI reference](docs/cli.md).
+`new` opens a tab and starts the selected agent (`claude` by default; `codex` and `pi` are also supported). Use `--command` with repeatable `--command-arg` flags to select a custom executable and its arguments; Context Drop waits for Herdr to detect the selected agent in that pane before naming it and submitting the prompt. `agents` lists names and pane IDs. `send` refuses an agent that is working, blocked, or in an unknown state unless you use `--force`. `--wait` prints the result when the agent finishes or needs input. See the [CLI reference](docs/cli.md).
 
 ## File uploads
 

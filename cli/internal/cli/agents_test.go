@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"contextdrop.dev/context-drop/internal/herdr"
 )
@@ -116,6 +117,7 @@ func TestNewRefusesAmbiguousOrMissingTargets(t *testing.T) {
 		{"relative cwd", nil, []string{"new", "task", "p", "--workspace", "x", "--cwd", "rel"}, "absolute"},
 		{"bad name", nil, []string{"new", "Bad Name", "p", "--workspace", "x", "--cwd", cwd}, "invalid name"},
 		{"bad agent", nil, []string{"new", "task", "p", "--workspace", "x", "--cwd", cwd, "--agent", "gpt"}, "unknown agent"},
+		{"command arg without command", nil, []string{"new", "task", "p", "--workspace", "x", "--cwd", cwd, "--command-arg", "x"}, "requires --command"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -144,6 +146,118 @@ func TestNewLeavesTabOpenWhenStartFails(t *testing.T) {
 	}
 	if len(f.called("agent", "prompt")) != 0 {
 		t.Fatal("prompted agent after failed start")
+	}
+}
+
+func listJSON(kind, status string) string {
+	return fmt.Sprintf(`{"result":{"agents":[{"agent":"claude","agent_status":"idle","pane_id":"w1:p1"},{"agent":%q,"agent_status":%q,"pane_id":"w1:p9"}]}}`, kind, status)
+}
+
+func useFastCustomReady(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	prevTimeout, prevPoll := customReadyTimeout, customReadyPoll
+	customReadyTimeout, customReadyPoll = timeout, time.Millisecond
+	t.Cleanup(func() { customReadyTimeout, customReadyPoll = prevTimeout, prevPoll })
+}
+
+func customAnswers(list ...string) map[string][]string {
+	return map[string][]string{
+		"agent list":     append([]string{`{"result":{"agents":[]}}`}, list...),
+		"workspace list": {workspacesJSON},
+		"tab create":     {`{"result":{"root_pane":{"pane_id":"w1:p9"}}}`},
+	}
+}
+
+func TestNewCustomCommandRunsInPaneThenNamesAndPrompts(t *testing.T) {
+	useFastCustomReady(t, time.Second)
+	f := useFakeHerdr(t, customAnswers(
+		`{"result":{"agents":[]}}`,
+		listJSON("claude", "working"),
+		listJSON("claude", "idle"),
+	))
+	out, _, err := executeRoot(t, "new", "fix-router", "fix the router", "--workspace", "project", "--cwd", t.TempDir(), "--command", "/tmp/launcher with spaces", "--command-arg=--route", "--command-arg", "it's")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "started fix-router (claude)") {
+		t.Fatalf("output = %q", out)
+	}
+	if len(f.called("agent", "start")) != 0 {
+		t.Fatal("used herdr agent start with custom executable")
+	}
+	want := []string{
+		`pane run w1:p9 '/tmp/launcher with spaces' '--route' 'it'\''s'`,
+		"agent rename w1:p9 fix-router",
+		"agent prompt fix-router fix the router",
+	}
+	var got []string
+	for _, call := range f.calls {
+		if len(call) >= 2 && (call[0] == "pane" || call[1] == "rename" || call[1] == "prompt") {
+			got = append(got, strings.Join(call, " "))
+		}
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("calls = %v", got)
+	}
+	if len(f.called("tab", "create")) != 1 {
+		t.Fatalf("tab creates = %v", f.called("tab", "create"))
+	}
+}
+
+func TestNewCustomCommandFailsWithoutRetryingOrPrompting(t *testing.T) {
+	cases := []struct {
+		name    string
+		answers map[string][]string
+		want    string
+	}{
+		{"timeout", customAnswers(listJSON("pi", "idle")), "claude was not ready after"},
+		{"blocked", customAnswers(listJSON("claude", "blocked")), "claude is waiting for input"},
+		{"pane run fails", func() map[string][]string {
+			a := customAnswers(listJSON("claude", "idle"))
+			a["pane run"] = []string{"ERR:pane is busy"}
+			return a
+		}(), "pane is busy"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			useFastCustomReady(t, 20*time.Millisecond)
+			f := useFakeHerdr(t, tc.answers)
+			out, _, err := executeRoot(t, "new", "task", "p", "--workspace", "project", "--cwd", t.TempDir(), "--agent", "claude", "--command", "launcher")
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want %q", err, tc.want)
+			}
+			for _, want := range []string{"tab left open at w1:p9", "context-drop read w1:p9", "herdr agent rename w1:p9 task", "herdr pane close w1:p9"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("err = %v, missing %q", err, want)
+				}
+			}
+			if strings.Contains(out, "started") {
+				t.Fatalf("claimed start: %q", out)
+			}
+			if len(f.called("tab", "create")) != 1 || len(f.called("pane", "run")) > 1 {
+				t.Fatalf("retried: %v", f.calls)
+			}
+			if len(f.called("agent", "rename")) != 0 || len(f.called("agent", "prompt")) != 0 {
+				t.Fatalf("named or prompted after failed start: %v", f.calls)
+			}
+		})
+	}
+}
+
+func TestNewCustomCommandPromptsByPaneWhenRenameFails(t *testing.T) {
+	useFastCustomReady(t, time.Second)
+	answers := customAnswers(listJSON("claude", "idle"))
+	answers["agent rename"] = []string{"ERR:name taken"}
+	f := useFakeHerdr(t, answers)
+	_, errOut, err := executeRoot(t, "new", "task", "p", "--workspace", "project", "--cwd", t.TempDir(), "--agent", "claude", "--command", "launcher")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(errOut, "use w1:p9 as its target") {
+		t.Fatalf("stderr = %q", errOut)
+	}
+	if len(f.called("agent", "prompt", "w1:p9", "p")) != 1 {
+		t.Fatalf("calls = %v", f.calls)
 	}
 }
 
