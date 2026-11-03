@@ -36,7 +36,7 @@ const (
 //   - anthropic: model and api_key_env are required; base_url defaults to api.anthropic.com
 //   - openai: model is required; base_url defaults to api.openai.com/v1; api_key_env is
 //     required for that default endpoint and optional for other OpenAI-compatible servers
-//   - ollama: model is required; base_url defaults to http://localhost:11434
+//   - ollama: model is required; base_url defaults to http://localhost:11434; api_key_env optional
 //   - command: command is required
 func NewModel(cfg config.SummarizeConfig, getenv func(string) string, client *http.Client) (Model, error) {
 	if client == nil {
@@ -86,7 +86,15 @@ func NewModel(cfg config.SummarizeConfig, getenv func(string) string, client *ht
 		if !strings.HasSuffix(strings.TrimRight(base, "/"), "/v1") {
 			base = strings.TrimRight(base, "/") + "/v1"
 		}
-		return &openAIModel{client: client, base: strings.TrimRight(base, "/"), model: cfg.Model, provider: provider}, nil
+		key := ""
+		if cfg.APIKeyEnv != "" {
+			// Ollama behind an authenticating proxy: send the key only when it is named.
+			key = getenv(cfg.APIKeyEnv)
+			if key == "" {
+				return nil, fmt.Errorf("$%s is empty; it must hold the API key for the ollama provider", cfg.APIKeyEnv)
+			}
+		}
+		return &openAIModel{client: client, base: strings.TrimRight(base, "/"), model: cfg.Model, apiKey: key, provider: provider}, nil
 	case ProviderCommand:
 		if strings.TrimSpace(cfg.Command) == "" {
 			return nil, fmt.Errorf("command provider needs summarize_command (or --command)")

@@ -176,6 +176,21 @@ func TestNewModelRequiresExplicitSetup(t *testing.T) {
 		t.Fatalf("ollama: out=%q err=%v path=%s headers=%v", out, err, gotPath, gotHeaders)
 	}
 
+	// An Ollama proxy that wants a key gets the named one.
+	m, err = NewModel(config.SummarizeConfig{Provider: "ollama", BaseURL: srv.URL, Model: "llama", APIKeyEnv: "GW_KEY"},
+		func(k string) string {
+			if k == "GW_KEY" {
+				return "proxy-secret"
+			}
+			return ""
+		}, srv.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Complete(context.Background(), "sys", "prompt"); err != nil || gotHeaders.Get("Authorization") != "Bearer proxy-secret" {
+		t.Fatalf("ollama with key: err=%v headers=%v", err, gotHeaders)
+	}
+
 	// An OpenAI-compatible local server needs no key when a base URL is named.
 	m, err = NewModel(config.SummarizeConfig{Provider: "openai", BaseURL: srv.URL, Model: "qwen3"}, withKeys, srv.Client())
 	if err != nil {
