@@ -20,6 +20,11 @@ type CLIConfig struct {
 	DefaultTTL  time.Duration
 	Clipboard   bool
 	Summarize   SummarizeConfig
+	// LaunchIn is the default multiplexer for `context-drop start` (tmux, herdr, or rex).
+	LaunchIn string
+	// LaunchCommand starts agents instead of their bare executable; "{agent}"
+	// becomes the agent kind, e.g. "dari {agent}".
+	LaunchCommand string
 }
 
 // SummarizeConfig selects the model `context-drop summarize` uses.
@@ -74,6 +79,8 @@ func LoadCLIConfig() (CLIConfig, error) {
 		"CONTEXT_DROP_SUMMARIZE_BASE_URL":    &cfg.Summarize.BaseURL,
 		"CONTEXT_DROP_SUMMARIZE_API_KEY_ENV": &cfg.Summarize.APIKeyEnv,
 		"CONTEXT_DROP_SUMMARIZE_COMMAND":     &cfg.Summarize.Command,
+		"CONTEXT_DROP_LAUNCH_IN":             &cfg.LaunchIn,
+		"CONTEXT_DROP_LAUNCH_COMMAND":        &cfg.LaunchCommand,
 	} {
 		if v := os.Getenv(key); v != "" {
 			*dst = v
@@ -138,6 +145,10 @@ func loadCLIConfigFile(path string, cfg *CLIConfig) error {
 			cfg.Summarize.APIKeyEnv = value
 		case "summarize_command":
 			cfg.Summarize.Command = value
+		case "launch_in":
+			cfg.LaunchIn = value
+		case "launch_command":
+			cfg.LaunchCommand = value
 		}
 	}
 	return scanner.Err()
@@ -168,6 +179,8 @@ func SaveCLIConfig(cfg CLIConfig) error {
 		{"summarize_base_url", cfg.Summarize.BaseURL},
 		{"summarize_api_key_env", cfg.Summarize.APIKeyEnv},
 		{"summarize_command", cfg.Summarize.Command},
+		{"launch_in", cfg.LaunchIn},
+		{"launch_command", cfg.LaunchCommand},
 	} {
 		if kv[1] != "" {
 			content += fmt.Sprintf("%s = %q\n", kv[0], kv[1])

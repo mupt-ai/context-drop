@@ -24,6 +24,7 @@ type fakeHost struct {
 	extraEnv [][]string
 	stdin    []string
 	respond  func(args []string) ([]byte, error)
+	vars     map[string]string
 }
 
 func newFakeHost(t *testing.T) *fakeHost {
@@ -63,7 +64,7 @@ func (h *fakeHost) env() *Env {
 			if key == "CONTEXT_DROP_HOME" {
 				return filepath.Join(h.home, ".context-drop")
 			}
-			return ""
+			return h.vars[key]
 		},
 	}
 }
@@ -532,5 +533,39 @@ func TestWaitForReplyIgnoresAnEarlierIdenticalPrompt(t *testing.T) {
 	}
 	if polls != 3 || len(msgs) != 2 || msgs[1].Text != "new answer" {
 		t.Fatalf("polls=%d msgs=%+v", polls, msgs)
+	}
+}
+
+// renamingProvider reports one live process whose session ID changes after the
+// first poll, as a Pi session does once it writes its session file.
+type renamingProvider struct{ polls *int }
+
+func (p renamingProvider) Kind() string { return Pi }
+func (p renamingProvider) Discover(context.Context, *Env) ([]Session, error) {
+	*p.polls++
+	native := "pid-77-100"
+	if *p.polls > 1 {
+		native = "file-session"
+	}
+	return []Session{{ID: MakeID(Pi, native), Agent: Pi, NativeID: native, PID: 77, StartedAt: time.Unix(100, 0), Status: StatusIdle}}, nil
+}
+func (p renamingProvider) Transcript(context.Context, *Env, Session) ([]Message, error) {
+	if *p.polls < 2 {
+		return nil, nil
+	}
+	return []Message{{Role: "user", Text: "hello pi"}, {Role: "assistant", Text: "hi"}}, nil
+}
+func (renamingProvider) Send(context.Context, *Env, Session, string, SendOptions) error { return nil }
+
+func TestWaitForReplyFollowsAPiSessionWhoseIDChanges(t *testing.T) {
+	polls := 0
+	start := Session{ID: MakeID(Pi, "pid-77-100"), Agent: Pi, NativeID: "pid-77-100", PID: 77, StartedAt: time.Unix(100, 0)}
+	msgs, final, err := WaitForReply(context.Background(), func() (*Env, error) { return &Env{}, nil }, []Provider{renamingProvider{&polls}},
+		start, WaitOptions{Sent: "hello pi", Interval: time.Millisecond, Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.NativeID != "file-session" || len(msgs) != 2 || msgs[1].Text != "hi" {
+		t.Fatalf("final=%+v msgs=%+v", final, msgs)
 	}
 }

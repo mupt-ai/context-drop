@@ -28,6 +28,14 @@ The message arrives as the session's next prompt (queued if it is busy). `--wait
 
 Claude Code subagents are reached through their parent session, which is asked to forward the message. If `send` reports that a Pi session has no delivery channel (it is not in tmux or herdr and has no Context Drop extension), the user must run `context-drop setup pi` and restart that Pi session.
 
+## Start an agent
+
+```bash
+context-drop start claude --cwd /absolute/path --prompt "the task and relevant context" --wait
+```
+
+Opens the agent in a tmux window, herdr tab, or Rex block (`--in`, default from config or the one you are in) and prints its ID. Brief it fully in `--prompt`. A new agent may stop at first-run prompts, such as trusting the folder, before it reads messages; check with `context-drop read ID`. Ask before starting agents the user did not request.
+
 ## Summarize everything
 
 ```bash

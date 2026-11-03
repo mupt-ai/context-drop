@@ -51,6 +51,9 @@ type Env struct {
 
 	herdrOnce sync.Once
 	herdr     map[int]string
+
+	rexOnce sync.Once
+	rex     map[int]string
 }
 
 // tmuxPane returns the tmux pane attached to tty, if tmux is running.

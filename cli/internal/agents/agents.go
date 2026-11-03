@@ -336,6 +336,58 @@ func SentMatches(msgs []Message, sent string, since time.Time) int {
 	return len(sentMatches(msgs, sent, since))
 }
 
+// followSession finds target in idx. A Pi session started without the Context
+// Drop extension is identified by its process until it writes a session file,
+// then by that file, so its ID changes; it is followed by agent, PID, and
+// process start time.
+func followSession(idx Index, target Session) (Session, bool) {
+	if s, err := idx.Resolve(target.ID); err == nil {
+		return s, true
+	}
+	if target.PID <= 0 {
+		return Session{}, false
+	}
+	for _, s := range idx.Sessions {
+		if s.Agent == target.Agent && s.PID == target.PID && !s.Subagent && s.StartedAt.Equal(target.StartedAt) {
+			return s, true
+		}
+	}
+	return Session{}, false
+}
+
+// Settle returns s as it is once its ID is stable. A Pi session started
+// without the Context Drop extension is identified by its process ("pid-…")
+// until its first message makes it write a session file; Settle polls until
+// that happens or timeout passes. Other sessions are returned unchanged.
+func Settle(ctx context.Context, newEnv func() (*Env, error), providers []Provider, s Session, timeout, interval time.Duration) Session {
+	if s.Agent != Pi || !strings.HasPrefix(s.NativeID, "pid-") {
+		return s
+	}
+	if interval <= 0 {
+		interval = 500 * time.Millisecond
+	}
+	p, err := ProviderFor(providers, s.Agent)
+	if err != nil {
+		return s
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		if env, err := newEnv(); err == nil {
+			if next, ok := followSession(Discover(ctx, env, []Provider{p}), s); ok && !strings.HasPrefix(next.NativeID, "pid-") {
+				return next
+			}
+		}
+		if time.Now().After(deadline) {
+			return s
+		}
+		select {
+		case <-ctx.Done():
+			return s
+		case <-time.After(interval):
+		}
+	}
+}
+
 // WaitForReply polls until the delivered message appears in the transcript,
 // the agent has answered it, and the agent is no longer working. It returns
 // the message and everything after it. A message queued behind a running turn
@@ -358,10 +410,11 @@ func WaitForReply(ctx context.Context, newEnv func() (*Env, error), providers []
 			return nil, current, err
 		}
 		idx := Discover(ctx, env, []Provider{p})
-		current, err = idx.Resolve(target.ID)
-		if err != nil {
+		next, ok := followSession(idx, target)
+		if !ok {
 			return nil, target, fmt.Errorf("%s is no longer live", target.ID)
 		}
+		current = next
 		if msgs, err := p.Transcript(ctx, env, current); err == nil {
 			if len(msgs) == lastLen {
 				stableCount++
