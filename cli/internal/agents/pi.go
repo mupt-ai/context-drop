@@ -89,7 +89,8 @@ func (piProvider) Discover(ctx context.Context, env *Env) ([]Session, error) {
 			continue
 		}
 		proc, ok := procs[reg.PID]
-		if !ok {
+		// A crashed Pi leaves its entry behind; a reused PID must not revive it.
+		if !ok || !isPiProcess(proc.Command) || proc.Start.After(millis(float64(reg.UpdatedAt)).Add(time.Minute)) {
 			continue
 		}
 		registered[reg.PID] = true

@@ -175,19 +175,6 @@ func newSendCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			var baseline int
-			p, _ := agents.ProviderFor(providers, target.Agent)
-			recipient := target
-			if target.Subagent && (target.Agent == agents.Claude || target.Agent == agents.Muse) {
-				if parent, ok := idx.Parent(target); ok {
-					recipient = parent
-				}
-			}
-			if wait && p != nil {
-				if msgs, err := p.Transcript(cmd.Context(), env, recipient); err == nil {
-					baseline = len(msgs)
-				}
-			}
 			sentAt := time.Now()
 			got, err := agents.Send(cmd.Context(), env, providers, idx, target, text, agents.SendOptions{From: from})
 			if err != nil {
@@ -204,7 +191,7 @@ func newSendCommand() *cobra.Command {
 			ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
 			defer cancel()
 			msgs, final, err := agents.WaitForReply(ctx, newEnv, providers, got, agents.WaitOptions{
-				Timeout: timeout, Since: sentAt.Add(-time.Second), Baseline: baseline,
+				Timeout: timeout, Sent: text, Since: sentAt.Add(-5 * time.Second),
 			})
 			if err != nil {
 				return err

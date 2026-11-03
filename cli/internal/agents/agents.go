@@ -300,14 +300,39 @@ func Send(ctx context.Context, env *Env, providers []Provider, idx Index, s Sess
 type WaitOptions struct {
 	Timeout  time.Duration
 	Interval time.Duration
-	// Since ignores assistant messages at or before this time.
+	// Sent is the message that was delivered; the reply is what follows it.
+	Sent string
+	// Since ignores matching user messages recorded before this time.
 	Since time.Time
-	// Baseline is the number of transcript messages before the send.
-	Baseline int
 }
 
-// WaitForReply polls until the session has replied after the send and is no
-// longer working, then returns the messages added since the baseline.
+// sentIndex finds the transcript entry for the delivered message: the last
+// user message containing its opening words. Agents may wrap or reflow the
+// text (peer framing, relay instructions, tmux joining lines), so the match
+// ignores whitespace and only uses a prefix.
+func sentIndex(msgs []Message, sent string, since time.Time) int {
+	needle := []rune(strings.Join(strings.Fields(sent), " "))
+	if len(needle) > 80 {
+		needle = needle[:80]
+	}
+	snippet := string(needle)
+	for i := len(msgs) - 1; i >= 0; i-- {
+		m := msgs[i]
+		if m.Role != "user" || (!m.Time.IsZero() && m.Time.Before(since)) {
+			continue
+		}
+		if strings.Contains(strings.Join(strings.Fields(m.Text), " "), snippet) {
+			return i
+		}
+	}
+	return -1
+}
+
+// WaitForReply polls until the delivered message appears in the transcript,
+// the agent has answered it, and the agent is no longer working. It returns
+// the message and everything after it. A message queued behind a running turn
+// is not answered until that turn ends, so output from the earlier turn is
+// never mistaken for the reply.
 func WaitForReply(ctx context.Context, newEnv func() (*Env, error), providers []Provider, target Session, opts WaitOptions) ([]Message, Session, error) {
 	if opts.Interval <= 0 {
 		opts.Interval = 2 * time.Second
@@ -317,38 +342,35 @@ func WaitForReply(ctx context.Context, newEnv func() (*Env, error), providers []
 	if err != nil {
 		return nil, target, err
 	}
+	current := target
 	stableCount, lastLen := 0, -1
 	for {
 		env, err := newEnv()
 		if err != nil {
-			return nil, target, err
+			return nil, current, err
 		}
 		idx := Discover(ctx, env, []Provider{p})
-		current, err := idx.Resolve(target.ID)
+		current, err = idx.Resolve(target.ID)
 		if err != nil {
 			return nil, target, fmt.Errorf("%s is no longer live", target.ID)
 		}
-		msgs, err := p.Transcript(ctx, env, current)
-		if err == nil {
-			var fresh []Message
-			if len(msgs) > opts.Baseline {
-				fresh = msgs[opts.Baseline:]
-			}
-			replied := false
-			for _, m := range fresh {
-				if m.Role == "assistant" && (m.Time.IsZero() || m.Time.After(opts.Since)) {
-					replied = true
-				}
-			}
+		if msgs, err := p.Transcript(ctx, env, current); err == nil {
 			if len(msgs) == lastLen {
 				stableCount++
 			} else {
 				stableCount, lastLen = 0, len(msgs)
 			}
-			settled := current.Status == StatusIdle || current.Status == StatusBlocked ||
-				(current.Status == StatusUnknown && stableCount >= 3)
-			if replied && settled {
-				return fresh, current, nil
+			if at := sentIndex(msgs, opts.Sent, opts.Since); at >= 0 {
+				fresh := msgs[at:]
+				replied := false
+				for _, m := range fresh[1:] {
+					replied = replied || m.Role == "assistant"
+				}
+				settled := current.Status == StatusIdle || current.Status == StatusBlocked ||
+					(current.Status == StatusUnknown && stableCount >= 3)
+				if replied && settled {
+					return fresh, current, nil
+				}
 			}
 		}
 		if opts.Timeout > 0 && time.Now().After(deadline) {

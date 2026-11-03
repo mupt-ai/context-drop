@@ -405,7 +405,7 @@ func TestPiExtensionRegistryAndSend(t *testing.T) {
 		map[string]any{"type": "message", "timestamp": "2026-11-03T05:43:00Z", "message": map[string]any{"role": "user", "content": "rename it"}},
 		map[string]any{"type": "message", "message": map[string]any{"role": "assistant", "content": []any{map[string]any{"type": "text", "text": "Renamed."}}}},
 	))
-	reg, _ := json.Marshal(piRegistry{PID: 98150, SessionID: "pi-sess", SessionFile: file, Cwd: "/work/p", Socket: socket, Status: "working"})
+	reg, _ := json.Marshal(piRegistry{PID: 98150, SessionID: "pi-sess", SessionFile: file, Cwd: "/work/p", Socket: socket, Status: "working", UpdatedAt: time.Now().UnixMilli()})
 	h.write(".context-drop/pi/98150.json", string(reg))
 
 	env := h.env()
@@ -514,5 +514,57 @@ func TestOpenCodeNeverStartsTheService(t *testing.T) {
 	idx := Discover(context.Background(), h.env(), []Provider{openCodeProvider{}})
 	if len(idx.Sessions) != 0 || len(h.commands) != 0 {
 		t.Fatalf("sessions = %v commands = %v", idx.Sessions, h.commands)
+	}
+}
+
+// scriptedProvider returns one transcript per Discover call.
+type scriptedProvider struct {
+	polls  *int
+	frames [][]Message
+}
+
+func (p scriptedProvider) Kind() string { return Claude }
+func (p scriptedProvider) Discover(context.Context, *Env) ([]Session, error) {
+	*p.polls++
+	return []Session{{ID: "cc-1", Agent: Claude, NativeID: "1", Status: StatusIdle}}, nil
+}
+func (p scriptedProvider) Transcript(context.Context, *Env, Session) ([]Message, error) {
+	i := *p.polls - 1
+	if i >= len(p.frames) {
+		i = len(p.frames) - 1
+	}
+	return p.frames[i], nil
+}
+func (scriptedProvider) Send(context.Context, *Env, Session, string, SendOptions) error { return nil }
+
+func TestWaitForReplyIgnoresTheTurnTheMessageWasQueuedBehind(t *testing.T) {
+	sent := time.Now()
+	earlier := []Message{
+		{Role: "user", Text: "refactor auth", Time: sent.Add(-time.Minute)},
+		{Role: "assistant", Text: "Refactor finished.", Time: sent.Add(time.Second)}, // the busy turn ends after the send
+	}
+	withReply := append(append([]Message{}, earlier...),
+		Message{Role: "user", Text: "[from context-drop] now   run\nthe tests", Time: sent.Add(2 * time.Second)},
+		Message{Role: "assistant", Text: "Tests pass.", Time: sent.Add(3 * time.Second)},
+	)
+	polls := 0
+	p := scriptedProvider{polls: &polls, frames: [][]Message{earlier, earlier, withReply}}
+	msgs, _, err := WaitForReply(context.Background(), func() (*Env, error) { return &Env{}, nil }, []Provider{p},
+		Session{ID: "cc-1", Agent: Claude}, WaitOptions{Sent: "now run the tests", Since: sent.Add(-5 * time.Second), Interval: time.Millisecond, Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if polls != 3 || len(msgs) != 2 || msgs[1].Text != "Tests pass." {
+		t.Fatalf("polls=%d msgs=%+v", polls, msgs)
+	}
+}
+
+func TestPiIgnoresRegistryOfReusedPID(t *testing.T) {
+	h := newFakeHost(t)
+	h.procs[555] = Process{PID: 555, Command: "/usr/sbin/cron", Start: time.Now()}
+	reg, _ := json.Marshal(piRegistry{PID: 555, SessionID: "stale", Socket: "/tmp/none.sock", UpdatedAt: time.Now().Add(-24 * time.Hour).UnixMilli()})
+	h.write(".context-drop/pi/555.json", string(reg))
+	if idx := Discover(context.Background(), h.env(), []Provider{piProvider{}}); len(idx.Sessions) != 0 {
+		t.Fatalf("sessions = %+v", idx.Sessions)
 	}
 }
