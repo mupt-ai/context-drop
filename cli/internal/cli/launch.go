@@ -82,7 +82,8 @@ func newStartCommand() *cobra.Command {
 			fmt.Fprintf(cmd.ErrOrStderr(), "started %s in %s pane %s\n", res.Session.ID, res.Mux, res.Pane)
 			if prompt != "" && kind == agents.OpenCode && wait {
 				// OpenCode got the prompt on its command line; wait for its reply.
-				final, err := waitForPrompt(cmd, res.Session, prompt, time.Now().Add(-timeout), waitTimeout)
+				// A brand-new session has no earlier copy of the prompt.
+				final, err := waitForPrompt(cmd, res.Session, prompt, time.Now().Add(-timeout), 0, waitTimeout)
 				if err != nil {
 					return err
 				}
@@ -131,6 +132,10 @@ func sendPrompt(cmd *cobra.Command, s agents.Session, prompt string, wait bool, 
 	}
 	sentAt := time.Now()
 	since := sentAt.Add(-5 * time.Second)
+	prior := 0
+	if wait {
+		prior = priorMatches(cmd.Context(), env, providers, idx, target, prompt, since)
+	}
 	got, err := agents.Send(cmd.Context(), env, providers, idx, target, prompt, agents.SendOptions{})
 	if err != nil {
 		return s, fmt.Errorf("started %s but sending the prompt failed: %w", s.ID, err)
@@ -140,14 +145,15 @@ func sendPrompt(cmd *cobra.Command, s agents.Session, prompt string, wait bool, 
 		// The first message can change a Pi session's ID; report the one that stays live.
 		return agents.Settle(cmd.Context(), newEnv, providers, got, 30*time.Second, 0), nil
 	}
-	return waitForPrompt(cmd, got, prompt, since, waitTimeout)
+	return waitForPrompt(cmd, got, prompt, since, prior, waitTimeout)
 }
 
 // waitForPrompt waits for the reply to prompt in s and prints it.
-func waitForPrompt(cmd *cobra.Command, s agents.Session, prompt string, since time.Time, waitTimeout time.Duration) (agents.Session, error) {
+// prior is the number of messages that already looked like prompt before it was sent.
+func waitForPrompt(cmd *cobra.Command, s agents.Session, prompt string, since time.Time, prior int, waitTimeout time.Duration) (agents.Session, error) {
 	ctx, cancel := context.WithTimeout(cmd.Context(), waitTimeout)
 	defer cancel()
-	msgs, final, err := agents.WaitForReply(ctx, newEnv, allProviders(), s, agents.WaitOptions{Timeout: waitTimeout, Sent: prompt, Since: since})
+	msgs, final, err := agents.WaitForReply(ctx, newEnv, allProviders(), s, agents.WaitOptions{Timeout: waitTimeout, Sent: prompt, Since: since, PriorMatches: prior})
 	if err != nil {
 		return s, err
 	}

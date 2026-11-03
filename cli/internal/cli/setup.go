@@ -336,7 +336,8 @@ func setupSummarize(ctx context.Context, ui setupUI, cur config.SummarizeConfig)
 			if sc.Model, err = ui.ask("Model", "", keep(cur.Model), required("a model")); err != nil {
 				return cur, err
 			}
-			if sc.APIKeyEnv, err = askKeyEnv(ui, keep(cur.APIKeyEnv), false, "OPENAI_API_KEY"); err != nil {
+			official := strings.TrimRight(sc.BaseURL, "/") == "https://api.openai.com/v1"
+			if sc.APIKeyEnv, err = askKeyEnv(ui, keep(cur.APIKeyEnv), official, "OPENAI_API_KEY"); err != nil {
 				return cur, err
 			}
 		case summarize.ProviderCommand:

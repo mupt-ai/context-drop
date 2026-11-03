@@ -133,6 +133,7 @@ func TestNewModelRequiresExplicitSetup(t *testing.T) {
 	refuse("anthropic without key name", config.SummarizeConfig{Provider: "anthropic", Model: "m"}, withKeys, "summarize_api_key_env")
 	refuse("anthropic empty key", config.SummarizeConfig{Provider: "anthropic", Model: "m", APIKeyEnv: "MISSING"}, withKeys, "$MISSING is empty")
 	refuse("openai default endpoint without key name", config.SummarizeConfig{Provider: "openai", Model: "m"}, withKeys, "summarize_api_key_env")
+	refuse("openai's own URL spelled out without key name", config.SummarizeConfig{Provider: "openai", Model: "m", BaseURL: "https://api.openai.com/v1/"}, withKeys, "summarize_api_key_env")
 	refuse("ollama without model", config.SummarizeConfig{Provider: "ollama"}, withKeys, "summarize_model")
 	refuse("unknown", config.SummarizeConfig{Provider: "nope"}, noEnv, "unknown summarize provider")
 
