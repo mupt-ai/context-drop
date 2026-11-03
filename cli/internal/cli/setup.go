@@ -3,9 +3,13 @@ package cli
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -57,6 +61,7 @@ func isTerminal(v any) bool {
 type setupUI interface {
 	choose(title, desc string, options []string, def int) (int, error)
 	ask(title, desc, def string, validate func(string) error) (string, error)
+	secret(title, desc string, validate func(string) error) (string, error)
 	confirm(title, desc string, def bool) (bool, error)
 	note(text string)
 	run(title string, work func() error) error
@@ -93,6 +98,17 @@ func (t *tui) choose(title, desc string, options []string, def int) (int, error)
 func (t *tui) ask(title, desc, def string, validate func(string) error) (string, error) {
 	v := def
 	in := huh.NewInput().Title(title).Description(desc).Value(&v)
+	if validate != nil {
+		in = in.Validate(validate)
+	}
+	err := t.form(in)
+	return strings.TrimSpace(v), err
+}
+
+// secret asks for a value without echoing it.
+func (t *tui) secret(title, desc string, validate func(string) error) (string, error) {
+	v := ""
+	in := huh.NewInput().Title(title).Description(desc).EchoMode(huh.EchoModePassword).Value(&v)
 	if validate != nil {
 		in = in.Validate(validate)
 	}
@@ -178,6 +194,10 @@ func (p *prompter) ask(title, desc, def string, validate func(string) error) (st
 	}
 }
 
+func (p *prompter) secret(title, desc string, validate func(string) error) (string, error) {
+	return p.ask(title, desc, "", validate)
+}
+
 func (p *prompter) confirm(title, desc string, def bool) (bool, error) {
 	d := "n"
 	if def {
@@ -237,6 +257,13 @@ func runSetup(cmd *cobra.Command, ui setupUI) error {
 			return err
 		}
 	}
+	if ok, err := ui.confirm("Set up uploads?", "For `context-drop upload` links. Uses the main server by default.", true); err != nil {
+		return err
+	} else if ok {
+		if err := setupUploads(ui, &cfg); err != nil {
+			return err
+		}
+	}
 	installPi := false
 	var piPath string
 	if _, err := lookPath("pi"); err == nil {
@@ -265,6 +292,91 @@ func runSetup(cmd *cobra.Command, ui setupUI) error {
 		ui.note(okStyle.Render("✓ Installed the Pi extension") + noteStyle.Render(" (restart running Pi sessions to load it)"))
 	}
 	return nil
+}
+
+// mainServer is the hosted Context Drop server uploads default to.
+const mainServer = "https://contextdrop.dev"
+
+// setupUploads sets the endpoint and upload token. The default endpoint is the
+// main server, whose token you paste. For a server you run yourself, setup can
+// generate a token and print the line that server needs.
+func setupUploads(ui setupUI, cfg *config.CLIConfig) error {
+	def := 0
+	if cfg.Endpoint != "" && cfg.Endpoint != mainServer {
+		def = 1
+	}
+	choice, err := ui.choose("Which upload server?", "", []string{"The main server (" + mainServer + ")", "A server I run"}, def)
+	if err != nil {
+		return err
+	}
+	endpoint := mainServer
+	if choice == 1 {
+		endpoint, err = ui.ask("Server URL", "For example https://files.example.com.", cfg.Endpoint, func(v string) error {
+			u, err := url.Parse(strings.TrimSpace(v))
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+				return errors.New("enter a full URL such as https://files.example.com")
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+	}
+	endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
+	if err := ui.run("Checking "+endpoint, func() error { return checkEndpoint(endpoint) }); err != nil {
+		ui.note(errStyle.Render(oneLineErr(err)) + noteStyle.Render(" (saved anyway; uploads will fail until it responds)"))
+	}
+	cfg.Endpoint = endpoint
+
+	if endpoint != mainServer {
+		generate, err := ui.confirm("Generate a token for this server?", "Choose No if you already have a token for it.", false)
+		if err != nil {
+			return err
+		}
+		if generate {
+			token, err := newUploadToken()
+			if err != nil {
+				return err
+			}
+			cfg.UploadToken = token
+			ui.note(okStyle.Render("✓ Generated a token. Start your server with this value:") + "\n  CONTEXT_DROP_UPLOAD_TOKEN=" + token)
+			return nil
+		}
+	}
+	token, err := ui.secret("Upload token", "Paste the token for this server. It is saved in ~/.context-drop/config.toml.", func(v string) error {
+		if strings.TrimSpace(v) == "" {
+			return errors.New("a token is required for uploads")
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	cfg.UploadToken = token
+	return nil
+}
+
+// checkEndpoint reports whether the server answers its health check.
+var checkEndpoint = func(endpoint string) error {
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get(endpoint + "/health")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("%s/health returned %s", endpoint, resp.Status)
+	}
+	return nil
+}
+
+// newUploadToken returns 256 random bits as hex.
+var newUploadToken = func() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
 }
 
 func setupSummarize(ctx context.Context, ui setupUI, cur config.SummarizeConfig) (config.SummarizeConfig, error) {
