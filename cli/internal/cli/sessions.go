@@ -43,7 +43,7 @@ func newListCommand() *cobra.Command {
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "List live agent sessions and subagents with their IDs",
-		Long: "List every live Claude Code, Codex, Pi, OpenCode, and Muse session on this machine, including subagents.\n" +
+		Long: "List every live Claude Code, Codex, Pi, and OpenCode session on this machine, including subagents.\n" +
 			"IDs are deterministic: the same session always gets the same ID.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -82,7 +82,7 @@ func newListCommand() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
 	cmd.Flags().BoolVar(&topLevel, "top-level", false, "hide subagents")
-	cmd.Flags().StringVar(&agentFilter, "agent", "", "only show one agent kind (claude, codex, pi, opencode, muse)")
+	cmd.Flags().StringVar(&agentFilter, "agent", "", "only show one agent kind (claude, codex, pi, opencode)")
 	return cmd
 }
 
@@ -154,8 +154,8 @@ func newSendCommand() *cobra.Command {
 		Short: "Send a message to a live session or subagent",
 		Long: "Deliver MESSAGE into a live session as if it were the next prompt. Use - as MESSAGE to read it from stdin.\n\n" +
 			"Delivery uses each agent's own channel: Claude Code's peer socket, `codex queue`, the OpenCode service API,\n" +
-			"the Context Drop Pi extension (see `context-drop setup pi`), and for Muse its tmux pane or `muse session-message`.\n" +
-			"Claude Code and Muse subagents receive messages through their parent session.",
+			"the Context Drop Pi extension (see `context-drop setup pi`), or for Pi sessions without it, the tmux or herdr pane they run in.\n" +
+			"Claude Code subagents receive messages through their parent session.",
 		Args: cobra.MinimumNArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			text := strings.Join(args[1:], " ")
@@ -216,7 +216,7 @@ func newSendCommand() *cobra.Command {
 // like text, so --wait does not mistake an earlier identical prompt for this one.
 func priorMatches(ctx context.Context, env *agents.Env, providers []agents.Provider, idx agents.Index, target agents.Session, text string, since time.Time) int {
 	recipient := target
-	if target.Subagent && (target.Agent == agents.Claude || target.Agent == agents.Muse) {
+	if target.Subagent && target.Agent == agents.Claude {
 		if parent, ok := idx.Parent(target); ok {
 			recipient = parent
 		}

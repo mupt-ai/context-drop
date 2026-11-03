@@ -110,8 +110,8 @@ func serveOnce(t *testing.T, path, reply string) <-chan []string {
 	}
 	got := make(chan []string, 1)
 	go func() {
-		defer ln.Close()
 		conn, err := ln.Accept()
+		ln.Close() // release the path before reporting, so a follow-up listener can bind it
 		if err != nil {
 			got <- nil
 			return
@@ -341,58 +341,6 @@ func TestCodexDiscoverLivenessAndSend(t *testing.T) {
 	}
 	if cmd := strings.Join(h.commands[len(h.commands)-1], " "); cmd != "codex queue --thread child --message hi" {
 		t.Fatalf("daemon command = %q", cmd)
-	}
-}
-
-func TestMuseDiscoverAndSendThroughTmux(t *testing.T) {
-	h := newFakeHost(t)
-	h.procs[32971] = Process{PID: 32971, TTY: "/dev/ttys003", Command: "muse-bin-1.4.14 --provider echo"}
-	dir := ".local/share/muse/sessions/2026/11/02/01a19fda"
-	h.write(dir+"/.session.lock", "pid=32971\nhost=testhost\n")
-	run := func(kind string, event map[string]any) map[string]any {
-		event["kind"] = kind
-		return map[string]any{"payload_type": "runtime.session", "recorded_at": 1793652623045475, "payload": map[string]any{"kind": "run", "event": event}}
-	}
-	h.write(dir+"/session.jsonl", jsonl(
-		map[string]any{"payload_type": "runtime.session.metadata", "payload": map[string]any{"record": map[string]any{"workspace_root": "/work/m"}}},
-		map[string]any{"payload_type": "session.name.changed", "payload": map[string]any{"new_name": "basalt-corvus"}},
-		run("started", map[string]any{"prompt": "what's up"}),
-		run("assistant_message_committed", map[string]any{"text": "Looking now."}),
-		run("terminal", map[string]any{"terminal": "completed"}),
-	))
-	// Reminder observers are internal and skipped; a closed session's lock is empty.
-	h.write(dir+"/subagent/01a19fdb/.session.lock", "pid=32971\nhost=testhost\n")
-	h.write(dir+"/subagent/01a19fdb/session.jsonl", jsonl(run("started", map[string]any{"prompt": museReminderPrefix + " for the main agent."})))
-	h.write(".local/share/muse/sessions/2026/11/01/old/.session.lock", "")
-	h.respond = func(args []string) ([]byte, error) {
-		if args[0] == "tmux" && args[1] == "list-panes" {
-			return []byte("%0 /dev/ttys003\n%1 /dev/ttys009\n"), nil
-		}
-		return nil, nil
-	}
-
-	env := h.env()
-	idx := Discover(context.Background(), env, []Provider{museProvider{}})
-	if len(idx.Sessions) != 1 {
-		t.Fatalf("sessions = %+v", idx.Sessions)
-	}
-	s := idx.Sessions[0]
-	if s.NativeID != "01a19fda" || s.Name != "basalt-corvus" || s.Cwd != "/work/m" || s.Status != StatusIdle || s.Delivery != "tmux pane %0" {
-		t.Fatalf("session = %+v", s)
-	}
-	msgs, _ := museProvider{}.Transcript(context.Background(), env, s)
-	if len(msgs) != 2 || msgs[0].Role != "user" || msgs[1].Text != "Looking now." {
-		t.Fatalf("transcript = %+v", msgs)
-	}
-	if _, err := Send(context.Background(), env, Providers(), idx, s, "line one\nline two", SendOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	n := len(h.commands)
-	if got := strings.Join(h.commands[n-2], " "); got != "tmux send-keys -t %0 -l -- line one line two" {
-		t.Fatalf("paste = %q", got)
-	}
-	if got := strings.Join(h.commands[n-1], " "); got != "tmux send-keys -t %0 Enter" {
-		t.Fatalf("submit = %q", got)
 	}
 }
 

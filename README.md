@@ -1,6 +1,6 @@
 # Context Drop
 
-Context Drop finds every live coding-agent session on your machine — Claude Code, Codex, Pi, OpenCode, and Muse, including their subagents — and gives each one a stable ID. With that ID you can read the session's transcript, send it a message, or have a model of your choice summarize what all of your agents are doing. It does not depend on any terminal multiplexer: sessions are found from each agent's own on-disk state and running processes, so it works whether an agent runs in tmux, a plain terminal tab, or anything else.
+Context Drop finds every live coding-agent session on your machine — Claude Code, Codex, Pi, and OpenCode, including Claude Code subagents — and gives each one a stable ID. With that ID you can read the session's transcript, send it a message, or have a model of your choice summarize what all of your agents are doing. It does not depend on any terminal multiplexer: sessions are found from each agent's own on-disk state and running processes, so it works whether an agent runs in tmux, a plain terminal tab, or anything else.
 
 It also uploads files to a self-hosted store with expiring links.
 
@@ -32,7 +32,6 @@ cc-6a79295a    claude    working  now     ~/code/app              app-ee
 cx-739b53b2    codex     idle     5m      ~/code/api
 pi-0b9d88cf    pi        idle     now     ~/code/site             fix the nav
 oc-079ea5e4    opencode  idle     12m     ~/code/cli              Quick acknowledgment request
-mu-dce8add9    muse      idle     10m     ~/code/lab              quartz-puppis
 ```
 
 An ID is a short hash of the agent kind and its native session ID, so the same session always has the same ID. Commands also accept the native session ID, a unique prefix of either, or the session name.
@@ -43,9 +42,8 @@ Only live sessions are listed: an agent process must be running for its session 
 | --- | --- | --- |
 | Claude Code | `~/.claude/sessions/<pid>.json` registry with a running process | Claude Code's peer-messaging socket; subagents through their parent (`SendMessage`) |
 | Codex | A Codex process holds the thread's writer lock | `codex queue` (against the session's own app-server when it has one) |
-| Pi | The Context Drop Pi extension's registry, or a running `pi` process | The extension's socket, or the tmux pane when the extension is not loaded |
+| Pi | The Context Drop Pi extension's registry, or a running `pi` process | The extension's socket; without the extension, the tmux or herdr pane it runs in |
 | OpenCode | The background service reports it running, or an OpenCode client in its directory has viewed it | The service's prompt API |
-| Muse | `.session.lock` names a running Muse process | The session's tmux pane, otherwise `muse session-message` |
 
 Pi has no built-in inbox, so install the bundled extension once and restart running Pi sessions:
 

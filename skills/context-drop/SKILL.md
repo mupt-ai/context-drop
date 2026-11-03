@@ -1,11 +1,11 @@
 ---
 name: context-drop
-description: Use the Context Drop CLI to list, read, message, and summarize live coding-agent sessions (Claude Code, Codex, Pi, OpenCode, Muse, and their subagents) on this machine, or upload temporary files with expiring links. Use when asked what other agents are doing, to check on or message another agent session, or to share a temporary file.
+description: Use the Context Drop CLI to list, read, message, and summarize live coding-agent sessions (Claude Code, Codex, Pi, OpenCode, and Claude Code subagents) on this machine, or upload temporary files with expiring links. Use when asked what other agents are doing, to check on or message another agent session, or to share a temporary file.
 ---
 
 # Context Drop
 
-`context-drop` indexes every live Claude Code, Codex, Pi, OpenCode, and Muse session on this machine, including subagents. Each session has a stable ID such as `cc-6a79295a` (Claude Code), `cx-…` (Codex), `pi-…`, `oc-…` (OpenCode), or `mu-…` (Muse).
+`context-drop` indexes every live Claude Code, Codex, Pi, and OpenCode session on this machine, including Claude Code subagents. Each session has a stable ID such as `cc-6a79295a` (Claude Code), `cx-…` (Codex), `pi-…`, or `oc-…` (OpenCode).
 
 ## Find a session
 
@@ -26,7 +26,7 @@ context-drop send TARGET "what to do next" --wait
 
 The message arrives as the session's next prompt (queued if it is busy). `--wait` prints the reply once the agent settles. Brief the other agent fully; it cannot see this conversation. Do not message a session the user did not ask you to involve, and ask before sending into a session that is `working` on something unrelated. Read and report the agent's actual reply; sending is not proof of finished work.
 
-Claude Code and Muse subagents are reached through their parent session, which is asked to forward the message. If `send` reports that a Pi session has no delivery channel, the user must run `context-drop setup pi` and restart that Pi session.
+Claude Code subagents are reached through their parent session, which is asked to forward the message. If `send` reports that a Pi session has no delivery channel (it is not in tmux or herdr and has no Context Drop extension), the user must run `context-drop setup pi` and restart that Pi session.
 
 ## Summarize everything
 

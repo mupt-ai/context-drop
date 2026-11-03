@@ -130,13 +130,6 @@ func millis(v float64) time.Time {
 	return time.UnixMilli(int64(v))
 }
 
-func micros(v float64) time.Time {
-	if v <= 0 {
-		return time.Time{}
-	}
-	return time.UnixMicro(int64(v))
-}
-
 // blockText joins the text blocks of a content value that is either a string
 // or a list of {type, text} blocks. Tool calls are summarized in one line.
 func blockText(content any, textTypes ...string) string {

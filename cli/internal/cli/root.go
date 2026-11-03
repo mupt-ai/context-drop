@@ -37,7 +37,7 @@ func NewRootCommand(build BuildInfo) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "context-drop",
 		Short: "Index, read, message, and summarize live coding-agent sessions; share files with expiring links",
-		Long: "Context Drop finds every live Claude Code, Codex, Pi, OpenCode, and Muse session on this machine,\n" +
+		Long: "Context Drop finds every live Claude Code, Codex, Pi, and OpenCode session on this machine,\n" +
 			"gives each (and each subagent) a deterministic ID, and lets you read, message, and summarize them.",
 		SilenceUsage:      true,
 		SilenceErrors:     true,

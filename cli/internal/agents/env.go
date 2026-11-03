@@ -48,6 +48,9 @@ type Env struct {
 
 	tmuxOnce  sync.Once
 	tmuxPanes map[string]string
+
+	herdrOnce sync.Once
+	herdr     map[int]string
 }
 
 // tmuxPane returns the tmux pane attached to tty, if tmux is running.
@@ -118,14 +121,6 @@ func (e *Env) Bin(name string) string {
 
 func (e *Env) path(parts ...string) string {
 	return filepath.Join(append([]string{e.Home}, parts...)...)
-}
-
-func (e *Env) xdgData(parts ...string) string {
-	base := e.Getenv("XDG_DATA_HOME")
-	if base == "" {
-		base = e.path(".local", "share")
-	}
-	return filepath.Join(append([]string{base}, parts...)...)
 }
 
 // ContextDropHome is where Context Drop keeps its own state.

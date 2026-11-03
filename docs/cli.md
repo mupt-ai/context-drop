@@ -2,7 +2,7 @@
 
 ## Sessions
 
-Context Drop indexes live Claude Code, Codex, Pi, OpenCode, and Muse sessions and their subagents. A session is live while the agent process that owns it runs. Each session gets a deterministic ID: a two-letter agent prefix (`cc`, `cx`, `pi`, `oc`, `mu`) and the first eight hex digits of `sha256("<agent>:<native id>")`. Subagents use `<parent native id>/<subagent id>` as their native ID.
+Context Drop indexes live Claude Code, Codex, Pi, and OpenCode sessions, plus Claude Code subagents. A session is live while the agent process that owns it runs. Each session gets a deterministic ID: a two-letter agent prefix (`cc`, `cx`, `pi`, `oc`) and the first eight hex digits of `sha256("<agent>:<native id>")`. Claude Code subagents use `<parent native id>/<subagent id>` as their native ID.
 
 A `TARGET` is an ID, a native session ID, a unique prefix of either, or a session name. Ambiguous targets are rejected with the candidates listed.
 
@@ -26,9 +26,8 @@ Delivery per agent:
 
 - **Claude Code**: the session's peer-messaging socket, authenticated with the token Claude Code publishes in `~/.claude/sessions`. The agent sees the message as coming from another session (`--from` sets the name). Subagents are reached through their parent, which is asked to forward the message with `SendMessage`; finished subagents stay addressable because `SendMessage` resumes them.
 - **Codex**: `codex queue --thread ID`. Threads served by a private `codex app-server --listen ws://…` (for example a wrapper-launched Codex) are queued against that server using its token file.
-- **Pi**: the socket opened by the Context Drop Pi extension (`context-drop setup pi`). Without the extension, a Pi session in tmux is typed into instead.
+- **Pi**: the socket opened by the Context Drop Pi extension (`context-drop setup pi`). Without the extension, the text is typed into the tmux or herdr pane the Pi process runs in.
 - **OpenCode**: `opencode api POST /api/session/ID/prompt` on the background service. Child sessions (subagents) accept messages directly.
-- **Muse**: typed into the session's tmux pane when there is one, otherwise `muse session-message send`. Muse subagents are reached through their parent.
 
 ### `context-drop summarize [flags]`
 
@@ -57,8 +56,8 @@ Install the Pi extension at `~/.pi/agent/extensions/context-drop.ts` (or under `
 ### Environment
 
 - `CONTEXT_DROP_HOME` relocates `~/.context-drop`.
-- `CONTEXT_DROP_<AGENT>_BIN` overrides an executable, e.g. `CONTEXT_DROP_CODEX_BIN`, `CONTEXT_DROP_OPENCODE_BIN`, `CONTEXT_DROP_MUSE_BIN`, `CONTEXT_DROP_TMUX_BIN`.
-- `CODEX_HOME`, `XDG_DATA_HOME` (Muse), and `PI_CODING_AGENT_DIR` are honoured.
+- `CONTEXT_DROP_<AGENT>_BIN` overrides an executable, e.g. `CONTEXT_DROP_CODEX_BIN`, `CONTEXT_DROP_OPENCODE_BIN`, `CONTEXT_DROP_TMUX_BIN`, `CONTEXT_DROP_HERDR_BIN`.
+- `CODEX_HOME` and `PI_CODING_AGENT_DIR` are honoured.
 
 Discovery uses `ps` and `lsof`.
 

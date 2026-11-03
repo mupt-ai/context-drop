@@ -1,5 +1,5 @@
 // Package agents discovers live coding-agent sessions (Claude Code, Codex, Pi,
-// OpenCode, and Muse) on this machine, gives each a deterministic ID, reads
+// and OpenCode) on this machine, gives each a deterministic ID, reads
 // their transcripts, and delivers messages to them through each agent's own
 // channel.
 package agents
@@ -22,13 +22,12 @@ const (
 	Codex    = "codex"
 	Pi       = "pi"
 	OpenCode = "opencode"
-	Muse     = "muse"
 )
 
 // Kinds lists every supported agent kind in display order.
-var Kinds = []string{Claude, Codex, Pi, OpenCode, Muse}
+var Kinds = []string{Claude, Codex, Pi, OpenCode}
 
-var idPrefix = map[string]string{Claude: "cc", Codex: "cx", Pi: "pi", OpenCode: "oc", Muse: "mu"}
+var idPrefix = map[string]string{Claude: "cc", Codex: "cx", Pi: "pi", OpenCode: "oc"}
 
 // Status values. Unknown means the agent's state could not be determined.
 const (
@@ -61,8 +60,8 @@ type Session struct {
 	Delivery string `json:"delivery"`
 
 	// internal routing details, not part of the public JSON.
-	socket   string
-	tmuxPane string
+	socket string
+	pane   paneRef
 }
 
 // Message is one transcript entry.
@@ -107,7 +106,7 @@ type Index struct {
 
 // Providers returns every built-in provider.
 func Providers() []Provider {
-	return []Provider{claudeProvider{}, codexProvider{}, piProvider{}, openCodeProvider{}, museProvider{}}
+	return []Provider{claudeProvider{}, codexProvider{}, piProvider{}, openCodeProvider{}}
 }
 
 // Discover runs every provider and returns live sessions in a deterministic order.
@@ -272,7 +271,7 @@ func oneLine(s string, max int) string {
 }
 
 // Send delivers text to s and returns the session that received it. Claude
-// Code and Muse subagents have no inbox of their own, so their message goes to
+// Code subagents have no inbox of their own, so their message goes to
 // the parent session with instructions to forward it.
 func Send(ctx context.Context, env *Env, providers []Provider, idx Index, s Session, text string, opts SendOptions) (Session, error) {
 	if strings.TrimSpace(text) == "" {
@@ -282,7 +281,7 @@ func Send(ctx context.Context, env *Env, providers []Provider, idx Index, s Sess
 	if err != nil {
 		return s, err
 	}
-	if s.Subagent && (s.Agent == Claude || s.Agent == Muse) {
+	if s.Subagent && s.Agent == Claude {
 		parent, ok := idx.Parent(s)
 		if !ok {
 			return s, fmt.Errorf("parent session of %s is not live", s.ID)
