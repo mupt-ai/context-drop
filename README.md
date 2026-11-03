@@ -1,10 +1,12 @@
 # Context Drop
 
-Context Drop starts, messages, and reads coding agents in [Herdr](https://herdr.dev) tabs. It also uploads files to a self-hosted temporary file store with expiring links. It does not provide messaging or scheduling; an assistant or script can call its CLI.
+Context Drop finds every live coding-agent session on your machine — Claude Code, Codex, Pi, OpenCode, and Muse, including their subagents — and gives each one a stable ID. With that ID you can read the session's transcript, send it a message, or have a model of your choice summarize what all of your agents are doing. It does not depend on any terminal multiplexer: sessions are found from each agent's own on-disk state and running processes, so it works whether an agent runs in tmux, a plain terminal tab, or anything else.
+
+It also uploads files to a self-hosted store with expiring links.
 
 ## Build from source
 
-Requires Go 1.26.2+ and Herdr. Run agent commands inside a Herdr-managed pane. To start an agent, install and configure the corresponding agent CLI (Claude, Codex, or Pi) for Herdr. From this repository:
+Requires Go 1.26.2+. From this repository:
 
 ```sh
 cd cli
@@ -14,16 +16,57 @@ make install                 # installs context-drop to ~/.local/bin
 
 Add `~/.local/bin` to your `PATH` if necessary. No release binaries are published yet.
 
-To start an agent, create a Herdr workspace and choose a project directory. Replace `YOUR_WORKSPACE` with the workspace label and `/absolute/path/to/project` with your directory:
+## Use
 
 ```sh
-context-drop new my-task 'Inspect the failing tests' --workspace YOUR_WORKSPACE --cwd /absolute/path/to/project --agent pi --wait
-context-drop send my-task 'Summarize your findings' --wait
-context-drop read my-task
-context-drop agents
+context-drop list                       # live sessions and subagents with their IDs
+context-drop read cc-6a79295a           # recent transcript
+context-drop send cc-6a79295a 'Also update the docs' --wait
+context-drop summarize                  # what is every agent doing? (only re-summarizes what changed)
 ```
 
-`new` opens a tab and starts the selected agent (`claude` by default; `codex` and `pi` are also supported). Use `--command` with repeatable `--command-arg` flags to select a custom executable and its arguments; Context Drop waits for Herdr to detect the selected agent in that pane before naming it and submitting the prompt. `agents` lists names and pane IDs. `send` refuses an agent that is working, blocked, or in an unknown state unless you use `--force`. `--wait` prints the result when the agent finishes or needs input. See the [CLI reference](docs/cli.md).
+```text
+ID             AGENT     STATUS   ACTIVE  CWD                     NAME
+cc-6a79295a    claude    working  now     ~/code/app              app-ee
+└ cc-43eeb069  claude    idle     2m      ~/code/app              sleeper — general-purpose
+cx-739b53b2    codex     idle     5m      ~/code/api
+pi-0b9d88cf    pi        idle     now     ~/code/site             fix the nav
+oc-079ea5e4    opencode  idle     12m     ~/code/cli              Quick acknowledgment request
+mu-dce8add9    muse      idle     10m     ~/code/lab              quartz-puppis
+```
+
+An ID is a short hash of the agent kind and its native session ID, so the same session always has the same ID. Commands also accept the native session ID, a unique prefix of either, or the session name.
+
+Only live sessions are listed: an agent process must be running for its session to appear.
+
+| Agent | How a live session is found | How `send` delivers |
+| --- | --- | --- |
+| Claude Code | `~/.claude/sessions/<pid>.json` registry with a running process | Claude Code's peer-messaging socket; subagents through their parent (`SendMessage`) |
+| Codex | A Codex process holds the thread's writer lock | `codex queue` (against the session's own app-server when it has one) |
+| Pi | The Context Drop Pi extension's registry, or a running `pi` process | The extension's socket, or the tmux pane when the extension is not loaded |
+| OpenCode | The background service reports it running, or an OpenCode client in its directory has viewed it | The service's prompt API |
+| Muse | `.session.lock` names a running Muse process | The session's tmux pane, otherwise `muse session-message` |
+
+Pi has no built-in inbox, so install the bundled extension once and restart running Pi sessions:
+
+```sh
+context-drop setup pi
+```
+
+## Summaries
+
+`context-drop summarize` reads each live session's transcript and asks a model what it is doing, what changed, and whether it needs you. Results are stored in `~/.context-drop/summaries.json`; on the next run, sessions with no new transcript activity reuse their last summary and changed sessions are summarized from the previous summary plus the new messages.
+
+Pick the model with flags or `summarize_*` keys in `~/.context-drop/config.toml`:
+
+```sh
+context-drop summarize --provider ollama --model gpt-oss:20b           # local
+context-drop summarize --provider anthropic --model claude-sonnet-5-5
+context-drop summarize --provider openai --base-url http://localhost:1234/v1 --model qwen3   # any OpenAI-compatible server
+context-drop summarize --provider command --command 'claude -p'         # any CLI that reads stdin
+```
+
+With nothing configured it uses Anthropic when `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` is set, OpenAI when `OPENAI_API_KEY` is set, and otherwise a local Ollama server.
 
 ## File uploads
 
@@ -31,9 +74,9 @@ context-drop agents
 context-drop upload ./report.txt --ttl 1h
 ```
 
-Uploads require a running server and its upload token. Set `CONTEXT_DROP_ENDPOINT` to the server URL and `CONTEXT_DROP_UPLOAD_TOKEN` to its token. The [server guide](docs/server.md) shows how to run the bundled server with local storage; the [CLI reference](docs/cli.md) covers other configuration options. Download links are accessible to anyone who has the URL until they expire.
+Uploads require a running server and its upload token. Set `CONTEXT_DROP_ENDPOINT` to the server URL and `CONTEXT_DROP_UPLOAD_TOKEN` to its token. The [server guide](docs/server.md) shows how to run the bundled server with local storage. Download links are accessible to anyone who has the URL until they expire.
 
-Run tests with `cd cli && make test`.
+See the [CLI reference](docs/cli.md) for every command and option. Run tests with `cd cli && make test`.
 
 ## License
 

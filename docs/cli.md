@@ -1,32 +1,66 @@
 # CLI reference
 
-## Herdr agents
+## Sessions
 
-These commands drive coding agents that run in [Herdr](https://herdr.dev) tabs. An assistant or script can call them to start, continue, and check on work. A target is a Herdr agent name or pane ID; nothing ever falls back to the focused pane.
+Context Drop indexes live Claude Code, Codex, Pi, OpenCode, and Muse sessions and their subagents. A session is live while the agent process that owns it runs. Each session gets a deterministic ID: a two-letter agent prefix (`cc`, `cx`, `pi`, `oc`, `mu`) and the first eight hex digits of `sha256("<agent>:<native id>")`. Subagents use `<parent native id>/<subagent id>` as their native ID.
 
-### `context-drop agents [--json]`
+A `TARGET` is an ID, a native session ID, a unique prefix of either, or a session name. Ambiguous targets are rejected with the candidates listed.
 
-List every agent herdr sees: name (or pane ID), kind, status (`idle`, `working`, `blocked`, `done`, `unknown`), tab title, and working directory.
+### `context-drop list [--json] [--agent KIND] [--top-level]`
 
-### `context-drop new NAME PROMPT --workspace LABEL --cwd DIR [--agent claude|codex|pi] [--command EXECUTABLE] [--command-arg ARG] [--wait]`
+List live sessions with ID, agent, status (`idle`, `working`, `blocked`, `unknown`), last activity, working directory, and name. Subagents are listed under their parent. `--json` includes the native ID, parent, PID, TTY, transcript path, and the delivery channel `send` will use.
 
-Open a tab in the Herdr workspace labeled `LABEL`, start the agent in `DIR` through Herdr, name it `NAME`, and submit `PROMPT`. Install and configure the selected agent CLI in Herdr first. If startup fails, the tab is left open for inspection.
+### `context-drop show TARGET`
 
-`--command EXECUTABLE` launches a custom executable instead of using `herdr agent start`; repeat `--command-arg ARG` for each argument (write `--command-arg=--flag` for values that start with `-`). Context Drop quotes each word for a POSIX-compatible shell and runs the result in the new pane, waits up to a minute for Herdr to detect the selected `--agent` kind there, names it `NAME`, then submits `PROMPT`. If the agent does not become ready or is blocked on input, `new` fails without retrying or sending the prompt and prints the pane ID. Inspect it with `context-drop read PANE`; if usable, run `herdr agent rename PANE NAME` and then `context-drop send NAME PROMPT`, otherwise close it with `herdr pane close PANE` before retrying. If only rename fails, `new` warns and submits to the pane ID.
+Print one session as JSON.
 
-The workspace label must match exactly one workspace, and `NAME` must not already be taken. If using a Git worktree, create it first and pass its absolute path as `--cwd`.
+### `context-drop read TARGET [-n N] [--json]`
 
-### `context-drop send TARGET TEXT [--force] [--wait]`
+Print the last `N` transcript messages (default 20, `0` for all). Tool calls appear as `[tool: name]`.
 
-Submit a prompt to an existing agent. Refuses unless the agent is `idle` or `done`; `--force` sends anyway.
+### `context-drop send TARGET MESSAGE... [--wait] [--timeout D] [--from NAME]`
 
-### `context-drop wait TARGET` and `--wait`
+Deliver a message into a live session as its next prompt; a busy agent receives it as a queued follow-up. Use `-` as the message to read it from stdin. `--wait` waits until the agent has replied and settled, then prints the new messages (default timeout 30 minutes).
 
-Block until the agent is `idle`, `done`, or `blocked`, then print its status and recent output. `blocked` usually means it is asking a question. `--wait` on `new` and `send` tracks the turn that prompt started; standalone `wait` is for an agent that is already working and returns immediately if it is idle. Both default to a six-hour `--timeout`.
+Delivery per agent:
 
-### `context-drop read TARGET [--lines N]`
+- **Claude Code**: the session's peer-messaging socket, authenticated with the token Claude Code publishes in `~/.claude/sessions`. The agent sees the message as coming from another session (`--from` sets the name). Subagents are reached through their parent, which is asked to forward the message with `SendMessage`; finished subagents stay addressable because `SendMessage` resumes them.
+- **Codex**: `codex queue --thread ID`. Threads served by a private `codex app-server --listen ws://…` (for example a wrapper-launched Codex) are queued against that server using its token file.
+- **Pi**: the socket opened by the Context Drop Pi extension (`context-drop setup pi`). Without the extension, a Pi session in tmux is typed into instead.
+- **OpenCode**: `opencode api POST /api/session/ID/prompt` on the background service. Child sessions (subagents) accept messages directly.
+- **Muse**: typed into the session's tmux pane when there is one, otherwise `muse session-message send`. Muse subagents are reached through their parent.
 
-Print the agent's recent terminal output.
+### `context-drop summarize [flags]`
+
+Summarize every live top-level session (subagents are folded into their parent) and, when there is more than one, write a short cross-session overview. Summaries persist in `~/.context-drop/summaries.json`; a session whose transcript has not changed since the last run reuses its summary without a model call, and a changed session is re-summarized from its previous summary plus the new messages.
+
+Flags: `--provider anthropic|openai|ollama|command`, `--model`, `--base-url`, `--api-key-env`, `--command`, `--agent KIND`, `--force` (re-summarize everything), `--no-overview`, `--json`.
+
+Defaults come from `~/.context-drop/config.toml` or the environment:
+
+```toml
+summarize_provider = "ollama"
+summarize_model = "gpt-oss:20b"
+# summarize_base_url = "http://localhost:11434"
+# summarize_api_key_env = "MY_KEY"
+# summarize_command = "claude -p"
+```
+
+Environment equivalents are `CONTEXT_DROP_SUMMARIZE_PROVIDER`, `_MODEL`, `_BASE_URL`, `_API_KEY_ENV`, and `_COMMAND`. With no provider set, Context Drop uses Anthropic when `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` is set (honouring `ANTHROPIC_BASE_URL`), OpenAI when `OPENAI_API_KEY` is set (`--model` required), and otherwise Ollama at `OLLAMA_HOST` or `http://localhost:11434`. The `command` provider runs the command with `sh -c` and writes the prompt to its stdin.
+
+Transcript excerpts are sent to the chosen model. Use a local provider when transcripts must stay on the machine.
+
+### `context-drop setup pi [--print]`
+
+Install the Pi extension at `~/.pi/agent/extensions/context-drop.ts` (or under `PI_CODING_AGENT_DIR`). Pi sessions started afterwards publish `~/.context-drop/pi/<pid>.json` and listen on `~/.context-drop/pi/<pid>.sock` (mode 0600). `--print` writes the extension to stdout instead.
+
+### Environment
+
+- `CONTEXT_DROP_HOME` relocates `~/.context-drop`.
+- `CONTEXT_DROP_<AGENT>_BIN` overrides an executable, e.g. `CONTEXT_DROP_CODEX_BIN`, `CONTEXT_DROP_OPENCODE_BIN`, `CONTEXT_DROP_MUSE_BIN`, `CONTEXT_DROP_TMUX_BIN`.
+- `CODEX_HOME`, `XDG_DATA_HOME` (Muse), and `PI_CODING_AGENT_DIR` are honoured.
+
+Discovery uses `ps` and `lsof`.
 
 ## `context-drop upload [path]`
 
