@@ -355,6 +355,39 @@ func followSession(idx Index, target Session) (Session, bool) {
 	return Session{}, false
 }
 
+// Settle returns s as it is once its ID is stable. A Pi session started
+// without the Context Drop extension is identified by its process ("pid-…")
+// until its first message makes it write a session file; Settle polls until
+// that happens or timeout passes. Other sessions are returned unchanged.
+func Settle(ctx context.Context, newEnv func() (*Env, error), providers []Provider, s Session, timeout, interval time.Duration) Session {
+	if s.Agent != Pi || !strings.HasPrefix(s.NativeID, "pid-") {
+		return s
+	}
+	if interval <= 0 {
+		interval = 500 * time.Millisecond
+	}
+	p, err := ProviderFor(providers, s.Agent)
+	if err != nil {
+		return s
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		if env, err := newEnv(); err == nil {
+			if next, ok := followSession(Discover(ctx, env, []Provider{p}), s); ok && !strings.HasPrefix(next.NativeID, "pid-") {
+				return next
+			}
+		}
+		if time.Now().After(deadline) {
+			return s
+		}
+		select {
+		case <-ctx.Done():
+			return s
+		case <-time.After(interval):
+		}
+	}
+}
+
 // WaitForReply polls until the delivered message appears in the transcript,
 // the agent has answered it, and the agent is no longer working. It returns
 // the message and everything after it. A message queued behind a running turn

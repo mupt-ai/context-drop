@@ -70,6 +70,9 @@ func (codexProvider) Discover(ctx context.Context, env *Env) ([]Session, error) 
 			if meta, err := readFirstJSONLine(rollout); err == nil {
 				payload := obj(meta, "payload")
 				s.Cwd = str(payload, "cwd")
+				if created := parseTime(str(payload, "timestamp")); !created.IsZero() {
+					s.StartedAt = created // when the thread began, not when its process did
+				}
 				if parent := codexParent(payload); parent != "" {
 					s.Subagent = true
 					s.ParentNativeID = parent

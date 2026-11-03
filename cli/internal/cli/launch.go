@@ -80,6 +80,14 @@ func newStartCommand() *cobra.Command {
 				return nil
 			}
 			fmt.Fprintf(cmd.ErrOrStderr(), "started %s in %s pane %s\n", res.Session.ID, res.Mux, res.Pane)
+			if prompt != "" && kind == agents.OpenCode && wait {
+				// OpenCode got the prompt on its command line; wait for its reply.
+				final, err := waitForPrompt(cmd, res.Session, prompt, time.Now().Add(-timeout), waitTimeout)
+				if err != nil {
+					return err
+				}
+				res.Session = final
+			}
 			if prompt != "" && kind != agents.OpenCode {
 				final, err := sendPrompt(cmd, res.Session, prompt, wait, waitTimeout)
 				if err != nil {
@@ -129,13 +137,19 @@ func sendPrompt(cmd *cobra.Command, s agents.Session, prompt string, wait bool, 
 	}
 	fmt.Fprintf(cmd.ErrOrStderr(), "sent the prompt via %s\n", got.Delivery)
 	if !wait {
-		return got, nil
+		// The first message can change a Pi session's ID; report the one that stays live.
+		return agents.Settle(cmd.Context(), newEnv, providers, got, 30*time.Second, 0), nil
 	}
+	return waitForPrompt(cmd, got, prompt, since, waitTimeout)
+}
+
+// waitForPrompt waits for the reply to prompt in s and prints it.
+func waitForPrompt(cmd *cobra.Command, s agents.Session, prompt string, since time.Time, waitTimeout time.Duration) (agents.Session, error) {
 	ctx, cancel := context.WithTimeout(cmd.Context(), waitTimeout)
 	defer cancel()
-	msgs, final, err := agents.WaitForReply(ctx, newEnv, providers, got, agents.WaitOptions{Timeout: waitTimeout, Sent: prompt, Since: since})
+	msgs, final, err := agents.WaitForReply(ctx, newEnv, allProviders(), s, agents.WaitOptions{Timeout: waitTimeout, Sent: prompt, Since: since})
 	if err != nil {
-		return got, err
+		return s, err
 	}
 	fmt.Fprintf(cmd.ErrOrStderr(), "%s is %s\n", final.ID, final.Status)
 	printMessages(cmd.ErrOrStderr(), msgs)

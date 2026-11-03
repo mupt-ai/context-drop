@@ -111,6 +111,7 @@ func Launch(ctx context.Context, newEnv func() (*Env, error), providers []Provid
 	for _, s := range Discover(ctx, env, []Provider{provider}).Sessions {
 		before[s.ID] = true
 	}
+	launchedAt := time.Now()
 
 	res := LaunchResult{Mux: opts.Mux, Command: shellJoin(argv)}
 	switch opts.Mux {
@@ -149,7 +150,7 @@ func Launch(ctx context.Context, newEnv func() (*Env, error), providers []Provid
 				fresh = append(fresh, s)
 			}
 		}
-		if s, ok := pickLaunched(ctx, env, fresh, want); ok {
+		if s, ok := pickLaunched(ctx, env, fresh, want, launchedAt); ok {
 			res.Session, res.Registered = s, true
 			return res, nil
 		}
@@ -159,18 +160,38 @@ func Launch(ctx context.Context, newEnv func() (*Env, error), providers []Provid
 	}
 }
 
-// pickLaunched prefers the new session running in the launched pane, then the newest.
-func pickLaunched(ctx context.Context, env *Env, fresh []Session, want paneRef) (Session, bool) {
-	if len(fresh) == 0 {
-		return Session{}, false
-	}
+// launchSlack allows for clock and timestamp granularity around the launch time.
+const launchSlack = 5 * time.Second
+
+// pickLaunched finds the launched agent among sessions that are new since the
+// launch. A session running in the launched pane wins. Otherwise only a
+// session that started after the launch counts, so an older session that
+// merely became visible (for example because a new client opened in its
+// directory) is never mistaken for it. With no start time to go on, a single
+// new session is accepted and anything more is left until the pane decides.
+func pickLaunched(ctx context.Context, env *Env, fresh []Session, want paneRef, launchedAt time.Time) (Session, bool) {
 	for _, s := range fresh {
 		if s.PID > 0 && resolvePane(ctx, env, s.PID, s.TTY) == want {
 			return s, true
 		}
 	}
-	sort.SliceStable(fresh, func(i, j int) bool { return fresh[i].StartedAt.After(fresh[j].StartedAt) })
-	return fresh[0], true
+	var started, undated []Session
+	for _, s := range fresh {
+		switch {
+		case s.StartedAt.IsZero():
+			undated = append(undated, s)
+		case !s.StartedAt.Before(launchedAt.Add(-launchSlack)):
+			started = append(started, s)
+		}
+	}
+	if len(started) > 0 {
+		sort.SliceStable(started, func(i, j int) bool { return started[i].StartedAt.After(started[j].StartedAt) })
+		return started[0], true
+	}
+	if len(undated) == 1 && len(fresh) == 1 {
+		return undated[0], true
+	}
+	return Session{}, false
 }
 
 func launchTmux(ctx context.Context, env *Env, opts LaunchOptions, argv []string) (string, error) {

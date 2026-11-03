@@ -171,3 +171,42 @@ func TestPiInRexBlockIsTypedIntoThroughItsWrapper(t *testing.T) {
 		t.Fatalf("key = %q", got)
 	}
 }
+
+func TestPickLaunchedNeverClaimsAnOlderSession(t *testing.T) {
+	env := newFakeHost(t).env()
+	launched := time.Now()
+	old := Session{ID: "oc-old", NativeID: "old", StartedAt: launched.Add(-time.Hour)}
+	newer := Session{ID: "oc-new", NativeID: "new", StartedAt: launched.Add(time.Second)}
+	undated := Session{ID: "cx-undated", NativeID: "u"}
+	undated2 := Session{ID: "cx-undated2", NativeID: "u2"}
+	cases := []struct {
+		name  string
+		fresh []Session
+		want  string // "" means nothing is claimed yet
+	}{
+		{"an older session that became visible is not the launch", []Session{old}, ""},
+		{"a session started after the launch is", []Session{old, newer}, "oc-new"},
+		{"one session without a start time is accepted", []Session{undated}, "cx-undated"},
+		{"several without start times wait for more evidence", []Session{undated, undated2}, ""},
+	}
+	for _, c := range cases {
+		got, ok := pickLaunched(context.Background(), env, c.fresh, paneRef{MuxTmux, "%1"}, launched)
+		if (c.want == "") == ok || (ok && got.ID != c.want) {
+			t.Errorf("%s: got %q ok=%v, want %q", c.name, got.ID, ok, c.want)
+		}
+	}
+}
+
+func TestSettleWaitsForPiSessionFileID(t *testing.T) {
+	polls := 0
+	start := Session{ID: MakeID(Pi, "pid-77-100"), Agent: Pi, NativeID: "pid-77-100", PID: 77, StartedAt: time.Unix(100, 0)}
+	got := Settle(context.Background(), func() (*Env, error) { return &Env{}, nil }, []Provider{renamingProvider{&polls}}, start, 5*time.Second, time.Millisecond)
+	if got.NativeID != "file-session" {
+		t.Fatalf("settled = %+v", got)
+	}
+	// Sessions whose ID never changes are returned as is, without polling.
+	claude := Session{ID: "cc-1", Agent: Claude, NativeID: "abc"}
+	if got := Settle(context.Background(), func() (*Env, error) { t.Fatal("polled"); return nil, nil }, nil, claude, time.Second, 0); got.ID != "cc-1" {
+		t.Fatalf("claude = %+v", got)
+	}
+}
