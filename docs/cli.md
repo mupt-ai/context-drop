@@ -35,7 +35,7 @@ Summarize every live top-level session (subagents are folded into their parent) 
 
 Flags: `--provider anthropic|openai|ollama|command`, `--model`, `--base-url`, `--api-key-env`, `--command`, `--agent KIND`, `--force` (re-summarize everything), `--no-overview`, `--json`.
 
-Defaults come from `~/.context-drop/config.toml` or the environment:
+Settings come from `~/.context-drop/config.toml`, the environment, or flags, in that order of precedence (flags win). Nothing is inferred: `summarize` refuses to run until a provider is named, and it reads only the credential variable you name.
 
 ```toml
 summarize_provider = "ollama"
@@ -45,7 +45,12 @@ summarize_model = "gpt-oss:20b"
 # summarize_command = "claude -p"
 ```
 
-Environment equivalents are `CONTEXT_DROP_SUMMARIZE_PROVIDER`, `_MODEL`, `_BASE_URL`, `_API_KEY_ENV`, and `_COMMAND`. With no provider set, Context Drop uses Anthropic when `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` is set (honouring `ANTHROPIC_BASE_URL`), OpenAI when `OPENAI_API_KEY` is set (`--model` required), and otherwise Ollama at `OLLAMA_HOST` or `http://localhost:11434`. The `command` provider runs the command with `sh -c` and writes the prompt to its stdin.
+Environment equivalents are `CONTEXT_DROP_SUMMARIZE_PROVIDER`, `_MODEL`, `_BASE_URL`, `_API_KEY_ENV`, and `_COMMAND`. Requirements per provider:
+
+- `anthropic`: `summarize_model` and `summarize_api_key_env` (the name of the variable holding the key). The key is sent as both `x-api-key` and a bearer token, which Claude Code-style gateways accept. `base_url` defaults to `https://api.anthropic.com`.
+- `openai`: `summarize_model`. `base_url` defaults to `https://api.openai.com/v1`; the key variable is required for that endpoint and optional for other OpenAI-compatible servers.
+- `ollama`: `summarize_model`. `base_url` defaults to `http://localhost:11434`.
+- `command`: `summarize_command`. It runs with `sh -c` and receives the prompt on stdin.
 
 Transcript excerpts are sent to the chosen model. Use a local provider when transcripts must stay on the machine.
 

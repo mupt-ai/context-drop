@@ -23,10 +23,11 @@ func newSummarizeCommand() *cobra.Command {
 		Long: "Read the transcript of every live session and summarize it with the model you choose. Sessions whose\n" +
 			"transcripts have not changed since the last run reuse their previous summary, so repeated runs only\n" +
 			"pay for what changed. State lives in ~/.context-drop/summaries.json.\n\n" +
-			"Providers: anthropic (ANTHROPIC_API_KEY), openai or any OpenAI-compatible server (--base-url, e.g.\n" +
-			"LM Studio, llama.cpp, vLLM), ollama (local, default http://localhost:11434), or command (any CLI that\n" +
-			"reads the prompt on stdin, e.g. --command 'claude -p' or --command 'ollama run llama3.2').\n" +
-			"Defaults come from summarize_* keys in ~/.context-drop/config.toml or CONTEXT_DROP_SUMMARIZE_* variables.",
+			"Providers (name one with --provider or summarize_provider; nothing is inferred from the environment):\n" +
+			"anthropic (--model and --api-key-env), openai or any OpenAI-compatible server (--model, --base-url, e.g.\n" +
+			"LM Studio, llama.cpp, vLLM), ollama (--model, default http://localhost:11434), or command (--command, any\n" +
+			"CLI that reads the prompt on stdin, e.g. 'claude -p').\n" +
+			"Settings come from summarize_* keys in ~/.context-drop/config.toml or CONTEXT_DROP_SUMMARIZE_* variables.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg, err := config.LoadCLIConfig()
