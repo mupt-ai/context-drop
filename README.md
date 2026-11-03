@@ -55,16 +55,23 @@ context-drop setup pi
 
 `context-drop summarize` reads each live session's transcript and asks a model what it is doing, what changed, and whether it needs you. Results are stored in `~/.context-drop/summaries.json`; on the next run, sessions with no new transcript activity reuse their last summary and changed sessions are summarized from the previous summary plus the new messages.
 
-Pick the model with flags or `summarize_*` keys in `~/.context-drop/config.toml`:
+Summaries need a model you choose. Nothing is picked from your environment: name the provider, and the model and key variable where the provider needs them. Put them in `~/.context-drop/config.toml`:
 
-```sh
-context-drop summarize --provider ollama --model gpt-oss:20b           # local
-context-drop summarize --provider anthropic --model claude-sonnet-5-5
-context-drop summarize --provider openai --base-url http://localhost:1234/v1 --model qwen3   # any OpenAI-compatible server
-context-drop summarize --provider command --command 'claude -p'         # any CLI that reads stdin
+```toml
+summarize_provider = "ollama"
+summarize_model = "gpt-oss:20b"
 ```
 
-With nothing configured it uses Anthropic when `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` is set, OpenAI when `OPENAI_API_KEY` is set, and otherwise a local Ollama server.
+Or pass them per run:
+
+```sh
+context-drop summarize --provider ollama --model gpt-oss:20b                  # local
+context-drop summarize --provider anthropic --model claude-sonnet-5-5 --api-key-env ANTHROPIC_API_KEY
+context-drop summarize --provider openai --base-url http://localhost:1234/v1 --model qwen3   # any OpenAI-compatible server
+context-drop summarize --provider command --command 'claude -p'                # any CLI that reads stdin
+```
+
+Without a provider, `summarize` stops and tells you what to set.
 
 ## File uploads
 

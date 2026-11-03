@@ -116,7 +116,26 @@ func TestOverviewIsCachedUntilSummariesChange(t *testing.T) {
 	}
 }
 
-func TestNewModelProviders(t *testing.T) {
+func TestNewModelRequiresExplicitSetup(t *testing.T) {
+	noEnv := func(string) string { return "" }
+	// Credentials in the environment must not be used unless named.
+	withKeys := func(k string) string {
+		return map[string]string{"ANTHROPIC_API_KEY": "sk-ambient", "ANTHROPIC_AUTH_TOKEN": "tok", "OPENAI_API_KEY": "sk-openai", "OLLAMA_HOST": "10.0.0.5"}[k]
+	}
+	refuse := func(name string, cfg config.SummarizeConfig, getenv func(string) string, want string) {
+		t.Helper()
+		if _, err := NewModel(cfg, getenv, nil); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: err = %v, want it to mention %q", name, err, want)
+		}
+	}
+	refuse("no provider", config.SummarizeConfig{}, withKeys, "no summarize provider configured")
+	refuse("anthropic without model", config.SummarizeConfig{Provider: "anthropic", APIKeyEnv: "ANTHROPIC_API_KEY"}, withKeys, "summarize_model")
+	refuse("anthropic without key name", config.SummarizeConfig{Provider: "anthropic", Model: "m"}, withKeys, "summarize_api_key_env")
+	refuse("anthropic empty key", config.SummarizeConfig{Provider: "anthropic", Model: "m", APIKeyEnv: "MISSING"}, withKeys, "$MISSING is empty")
+	refuse("openai default endpoint without key name", config.SummarizeConfig{Provider: "openai", Model: "m"}, withKeys, "summarize_api_key_env")
+	refuse("ollama without model", config.SummarizeConfig{Provider: "ollama"}, withKeys, "summarize_model")
+	refuse("unknown", config.SummarizeConfig{Provider: "nope"}, noEnv, "unknown summarize provider")
+
 	var gotPath string
 	var gotHeaders http.Header
 	var gotBody map[string]any
@@ -130,22 +149,25 @@ func TestNewModelProviders(t *testing.T) {
 		w.Write([]byte(`{"choices":[{"message":{"content":"from openai"}}]}`))
 	}))
 	defer srv.Close()
-	env := map[string]string{"ANTHROPIC_AUTH_TOKEN": "tok", "ANTHROPIC_BASE_URL": srv.URL, "ANTHROPIC_DEFAULT_SONNET_MODEL": "gw/model"}
-	getenv := func(k string) string { return env[k] }
 
-	// No provider configured + Anthropic gateway credentials -> anthropic with bearer auth.
-	m, err := NewModel(config.SummarizeConfig{}, getenv, srv.Client())
+	m, err := NewModel(config.SummarizeConfig{Provider: "anthropic", Model: "gw/model", APIKeyEnv: "GW_KEY", BaseURL: srv.URL},
+		func(k string) string {
+			if k == "GW_KEY" {
+				return "gw-secret"
+			}
+			return withKeys(k)
+		}, srv.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
 	out, err := m.Complete(context.Background(), "sys", "prompt")
-	if err != nil || out != "from claude" || gotPath != "/v1/messages" || gotHeaders.Get("Authorization") != "Bearer tok" ||
-		gotBody["model"] != "gw/model" || gotBody["system"] != "sys" {
+	if err != nil || out != "from claude" || gotPath != "/v1/messages" || gotHeaders.Get("x-api-key") != "gw-secret" ||
+		gotHeaders.Get("Authorization") != "Bearer gw-secret" || gotBody["model"] != "gw/model" || gotBody["system"] != "sys" {
 		t.Fatalf("anthropic: out=%q err=%v path=%s headers=%v body=%v", out, err, gotPath, gotHeaders, gotBody)
 	}
 
-	// Ollama is OpenAI-compatible at /v1 with no key, and works with a bare host:port.
-	m, err = NewModel(config.SummarizeConfig{Provider: "ollama", BaseURL: strings.TrimPrefix(srv.URL, "http://"), Model: "gpt-oss:20b"}, getenv, srv.Client())
+	// Ollama takes a bare host:port and needs no key.
+	m, err = NewModel(config.SummarizeConfig{Provider: "ollama", BaseURL: strings.TrimPrefix(srv.URL, "http://"), Model: "gpt-oss:20b"}, withKeys, srv.Client())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,16 +176,13 @@ func TestNewModelProviders(t *testing.T) {
 		t.Fatalf("ollama: out=%q err=%v path=%s headers=%v", out, err, gotPath, gotHeaders)
 	}
 
-	if _, err := NewModel(config.SummarizeConfig{Provider: "openai"}, getenv, nil); err == nil {
-		t.Fatal("openai without a model should fail")
+	// An OpenAI-compatible local server needs no key when a base URL is named.
+	m, err = NewModel(config.SummarizeConfig{Provider: "openai", BaseURL: srv.URL, Model: "qwen3"}, withKeys, srv.Client())
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := NewModel(config.SummarizeConfig{Provider: "nope"}, getenv, nil); err == nil {
-		t.Fatal("unknown provider accepted")
-	}
-	// With nothing configured and no credentials, the default is a local Ollama server.
-	m, _ = NewModel(config.SummarizeConfig{}, func(string) string { return "" }, nil)
-	if m.Name() != "ollama/"+defaultOllamaModel {
-		t.Fatalf("default model = %s", m.Name())
+	if _, err := m.Complete(context.Background(), "sys", "prompt"); err != nil || gotHeaders.Get("Authorization") != "" {
+		t.Fatalf("openai-compatible: err=%v headers=%v", err, gotHeaders)
 	}
 }
 
