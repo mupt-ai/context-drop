@@ -176,6 +176,11 @@ func newSendCommand() *cobra.Command {
 				return err
 			}
 			sentAt := time.Now()
+			since := sentAt.Add(-5 * time.Second)
+			prior := 0
+			if wait {
+				prior = priorMatches(cmd.Context(), env, providers, idx, target, text, since)
+			}
 			got, err := agents.Send(cmd.Context(), env, providers, idx, target, text, agents.SendOptions{From: from})
 			if err != nil {
 				return err
@@ -191,7 +196,7 @@ func newSendCommand() *cobra.Command {
 			ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
 			defer cancel()
 			msgs, final, err := agents.WaitForReply(ctx, newEnv, providers, got, agents.WaitOptions{
-				Timeout: timeout, Sent: text, Since: sentAt.Add(-5 * time.Second),
+				Timeout: timeout, Sent: text, Since: since, PriorMatches: prior,
 			})
 			if err != nil {
 				return err
@@ -205,6 +210,26 @@ func newSendCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&wait, "wait", false, "wait for the reply and print it")
 	cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Minute, "how long --wait waits")
 	return cmd
+}
+
+// priorMatches counts messages in the receiving transcript that already look
+// like text, so --wait does not mistake an earlier identical prompt for this one.
+func priorMatches(ctx context.Context, env *agents.Env, providers []agents.Provider, idx agents.Index, target agents.Session, text string, since time.Time) int {
+	recipient := target
+	if target.Subagent && (target.Agent == agents.Claude || target.Agent == agents.Muse) {
+		if parent, ok := idx.Parent(target); ok {
+			recipient = parent
+		}
+	}
+	p, err := agents.ProviderFor(providers, recipient.Agent)
+	if err != nil {
+		return 0
+	}
+	msgs, err := p.Transcript(ctx, env, recipient)
+	if err != nil {
+		return 0
+	}
+	return agents.SentMatches(msgs, text, since)
 }
 
 func newSetupCommand() *cobra.Command {

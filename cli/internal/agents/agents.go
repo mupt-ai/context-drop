@@ -304,28 +304,37 @@ type WaitOptions struct {
 	Sent string
 	// Since ignores matching user messages recorded before this time.
 	Since time.Time
+	// PriorMatches is SentMatches over the transcript read before sending, so
+	// an earlier identical prompt is not mistaken for this delivery.
+	PriorMatches int
 }
 
-// sentIndex finds the transcript entry for the delivered message: the last
-// user message containing its opening words. Agents may wrap or reflow the
-// text (peer framing, relay instructions, tmux joining lines), so the match
-// ignores whitespace and only uses a prefix.
-func sentIndex(msgs []Message, sent string, since time.Time) int {
+// sentMatches returns the indexes of user messages that look like the
+// delivered message: they contain its opening words, ignoring whitespace,
+// because agents wrap or reflow the text (peer framing, relay instructions,
+// tmux joining lines). Messages timestamped before since are skipped.
+func sentMatches(msgs []Message, sent string, since time.Time) []int {
 	needle := []rune(strings.Join(strings.Fields(sent), " "))
 	if len(needle) > 80 {
 		needle = needle[:80]
 	}
 	snippet := string(needle)
-	for i := len(msgs) - 1; i >= 0; i-- {
-		m := msgs[i]
+	var out []int
+	for i, m := range msgs {
 		if m.Role != "user" || (!m.Time.IsZero() && m.Time.Before(since)) {
 			continue
 		}
 		if strings.Contains(strings.Join(strings.Fields(m.Text), " "), snippet) {
-			return i
+			out = append(out, i)
 		}
 	}
-	return -1
+	return out
+}
+
+// SentMatches counts transcript messages that already look like sent; pass
+// the pre-send count as WaitOptions.PriorMatches.
+func SentMatches(msgs []Message, sent string, since time.Time) int {
+	return len(sentMatches(msgs, sent, since))
 }
 
 // WaitForReply polls until the delivered message appears in the transcript,
@@ -360,8 +369,8 @@ func WaitForReply(ctx context.Context, newEnv func() (*Env, error), providers []
 			} else {
 				stableCount, lastLen = 0, len(msgs)
 			}
-			if at := sentIndex(msgs, opts.Sent, opts.Since); at >= 0 {
-				fresh := msgs[at:]
+			if matches := sentMatches(msgs, opts.Sent, opts.Since); len(matches) > opts.PriorMatches {
+				fresh := msgs[matches[len(matches)-1]:]
 				replied := false
 				for _, m := range fresh[1:] {
 					replied = replied || m.Role == "assistant"

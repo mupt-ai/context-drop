@@ -568,3 +568,21 @@ func TestPiIgnoresRegistryOfReusedPID(t *testing.T) {
 		t.Fatalf("sessions = %+v", idx.Sessions)
 	}
 }
+
+func TestWaitForReplyIgnoresAnEarlierIdenticalPrompt(t *testing.T) {
+	// Transcripts without timestamps cannot be filtered by time, so the
+	// pre-send match count is what separates the old "continue" from the new one.
+	before := []Message{{Role: "user", Text: "continue"}, {Role: "assistant", Text: "old answer"}}
+	after := append(append([]Message{}, before...), Message{Role: "user", Text: "continue"}, Message{Role: "assistant", Text: "new answer"})
+	polls := 0
+	p := scriptedProvider{polls: &polls, frames: [][]Message{before, before, after}}
+	msgs, _, err := WaitForReply(context.Background(), func() (*Env, error) { return &Env{}, nil }, []Provider{p},
+		Session{ID: "cc-1", Agent: Claude}, WaitOptions{Sent: "continue", PriorMatches: SentMatches(before, "continue", time.Time{}),
+			Interval: time.Millisecond, Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if polls != 3 || len(msgs) != 2 || msgs[1].Text != "new answer" {
+		t.Fatalf("polls=%d msgs=%+v", polls, msgs)
+	}
+}
