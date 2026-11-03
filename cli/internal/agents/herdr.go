@@ -6,10 +6,10 @@ import (
 	"strings"
 )
 
-// herdrPane returns the herdr pane that runs pid, or "" when herdr is not
-// installed or does not host it. Herdr is used only to deliver into panes it
-// runs; discovery never depends on it.
-func (e *Env) herdrPane(ctx context.Context, pid int) string {
+// herdrPanes maps each herdr pane's shell and foreground processes to the
+// pane ID. Herdr is only used to deliver into and launch in panes it runs;
+// discovery never depends on it.
+func (e *Env) herdrPanes(ctx context.Context) map[int]string {
 	e.herdrOnce.Do(func() {
 		e.herdr = map[int]string{}
 		out, err := e.Run(ctx, nil, e.Bin("herdr"), "pane", "list")
@@ -51,13 +51,13 @@ func (e *Env) herdrPane(ctx context.Context, pid int) string {
 			}
 		}
 	})
-	return e.herdr[pid]
+	return e.herdr
 }
 
 // herdrSubmit types text into a herdr pane and presses Enter.
 func herdrSubmit(ctx context.Context, env *Env, pane, text string) error {
 	text = strings.Join(strings.Fields(strings.ReplaceAll(text, "\r\n", "\n")), " ")
-	if _, err := env.Run(ctx, nil, env.Bin("herdr"), "pane", "send-text", pane, "--", text); err != nil {
+	if _, err := env.Run(ctx, nil, env.Bin("herdr"), "pane", "send-text", pane, text); err != nil {
 		return err
 	}
 	_, err := env.Run(ctx, nil, env.Bin("herdr"), "pane", "send-keys", pane, "enter")

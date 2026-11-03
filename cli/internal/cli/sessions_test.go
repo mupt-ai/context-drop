@@ -92,7 +92,7 @@ func TestListReadAndSend(t *testing.T) {
 		t.Fatalf("stderr = %q", stderr)
 	}
 	joined := strings.Join(*commands, "\n")
-	if !strings.Contains(joined, "herdr pane send-text w9N:p2 -- run the tests") || !strings.Contains(joined, "herdr pane send-keys w9N:p2 enter") {
+	if !strings.Contains(joined, "herdr pane send-text w9N:p2 run the tests") || !strings.Contains(joined, "herdr pane send-keys w9N:p2 enter") {
 		t.Fatalf("commands = %s", joined)
 	}
 

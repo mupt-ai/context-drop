@@ -26,7 +26,7 @@ Delivery per agent:
 
 - **Claude Code**: the session's peer-messaging socket, authenticated with the token Claude Code publishes in `~/.claude/sessions`. The agent sees the message as coming from another session (`--from` sets the name). Subagents are reached through their parent, which is asked to forward the message with `SendMessage`; finished subagents stay addressable because `SendMessage` resumes them.
 - **Codex**: `codex queue --thread ID`. Threads served by a private `codex app-server --listen ws://…` (for example a wrapper-launched Codex) are queued against that server using its token file.
-- **Pi**: the socket opened by the Context Drop Pi extension (`context-drop setup pi`). Without the extension, the text is typed into the tmux or herdr pane the Pi process runs in.
+- **Pi**: the socket opened by the Context Drop Pi extension (`context-drop setup pi`). Without the extension, the text is typed into the tmux, herdr, or Rex pane the Pi process runs in. A Pi session without the extension is identified by its process until it writes a session file, then by that file, so its ID changes after its first message; `send --wait` and `start --wait` follow it.
 - **OpenCode**: `opencode api POST /api/session/ID/prompt` on the background service. Child sessions (subagents) accept messages directly.
 
 ### `context-drop summarize [flags]`
@@ -49,6 +49,18 @@ Environment equivalents are `CONTEXT_DROP_SUMMARIZE_PROVIDER`, `_MODEL`, `_BASE_
 
 Transcript excerpts are sent to the chosen model. Use a local provider when transcripts must stay on the machine.
 
+### `context-drop start AGENT [--cwd DIR] [--in tmux|herdr|rex] [--name NAME] [--command CMD] [--prompt TEXT] [--wait] [-- AGENT_ARGS...]`
+
+Start `claude`, `codex`, `pi`, or `opencode` in a new terminal and print its ID once it appears in `context-drop list`.
+
+- `--in`: `tmux` opens a window in a tmux session named `context-drop` (created if needed), `herdr` opens a tab in the current workspace and runs the agent in its shell, and `rex` runs the agent in a new block. The default is `launch_in` from the config, then the multiplexer you are running inside (`$TMUX`, `HERDR_ENV`, `REX_BLOCK`), then whichever of tmux, herdr, or rex is installed.
+- `--cwd` defaults to the current directory, and `--name` labels the window, tab, or block (default `AGENT-DIRNAME`).
+- `--command` (or `launch_command`) is the command line that starts the agent. `{agent}` becomes the agent name, so `dari {agent}` runs `dari claude`, `dari codex`, and so on. Without it, the agent's executable runs directly. Arguments after `--` are appended.
+- `--prompt` sends a first message once the agent is up, and `--wait` prints the reply. OpenCode gets the prompt on its command line, because it only creates a session when it receives one.
+- `--timeout` (default 60s) bounds the wait for the agent to appear. If it does not appear in time, `start` prints the pane and exits. If a prompt was given, it fails because the prompt was not sent.
+
+A new agent may show its first-run prompts (such as trusting a folder) before it accepts messages.
+
 ### `context-drop setup pi [--print]`
 
 Install the Pi extension at `~/.pi/agent/extensions/context-drop.ts` (or under `PI_CODING_AGENT_DIR`). Pi sessions started afterwards publish `~/.context-drop/pi/<pid>.json` and listen on `~/.context-drop/pi/<pid>.sock` (mode 0600). `--print` writes the extension to stdout instead.
@@ -56,7 +68,8 @@ Install the Pi extension at `~/.pi/agent/extensions/context-drop.ts` (or under `
 ### Environment
 
 - `CONTEXT_DROP_HOME` relocates `~/.context-drop`.
-- `CONTEXT_DROP_<AGENT>_BIN` overrides an executable, e.g. `CONTEXT_DROP_CODEX_BIN`, `CONTEXT_DROP_OPENCODE_BIN`, `CONTEXT_DROP_TMUX_BIN`, `CONTEXT_DROP_HERDR_BIN`.
+- `CONTEXT_DROP_<AGENT>_BIN` overrides an executable, e.g. `CONTEXT_DROP_CODEX_BIN`, `CONTEXT_DROP_OPENCODE_BIN`, `CONTEXT_DROP_TMUX_BIN`, `CONTEXT_DROP_HERDR_BIN`, `CONTEXT_DROP_REX_BIN`. Rex is otherwise found through `REX_BIN_DIR`, `PATH`, or the Rex app bundle.
+- `CONTEXT_DROP_LAUNCH_IN` and `CONTEXT_DROP_LAUNCH_COMMAND` set the `start` defaults.
 - `CODEX_HOME` and `PI_CODING_AGENT_DIR` are honoured.
 
 Discovery uses `ps` and `lsof`.

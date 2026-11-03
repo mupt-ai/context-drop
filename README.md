@@ -1,6 +1,6 @@
 # Context Drop
 
-Context Drop finds every live coding-agent session on your machine — Claude Code, Codex, Pi, and OpenCode, including Claude Code subagents — and gives each one a stable ID. With that ID you can read the session's transcript, send it a message, or have a model of your choice summarize what all of your agents are doing. It does not depend on any terminal multiplexer: sessions are found from each agent's own on-disk state and running processes, so it works whether an agent runs in tmux, a plain terminal tab, or anything else.
+Context Drop finds every live coding-agent session on your machine — Claude Code, Codex, Pi, and OpenCode, including Claude Code subagents — and gives each one a stable ID. With that ID you can read the session's transcript, send it a message, or have a model of your choice summarize what all of your agents are doing. It does not depend on any terminal multiplexer: sessions are found from each agent's own on-disk state and running processes, so it works whether an agent runs in tmux, herdr, Rex, a plain terminal tab, or anything else. It can also start new agents in a tmux window, herdr tab, or Rex block.
 
 It also uploads files to a self-hosted store with expiring links.
 
@@ -42,13 +42,30 @@ Only live sessions are listed: an agent process must be running for its session 
 | --- | --- | --- |
 | Claude Code | `~/.claude/sessions/<pid>.json` registry with a running process | Claude Code's peer-messaging socket; subagents through their parent (`SendMessage`) |
 | Codex | A Codex process holds the thread's writer lock | `codex queue` (against the session's own app-server when it has one) |
-| Pi | The Context Drop Pi extension's registry, or a running `pi` process | The extension's socket; without the extension, the tmux or herdr pane it runs in |
+| Pi | The Context Drop Pi extension's registry, or a running `pi` process | The extension's socket; without the extension, the tmux, herdr, or Rex pane it runs in |
 | OpenCode | The background service reports it running, or an OpenCode client in its directory has viewed it | The service's prompt API |
 
 Pi has no built-in inbox, so install the bundled extension once and restart running Pi sessions:
 
 ```sh
 context-drop setup pi
+```
+
+## Starting agents
+
+```sh
+context-drop start claude --cwd ~/code/app --prompt 'Fix the failing tests' --wait
+context-drop start codex --in herdr
+context-drop start pi --in rex -- --model fast
+```
+
+`start` opens the agent in a tmux window (in a `context-drop` session), a herdr tab, or a Rex block. It waits until the agent shows up in `context-drop list` and prints its ID. With `--prompt` it sends a first message, and `--wait` prints the reply. Arguments after `--` go to the agent.
+
+Set defaults in `~/.context-drop/config.toml`:
+
+```toml
+launch_in = "rex"                 # tmux, herdr, or rex; otherwise the one you are in, then whichever is installed
+launch_command = "dari {agent}"   # how agents are started; {agent} becomes claude, codex, pi, or opencode
 ```
 
 ## Summaries
