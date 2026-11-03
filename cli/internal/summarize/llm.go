@@ -27,70 +27,77 @@ const (
 	ProviderOpenAI    = "openai"
 	ProviderOllama    = "ollama"
 	ProviderCommand   = "command"
-
-	defaultAnthropicModel = "claude-sonnet-5-5"
-	defaultOllamaModel    = "llama3.2"
 )
 
-// NewModel builds the configured model. With no provider configured it uses
-// Anthropic when an Anthropic credential is present, OpenAI when an OpenAI key
-// is present, and otherwise a local Ollama server.
+// NewModel builds the model the user configured. Nothing is inferred: the
+// provider must be named, and every credential or endpoint must be named too,
+// so a stray environment variable never sends transcripts somewhere unexpected.
+//
+//   - anthropic: model and api_key_env are required; base_url defaults to api.anthropic.com
+//   - openai: model is required; base_url defaults to api.openai.com/v1; api_key_env is
+//     required for that default endpoint and optional for other OpenAI-compatible servers
+//   - ollama: model is required; base_url defaults to http://localhost:11434; api_key_env optional
+//   - command: command is required
 func NewModel(cfg config.SummarizeConfig, getenv func(string) string, client *http.Client) (Model, error) {
 	if client == nil {
 		client = &http.Client{Timeout: 5 * time.Minute}
 	}
 	provider := strings.ToLower(strings.TrimSpace(cfg.Provider))
 	if provider == "" {
-		switch {
-		case cfg.Command != "":
-			provider = ProviderCommand
-		case getenv("ANTHROPIC_API_KEY") != "" || getenv("ANTHROPIC_AUTH_TOKEN") != "":
-			provider = ProviderAnthropic
-		case getenv("OPENAI_API_KEY") != "":
-			provider = ProviderOpenAI
-		default:
-			provider = ProviderOllama
-		}
+		return nil, fmt.Errorf("no summarize provider configured; set summarize_provider in ~/.context-drop/config.toml, CONTEXT_DROP_SUMMARIZE_PROVIDER, or --provider (anthropic, openai, ollama, or command)")
 	}
 	switch provider {
 	case ProviderAnthropic:
-		base := firstNonEmpty(cfg.BaseURL, getenv("ANTHROPIC_BASE_URL"), "https://api.anthropic.com")
-		keyEnv := firstNonEmpty(cfg.APIKeyEnv, "ANTHROPIC_API_KEY")
-		m := &anthropicModel{client: client, base: strings.TrimRight(base, "/"), model: firstNonEmpty(cfg.Model, getenv("ANTHROPIC_DEFAULT_SONNET_MODEL"), defaultAnthropicModel), apiKey: getenv(keyEnv)}
+		if cfg.Model == "" {
+			return nil, fmt.Errorf("anthropic provider needs summarize_model (or --model)")
+		}
 		if cfg.APIKeyEnv == "" {
-			// Gateways configured for Claude Code authenticate with a bearer token.
-			m.bearer = getenv("ANTHROPIC_AUTH_TOKEN")
+			return nil, fmt.Errorf("anthropic provider needs summarize_api_key_env (or --api-key-env), the name of the variable holding your key")
 		}
-		if m.apiKey == "" && m.bearer == "" {
-			return nil, fmt.Errorf("anthropic provider needs an API key in $%s", keyEnv)
+		key := getenv(cfg.APIKeyEnv)
+		if key == "" {
+			return nil, fmt.Errorf("$%s is empty; it must hold the API key for the anthropic provider", cfg.APIKeyEnv)
 		}
-		return m, nil
-	case ProviderOpenAI, ProviderOllama:
-		base, model, keyEnv := cfg.BaseURL, cfg.Model, cfg.APIKeyEnv
-		if provider == ProviderOllama {
-			base = firstNonEmpty(base, getenv("OLLAMA_HOST"), "http://localhost:11434")
-			if !strings.HasSuffix(strings.TrimRight(base, "/"), "/v1") {
-				base = strings.TrimRight(base, "/") + "/v1"
+		base := firstNonEmpty(cfg.BaseURL, "https://api.anthropic.com")
+		return &anthropicModel{client: client, base: strings.TrimRight(base, "/"), model: cfg.Model, apiKey: key}, nil
+	case ProviderOpenAI:
+		if cfg.Model == "" {
+			return nil, fmt.Errorf("openai provider needs summarize_model (or --model)")
+		}
+		base := firstNonEmpty(cfg.BaseURL, "https://api.openai.com/v1")
+		key := ""
+		if cfg.APIKeyEnv != "" {
+			key = getenv(cfg.APIKeyEnv)
+			if key == "" {
+				return nil, fmt.Errorf("$%s is empty; it must hold the API key for the openai provider", cfg.APIKeyEnv)
 			}
-			if !strings.Contains(base, "://") {
-				base = "http://" + base
-			}
-			model = firstNonEmpty(model, defaultOllamaModel)
-		} else {
-			base = firstNonEmpty(base, getenv("OPENAI_BASE_URL"), "https://api.openai.com/v1")
-			keyEnv = firstNonEmpty(keyEnv, "OPENAI_API_KEY")
-			if model == "" {
-				return nil, fmt.Errorf("openai provider needs --model (or summarize_model in config)")
-			}
+		} else if cfg.BaseURL == "" {
+			return nil, fmt.Errorf("openai provider with the default endpoint needs summarize_api_key_env (or --api-key-env)")
+		}
+		return &openAIModel{client: client, base: strings.TrimRight(base, "/"), model: cfg.Model, apiKey: key, provider: provider}, nil
+	case ProviderOllama:
+		if cfg.Model == "" {
+			return nil, fmt.Errorf("ollama provider needs summarize_model (or --model), e.g. gpt-oss:20b")
+		}
+		base := firstNonEmpty(cfg.BaseURL, "http://localhost:11434")
+		if !strings.Contains(base, "://") {
+			base = "http://" + base
+		}
+		if !strings.HasSuffix(strings.TrimRight(base, "/"), "/v1") {
+			base = strings.TrimRight(base, "/") + "/v1"
 		}
 		key := ""
-		if keyEnv != "" {
-			key = getenv(keyEnv)
+		if cfg.APIKeyEnv != "" {
+			// Ollama behind an authenticating proxy: send the key only when it is named.
+			key = getenv(cfg.APIKeyEnv)
+			if key == "" {
+				return nil, fmt.Errorf("$%s is empty; it must hold the API key for the ollama provider", cfg.APIKeyEnv)
+			}
 		}
-		return &openAIModel{client: client, base: strings.TrimRight(base, "/"), model: model, apiKey: key, provider: provider}, nil
+		return &openAIModel{client: client, base: strings.TrimRight(base, "/"), model: cfg.Model, apiKey: key, provider: provider}, nil
 	case ProviderCommand:
 		if strings.TrimSpace(cfg.Command) == "" {
-			return nil, fmt.Errorf("command provider needs --command (or summarize_command in config)")
+			return nil, fmt.Errorf("command provider needs summarize_command (or --command)")
 		}
 		return &commandModel{command: cfg.Command}, nil
 	}
@@ -102,7 +109,6 @@ type anthropicModel struct {
 	base   string
 	model  string
 	apiKey string
-	bearer string
 }
 
 func (m *anthropicModel) Name() string { return "anthropic/" + m.model }
@@ -114,12 +120,10 @@ func (m *anthropicModel) Complete(ctx context.Context, system, prompt string) (s
 		"system":     system,
 		"messages":   []map[string]any{{"role": "user", "content": prompt}},
 	}
-	headers := map[string]string{"anthropic-version": "2023-06-01"}
-	if m.apiKey != "" {
-		headers["x-api-key"] = m.apiKey
-	}
-	if m.bearer != "" {
-		headers["Authorization"] = "Bearer " + m.bearer
+	headers := map[string]string{
+		"anthropic-version": "2023-06-01",
+		"x-api-key":         m.apiKey,
+		"Authorization":     "Bearer " + m.apiKey,
 	}
 	var resp struct {
 		Content []struct {
