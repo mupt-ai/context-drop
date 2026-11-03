@@ -116,3 +116,38 @@ func TestSetupCancelSavesNothing(t *testing.T) {
 		t.Fatalf("config was written: %v", err)
 	}
 }
+
+func TestSetupWithAllDefaultsIsNotOfferedAgain(t *testing.T) {
+	saved, _ := runWizard(t, nil, nil,
+		"n", // skip the summary model
+		"",  // set up the launcher
+		"1", // whichever I'm running in
+		"1", // run agents directly
+	)
+	if !strings.Contains(saved, "setup_done = true") {
+		t.Fatalf("config = %s", saved)
+	}
+	cfg, err := config.LoadCLIConfigFile()
+	if err != nil || !cfg.Configured() {
+		t.Fatalf("configured = %v, %v", cfg.Configured(), err)
+	}
+}
+
+func TestMuxInstalledHonoursBinOverride(t *testing.T) {
+	oldLook, oldGet := lookPath, getenv
+	t.Cleanup(func() { lookPath, getenv = oldLook, oldGet })
+	lookPath = func(name string) (string, error) {
+		if name == "/opt/tmux-x" {
+			return name, nil
+		}
+		return "", errors.New("not found")
+	}
+	getenv = func(string) string { return "" }
+	if muxInstalled("tmux") {
+		t.Fatal("tmux found without it on PATH")
+	}
+	getenv = func(k string) string { return map[string]string{"CONTEXT_DROP_TMUX_BIN": "/opt/tmux-x"}[k] }
+	if !muxInstalled("tmux") {
+		t.Fatal("CONTEXT_DROP_TMUX_BIN was ignored")
+	}
+}

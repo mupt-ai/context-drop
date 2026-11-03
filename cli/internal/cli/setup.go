@@ -249,6 +249,7 @@ func runSetup(cmd *cobra.Command, ui setupUI) error {
 			}
 		}
 	}
+	cfg.SetupDone = true
 	if err := config.SaveCLIConfig(cfg); err != nil {
 		return err
 	}
@@ -452,6 +453,10 @@ func setupLauncher(ui setupUI, curIn, curCmd string) (string, string, error) {
 }
 
 func muxInstalled(m string) bool {
+	if bin := getenv("CONTEXT_DROP_" + strings.ToUpper(m) + "_BIN"); bin != "" {
+		_, err := lookPath(bin)
+		return err == nil
+	}
 	switch m {
 	case agents.MuxRex:
 		if getenv("REX_BIN_DIR") != "" {
