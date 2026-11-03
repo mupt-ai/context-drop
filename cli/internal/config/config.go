@@ -25,6 +25,9 @@ type CLIConfig struct {
 	// LaunchCommand starts agents instead of their bare executable; "{agent}"
 	// becomes the agent kind, e.g. "dari {agent}".
 	LaunchCommand string
+	// SetupDone records that `context-drop setup` finished, even if every
+	// answer kept a default, so it is not offered again.
+	SetupDone bool
 }
 
 // SummarizeConfig selects the model `context-drop summarize` uses.
@@ -149,6 +152,8 @@ func loadCLIConfigFile(path string, cfg *CLIConfig) error {
 			cfg.LaunchIn = value
 		case "launch_command":
 			cfg.LaunchCommand = value
+		case "setup_done":
+			cfg.SetupDone = value == "true"
 		}
 	}
 	return scanner.Err()
@@ -185,6 +190,9 @@ func SaveCLIConfig(cfg CLIConfig) error {
 		if kv[1] != "" {
 			content += fmt.Sprintf("%s = %q\n", kv[0], kv[1])
 		}
+	}
+	if cfg.SetupDone {
+		content += "setup_done = true\n"
 	}
 	return os.WriteFile(path, []byte(content), 0o600)
 }
@@ -293,4 +301,20 @@ func unquote(value string) string {
 		}
 	}
 	return strings.Trim(value, `"'`)
+}
+
+// LoadCLIConfigFile reads only the config file, without environment
+// overrides, so it can be edited and saved back.
+func LoadCLIConfigFile() (CLIConfig, error) {
+	cfg := DefaultCLIConfig()
+	path, err := CLIConfigPath()
+	if err != nil {
+		return cfg, err
+	}
+	return cfg, loadCLIConfigFile(path, &cfg)
+}
+
+// Configured reports whether the summarize model or launcher has been set up.
+func (c CLIConfig) Configured() bool {
+	return c.SetupDone || c.Summarize.Provider != "" || c.LaunchIn != "" || c.LaunchCommand != ""
 }

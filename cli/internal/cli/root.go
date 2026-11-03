@@ -43,6 +43,14 @@ func NewRootCommand(build BuildInfo) *cobra.Command {
 		SilenceErrors:     true,
 		CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
 	}
+	cmd.RunE = func(cmd *cobra.Command, _ []string) error {
+		if cfg, err := config.LoadCLIConfigFile(); err == nil && !cfg.Configured() {
+			if ran, err := offerSetup(cmd, "Context Drop isn't set up yet."); ran || err != nil {
+				return err
+			}
+		}
+		return cmd.Help()
+	}
 	cmd.AddCommand(newListCommand())
 	cmd.AddCommand(newShowCommand())
 	cmd.AddCommand(newReadCommand())

@@ -36,6 +36,20 @@ func newSummarizeCommand() *cobra.Command {
 			}
 			sc := mergeSummarize(cfg.Summarize, flags)
 			model, err := summarize.NewModel(sc, os.Getenv, nil)
+			if err != nil && sc.Provider == "" {
+				ran, setupErr := offerSetup(cmd, "No summary model is set up.")
+				if setupErr != nil {
+					return setupErr
+				}
+				if !ran {
+					return err
+				}
+				if cfg, err = config.LoadCLIConfig(); err != nil {
+					return err
+				}
+				sc = mergeSummarize(cfg.Summarize, flags)
+				model, err = summarize.NewModel(sc, os.Getenv, nil)
+			}
 			if err != nil {
 				return err
 			}

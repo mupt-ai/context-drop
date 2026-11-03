@@ -71,7 +71,7 @@ func NewModel(cfg config.SummarizeConfig, getenv func(string) string, client *ht
 			if key == "" {
 				return nil, fmt.Errorf("$%s is empty; it must hold the API key for the openai provider", cfg.APIKeyEnv)
 			}
-		} else if cfg.BaseURL == "" {
+		} else if cfg.BaseURL == "" || strings.TrimRight(cfg.BaseURL, "/") == "https://api.openai.com/v1" {
 			return nil, fmt.Errorf("openai provider with the default endpoint needs summarize_api_key_env (or --api-key-env)")
 		}
 		return &openAIModel{client: client, base: strings.TrimRight(base, "/"), model: cfg.Model, apiKey: key, provider: provider}, nil
