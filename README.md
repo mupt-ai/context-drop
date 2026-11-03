@@ -21,20 +21,9 @@ Context Drop finds sessions from each agent's own on-disk state and running proc
 
 ## Install
 
-On macOS or Linux, install the latest release to `~/.local/bin`, or to `/usr/local/bin` when it is writable:
-
 ```sh
 curl -fsSL https://raw.githubusercontent.com/mupt-ai/context-drop/main/cli/install.sh | bash
 ```
-
-To build from source with Go 1.26.2+:
-
-```sh
-cd cli
-make install    # installs context-drop to ~/.local/bin
-```
-
-Add `~/.local/bin` to your `PATH` if needed.
 
 ## Quick start
 
