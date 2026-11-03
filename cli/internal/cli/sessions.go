@@ -235,7 +235,17 @@ func priorMatches(ctx context.Context, env *agents.Env, providers []agents.Provi
 func newSetupCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "setup",
-		Short: "Install agent integrations Context Drop needs",
+		Short: "Set up the summary model, the agent launcher, and the Pi extension",
+		Long: "Walks through choosing the model `context-drop summarize` uses (and which environment variable holds\n" +
+			"its key; the key itself is never saved), and how `context-drop start` opens agents. Saves the answers to\n" +
+			"~/.context-drop/config.toml. `setup pi` installs only the Pi extension.",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if !isInteractive(cmd) {
+				return fmt.Errorf("setup is interactive; run it in a terminal, or edit ~/.context-drop/config.toml (see docs/cli.md)")
+			}
+			return runSetup(cmd, newTUI(cmd))
+		},
 	}
 	var printOnly bool
 	pi := &cobra.Command{

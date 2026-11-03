@@ -66,6 +66,16 @@ Start `claude`, `codex`, `pi`, or `opencode` in a new terminal and print its ID 
 
 A new agent may show its first-run prompts (such as trusting a folder) before it accepts messages.
 
+### `context-drop setup`
+
+Interactive setup in the terminal. It covers:
+
+1. The summary model: provider, model, endpoint, and the name of the environment variable holding its key, with an optional test request.
+2. The launcher: the multiplexer and the launch command.
+3. The Pi extension, if Pi is installed.
+
+It writes `~/.context-drop/config.toml` at the end. Cancelling saves nothing. Bare `context-drop` offers it when nothing is configured, and `summarize` offers it when no provider is set. Both only offer it at a terminal.
+
 ### `context-drop setup pi [--print]`
 
 Install the Pi extension at `~/.pi/agent/extensions/context-drop.ts` (or under `PI_CODING_AGENT_DIR`). Pi sessions started afterwards publish `~/.context-drop/pi/<pid>.json` and listen on `~/.context-drop/pi/<pid>.sock` (mode 0600). `--print` writes the extension to stdout instead.

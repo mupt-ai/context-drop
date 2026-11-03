@@ -16,6 +16,14 @@ make install                 # installs context-drop to ~/.local/bin
 
 Add `~/.local/bin` to your `PATH` if necessary. No release binaries are published yet.
 
+## Set up
+
+```sh
+context-drop setup
+```
+
+A short terminal wizard sets up the model `summarize` uses and how `start` launches agents. Running `context-drop` with nothing configured offers it, and so does `summarize` when no model is set. It stores only the name of the variable that holds an API key, never the key. Cancel at any point and nothing is saved.
+
 ## Use
 
 ```sh

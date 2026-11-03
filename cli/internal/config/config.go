@@ -294,3 +294,19 @@ func unquote(value string) string {
 	}
 	return strings.Trim(value, `"'`)
 }
+
+// LoadCLIConfigFile reads only the config file, without environment
+// overrides, so it can be edited and saved back.
+func LoadCLIConfigFile() (CLIConfig, error) {
+	cfg := DefaultCLIConfig()
+	path, err := CLIConfigPath()
+	if err != nil {
+		return cfg, err
+	}
+	return cfg, loadCLIConfigFile(path, &cfg)
+}
+
+// Configured reports whether the summarize model or launcher has been set up.
+func (c CLIConfig) Configured() bool {
+	return c.Summarize.Provider != "" || c.LaunchIn != "" || c.LaunchCommand != ""
+}
