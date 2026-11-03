@@ -19,6 +19,19 @@ type CLIConfig struct {
 	UploadToken string
 	DefaultTTL  time.Duration
 	Clipboard   bool
+	Summarize   SummarizeConfig
+}
+
+// SummarizeConfig selects the model `context-drop summarize` uses.
+type SummarizeConfig struct {
+	// Provider is anthropic, openai, ollama, or command; empty picks one from the environment.
+	Provider string
+	Model    string
+	BaseURL  string
+	// APIKeyEnv names the environment variable holding the API key.
+	APIKeyEnv string
+	// Command is a shell command that reads the prompt on stdin (provider "command").
+	Command string
 }
 
 func DefaultCLIConfig() CLIConfig {
@@ -55,6 +68,17 @@ func LoadCLIConfig() (CLIConfig, error) {
 	if v := os.Getenv("CONTEXT_DROP_UPLOAD_TOKEN"); v != "" {
 		cfg.UploadToken = v
 	}
+	for key, dst := range map[string]*string{
+		"CONTEXT_DROP_SUMMARIZE_PROVIDER":    &cfg.Summarize.Provider,
+		"CONTEXT_DROP_SUMMARIZE_MODEL":       &cfg.Summarize.Model,
+		"CONTEXT_DROP_SUMMARIZE_BASE_URL":    &cfg.Summarize.BaseURL,
+		"CONTEXT_DROP_SUMMARIZE_API_KEY_ENV": &cfg.Summarize.APIKeyEnv,
+		"CONTEXT_DROP_SUMMARIZE_COMMAND":     &cfg.Summarize.Command,
+	} {
+		if v := os.Getenv(key); v != "" {
+			*dst = v
+		}
+	}
 	if v := os.Getenv("CONTEXT_DROP_TTL"); v != "" {
 		d, err := time.ParseDuration(v)
 		if err != nil {
@@ -86,7 +110,7 @@ func loadCLIConfigFile(path string, cfg *CLIConfig) error {
 			return fmt.Errorf("invalid config line %q", line)
 		}
 		key = strings.TrimSpace(key)
-		value = strings.Trim(strings.TrimSpace(value), `"'`)
+		value = unquote(strings.TrimSpace(value))
 		switch key {
 		case "endpoint":
 			cfg.Endpoint = value
@@ -104,6 +128,16 @@ func loadCLIConfigFile(path string, cfg *CLIConfig) error {
 				return fmt.Errorf("parse clipboard: %w", err)
 			}
 			cfg.Clipboard = b
+		case "summarize_provider":
+			cfg.Summarize.Provider = value
+		case "summarize_model":
+			cfg.Summarize.Model = value
+		case "summarize_base_url":
+			cfg.Summarize.BaseURL = value
+		case "summarize_api_key_env":
+			cfg.Summarize.APIKeyEnv = value
+		case "summarize_command":
+			cfg.Summarize.Command = value
 		}
 	}
 	return scanner.Err()
@@ -128,6 +162,17 @@ func SaveCLIConfig(cfg CLIConfig) error {
 		cfg.DefaultTTL.String(),
 		cfg.Clipboard,
 	)
+	for _, kv := range [][2]string{
+		{"summarize_provider", cfg.Summarize.Provider},
+		{"summarize_model", cfg.Summarize.Model},
+		{"summarize_base_url", cfg.Summarize.BaseURL},
+		{"summarize_api_key_env", cfg.Summarize.APIKeyEnv},
+		{"summarize_command", cfg.Summarize.Command},
+	} {
+		if kv[1] != "" {
+			content += fmt.Sprintf("%s = %q\n", kv[0], kv[1])
+		}
+	}
 	return os.WriteFile(path, []byte(content), 0o600)
 }
 
@@ -225,4 +270,14 @@ func envDuration(key string, fallback time.Duration) (time.Duration, error) {
 		return d, nil
 	}
 	return fallback, nil
+}
+
+// unquote accepts TOML-style basic ("...") and literal ('...') strings and bare values.
+func unquote(value string) string {
+	if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
+		if v, err := strconv.Unquote(value); err == nil {
+			return v
+		}
+	}
+	return strings.Trim(value, `"'`)
 }

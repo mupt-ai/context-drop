@@ -1,45 +1,40 @@
 ---
 name: context-drop
-description: Use the Context Drop CLI to list, read, start, prompt, and wait for coding agents in Herdr, or upload temporary files with expiring links. Use when asked to coordinate a Herdr coding agent through Context Drop or share a temporary file.
+description: Use the Context Drop CLI to list, read, message, and summarize live coding-agent sessions (Claude Code, Codex, Pi, OpenCode, and Claude Code subagents) on this machine, or upload temporary files with expiring links. Use when asked what other agents are doing, to check on or message another agent session, or to share a temporary file.
 ---
 
 # Context Drop
 
-`context-drop` drives coding agents in Herdr tabs and uploads files to a configured expiring-link store. Agent commands require an exact name or pane ID from `context-drop agents`; they never fall back to the focused pane.
+`context-drop` indexes every live Claude Code, Codex, Pi, and OpenCode session on this machine, including Claude Code subagents. Each session has a stable ID such as `cc-6a79295a` (Claude Code), `cx-…` (Codex), `pi-…`, or `oc-…` (OpenCode).
 
-## Inspect an agent
+## Find a session
 
 ```bash
-context-drop agents
-context-drop read TARGET
+context-drop list            # add --json for native IDs, PIDs, transcripts, delivery channel
+context-drop read TARGET     # recent transcript; -n 50 for more
 ```
 
-Statuses: `working` is mid-turn; `idle` and `done` are ready for input; `blocked` is waiting on an approval or question; `unknown` means Herdr cannot tell. Choose a target by its name, tab title, or working directory. If several match, ask which one.
+A target is an ID, a native session ID, a unique prefix, or a session name. Choose by working directory, name, or transcript. If several sessions could match the user's description, ask which one.
 
-## Continue or wait
+Statuses: `working` is mid-turn; `idle` is ready; `blocked` is waiting for an approval or answer; `unknown` means the agent's state could not be read.
+
+## Message a session
 
 ```bash
 context-drop send TARGET "what to do next" --wait
-context-drop wait TARGET
 ```
 
-`send` refuses a `working`, `blocked`, or `unknown` agent unless `--force` is specified. Ask before forcing a prompt into a busy agent. `wait` observes an agent already working and returns when it settles. Both waits default to a six-hour timeout. Read and report the agent's actual output; starting or prompting is not proof of finished work.
+The message arrives as the session's next prompt (queued if it is busy). `--wait` prints the reply once the agent settles. Brief the other agent fully; it cannot see this conversation. Do not message a session the user did not ask you to involve, and ask before sending into a session that is `working` on something unrelated. Read and report the agent's actual reply; sending is not proof of finished work.
 
-## Start an agent
+Claude Code subagents are reached through their parent session, which is asked to forward the message. If `send` reports that a Pi session has no delivery channel (it is not in tmux or herdr and has no Context Drop extension), the user must run `context-drop setup pi` and restart that Pi session.
 
-Choose or create a project directory (for isolated coding work, a Git worktree is useful). Select an existing Herdr workspace label, a unique lowercase agent name, and an agent CLI installed and configured for Herdr:
+## Summarize everything
 
 ```bash
-context-drop new NAME "the task and relevant context" \
-  --workspace LABEL --cwd /absolute/path/to/project --agent pi --wait
-context-drop new NAME "the task and relevant context" \
-  --workspace LABEL --cwd /absolute/path/to/project --agent claude \
-  --command /path/to/launcher --command-arg=--option --wait
+context-drop summarize
 ```
 
-Supported agent kinds are `claude` (default), `codex`, and `pi`. When a non-default executable is needed, pass it with `--command` and provide each argument separately with a repeatable `--command-arg`. Brief the new agent fully: it may not have access to this conversation. If startup fails, inspect the tab left open by the command rather than assuming an agent is running.
-
-If the agent needs input, relay its question to the user and send the user's answer with `context-drop send TARGET "answer" --wait`. Do not interrupt or close an existing agent without permission.
+Summarizes each live session with the configured model and only re-summarizes sessions whose transcripts changed since the last run. Transcript excerpts go to that model, so prefer the user's configured or a local provider (`--provider ollama --model …`).
 
 ## Upload a temporary file
 
