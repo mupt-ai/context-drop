@@ -168,7 +168,7 @@ func TestSetupUploadsToMainServerWithPastedToken(t *testing.T) {
 		"n",          // skip the summary model
 		"n",          // skip the launcher
 		"y",          // set up uploads
-		"",           // the main server, the default
+		"1",          // the main server
 		"main-token", // pasted token
 	)
 	for _, want := range []string{`endpoint = "https://contextdrop.dev"`, `upload_token = "main-token"`} {
@@ -190,6 +190,7 @@ func TestSetupGeneratesTokenForSelfHostedServer(t *testing.T) {
 		"n",
 		"n",
 		"y",
+		"2",                          // a server I run
 		"https://files.example.com/", // trailing slash is trimmed
 		"y",                          // generate a token
 	)

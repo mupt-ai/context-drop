@@ -301,15 +301,26 @@ const mainServer = "https://contextdrop.dev"
 // main server, whose token you paste. For a server you run yourself, setup can
 // generate a token and print the line that server needs.
 func setupUploads(ui setupUI, cfg *config.CLIConfig) error {
-	endpoint, err := ui.ask("Upload server", "The main server, or the URL of one you run.", firstNonEmptyString(cfg.Endpoint, mainServer), func(v string) error {
-		u, err := url.Parse(strings.TrimSpace(v))
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			return errors.New("enter a full URL such as https://contextdrop.dev")
-		}
-		return nil
-	})
+	def := 0
+	if cfg.Endpoint != "" && cfg.Endpoint != mainServer {
+		def = 1
+	}
+	choice, err := ui.choose("Which upload server?", "", []string{"The main server (" + mainServer + ")", "A server I run"}, def)
 	if err != nil {
 		return err
+	}
+	endpoint := mainServer
+	if choice == 1 {
+		endpoint, err = ui.ask("Server URL", "For example https://files.example.com.", cfg.Endpoint, func(v string) error {
+			u, err := url.Parse(strings.TrimSpace(v))
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+				return errors.New("enter a full URL such as https://files.example.com")
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
 	}
 	endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
 	if err := ui.run("Checking "+endpoint, func() error { return checkEndpoint(endpoint) }); err != nil {
