@@ -59,6 +59,7 @@ func TestSetupLocalModelAndRexThroughDari(t *testing.T) {
 		"",  // set up the launcher
 		"4", // Rex block (options: whichever, tmux, herdr, rex)
 		"2", // through dari
+		"n", // skip uploads
 	)
 	for _, want := range []string{
 		`summarize_provider = "ollama"`, `summarize_model = "qwen3.8:27b-mlx"`, `summarize_base_url = "http://localhost:11434"`,
@@ -88,6 +89,7 @@ func TestSetupSavesKeyVariableNameNeverTheKey(t *testing.T) {
 		"",               // test it (fails)
 		"n",              // keep the settings anyway
 		"n",              // skip the launcher
+		"n",              // skip uploads
 	)
 	for _, want := range []string{`summarize_provider = "anthropic"`, `summarize_model = "dari/routing"`,
 		`summarize_base_url = "https://gw.example/v1x"`, `summarize_api_key_env = "ANTHROPIC_AUTH_TOKEN"`} {
@@ -123,6 +125,7 @@ func TestSetupWithAllDefaultsIsNotOfferedAgain(t *testing.T) {
 		"",  // set up the launcher
 		"1", // whichever I'm running in
 		"1", // run agents directly
+		"n", // skip uploads
 	)
 	if !strings.Contains(saved, "setup_done = true") {
 		t.Fatalf("config = %s", saved)
@@ -149,5 +152,53 @@ func TestMuxInstalledHonoursBinOverride(t *testing.T) {
 	getenv = func(k string) string { return map[string]string{"CONTEXT_DROP_TMUX_BIN": "/opt/tmux-x"}[k] }
 	if !muxInstalled("tmux") {
 		t.Fatal("CONTEXT_DROP_TMUX_BIN was ignored")
+	}
+}
+
+func TestSetupUploadsToMainServerWithPastedToken(t *testing.T) {
+	oldCheck := checkEndpoint
+	t.Cleanup(func() { checkEndpoint = oldCheck })
+	checkEndpoint = func(endpoint string) error {
+		if endpoint != mainServer {
+			t.Errorf("checked %s", endpoint)
+		}
+		return nil
+	}
+	saved, out := runWizard(t, nil, nil,
+		"n",          // skip the summary model
+		"n",          // skip the launcher
+		"y",          // set up uploads
+		"",           // the main server, the default
+		"main-token", // pasted token
+	)
+	for _, want := range []string{`endpoint = "https://contextdrop.dev"`, `upload_token = "main-token"`} {
+		if !strings.Contains(saved, want) {
+			t.Errorf("config missing %s:\n%s", want, saved)
+		}
+	}
+	if !strings.Contains(out, "Checking https://contextdrop.dev") {
+		t.Errorf("output = %s", out)
+	}
+}
+
+func TestSetupGeneratesTokenForSelfHostedServer(t *testing.T) {
+	oldCheck, oldGen := checkEndpoint, newUploadToken
+	t.Cleanup(func() { checkEndpoint, newUploadToken = oldCheck, oldGen })
+	checkEndpoint = func(string) error { return errors.New("connection refused") }
+	newUploadToken = func() (string, error) { return "generated-123", nil }
+	saved, out := runWizard(t, nil, nil,
+		"n",
+		"n",
+		"y",
+		"https://files.example.com/", // trailing slash is trimmed
+		"y",                          // generate a token
+	)
+	for _, want := range []string{`endpoint = "https://files.example.com"`, `upload_token = "generated-123"`} {
+		if !strings.Contains(saved, want) {
+			t.Errorf("config missing %s:\n%s", want, saved)
+		}
+	}
+	if !strings.Contains(out, "CONTEXT_DROP_UPLOAD_TOKEN=generated-123") || !strings.Contains(out, "saved anyway") {
+		t.Errorf("output = %s", out)
 	}
 }
