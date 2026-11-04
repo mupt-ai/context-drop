@@ -36,9 +36,6 @@ func newUpdateCommand(build BuildInfo) *cobra.Command {
 					return err
 				}
 			} else {
-				if build.Version == "dev" {
-					return fmt.Errorf("this binary was built from source (version dev); run `context-drop update --version v0.3.0` to install a release over it")
-				}
 				if want, err = update.Latest(cmd.Context(), client); err != nil {
 					return err
 				}
@@ -47,6 +44,9 @@ func newUpdateCommand(build BuildInfo) *cobra.Command {
 			if check {
 				fmt.Fprintf(cmd.OutOrStdout(), "current %s, available %s\n", current, want)
 				return nil
+			}
+			if version == "" && current == "dev" {
+				return fmt.Errorf("this binary was built from source (version dev); run `context-drop update --version %s` to install a release over it", want)
 			}
 			if current == want {
 				fmt.Fprintf(cmd.OutOrStdout(), "context-drop %s is already installed at %s\n", want, target)
