@@ -94,14 +94,14 @@ func TestUploadAndVersionCommands(t *testing.T) {
 	}
 }
 
-func TestUploadRequiresToken(t *testing.T) {
+func TestUploadRequiresEndpoint(t *testing.T) {
 	useTempCLIConfig(t)
 	file := filepath.Join(t.TempDir(), "hello.txt")
 	if err := os.WriteFile(file, []byte("hello"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, _, err := executeRoot(t, "upload", file)
-	if err == nil || !strings.Contains(err.Error(), "upload token is required") {
+	if err == nil || !strings.Contains(err.Error(), "endpoint is required") {
 		t.Fatalf("error = %v", err)
 	}
 }

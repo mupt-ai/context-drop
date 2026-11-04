@@ -162,8 +162,8 @@ func TestConfigHelpersAndServerErrors(t *testing.T) {
 		t.Fatalf("int = %d", got)
 	}
 	t.Setenv("CONTEXT_DROP_UPLOAD_TOKEN", "")
-	if _, err := LoadServerConfig(); err == nil || !strings.Contains(err.Error(), "CONTEXT_DROP_UPLOAD_TOKEN is required") {
-		t.Fatalf("missing token error = %v", err)
+	if cfg, err := LoadServerConfig(); err != nil || cfg.UploadToken != "" {
+		t.Fatalf("public server config = %+v, error = %v", cfg, err)
 	}
 	t.Setenv("CONTEXT_DROP_UPLOAD_TOKEN", "secret")
 	t.Setenv("CONTEXT_DROP_DEFAULT_TTL", "bad")

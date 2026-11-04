@@ -153,9 +153,12 @@ func (s *Server) handleCreateDrop(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) authorizeUpload(r *http.Request) bool {
+	if s.uploadToken == "" {
+		return true
+	}
 	const prefix = "Bearer "
 	authorization := r.Header.Get("Authorization")
-	if !strings.HasPrefix(authorization, prefix) || s.uploadToken == "" {
+	if !strings.HasPrefix(authorization, prefix) {
 		return false
 	}
 	provided := strings.TrimSpace(strings.TrimPrefix(authorization, prefix))

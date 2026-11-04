@@ -114,9 +114,6 @@ func runUpload(ctx context.Context, cmd *cobra.Command, opts *options, args []st
 	if err != nil {
 		return err
 	}
-	if cfg.UploadToken == "" {
-		return fmt.Errorf("upload token is required; set CONTEXT_DROP_UPLOAD_TOKEN or upload_token in config")
-	}
 	data, filename, contentType, err := inputData(args, clipboardEnabled)
 	if err != nil {
 		return err

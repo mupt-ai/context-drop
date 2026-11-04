@@ -95,7 +95,7 @@ Upload one file to the configured TTL store. With no path, `--clipboard` uploads
 
 Flags: `--endpoint`, `--ttl`, `--filename`, `--content-type`, `--clipboard`, `--no-clipboard`, and `--json`.
 
-Uploads require `CONTEXT_DROP_UPLOAD_TOKEN` or `upload_token` in `~/.context-drop/config.toml`.
+Public servers need no upload token. Private servers can require `CONTEXT_DROP_UPLOAD_TOKEN` or `upload_token` in `~/.context-drop/config.toml`.
 
 ## `context-drop version`
 

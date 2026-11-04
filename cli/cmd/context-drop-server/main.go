@@ -40,7 +40,7 @@ Configuration is provided with environment variables:
   CONTEXT_DROP_DATA_DIR              data directory for local storage (default .data)
   CONTEXT_DROP_GCS_BUCKET            GCS bucket for gcs storage
   CONTEXT_DROP_GCS_PREFIX            optional GCS object prefix
-  CONTEXT_DROP_UPLOAD_TOKEN          required bearer token for uploads
+  CONTEXT_DROP_UPLOAD_TOKEN          optional bearer token (unset allows public uploads)
   CONTEXT_DROP_DEFAULT_TTL           default drop TTL (default 24h)
   CONTEXT_DROP_MAX_TTL               maximum drop TTL (default 168h)
   CONTEXT_DROP_MAX_BYTES             maximum upload size in bytes (default 26214400)

@@ -14,9 +14,6 @@ func TestUploadValidationAndRequest(t *testing.T) {
 	if _, err := Upload(context.Background(), UploadRequest{UploadToken: "token", Data: []byte("x")}); err == nil || !strings.Contains(err.Error(), "endpoint") {
 		t.Fatalf("endpoint error = %v", err)
 	}
-	if _, err := Upload(context.Background(), UploadRequest{Endpoint: "https://example.test", Data: []byte("x")}); err == nil || !strings.Contains(err.Error(), "upload token") {
-		t.Fatalf("token error = %v", err)
-	}
 	if _, err := Upload(context.Background(), UploadRequest{Endpoint: "https://example.test", UploadToken: "token"}); err == nil || !strings.Contains(err.Error(), "empty") {
 		t.Fatalf("empty error = %v", err)
 	}

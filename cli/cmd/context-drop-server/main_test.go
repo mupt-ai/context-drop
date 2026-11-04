@@ -66,10 +66,10 @@ func TestMainPrintsHelp(t *testing.T) {
 	}
 }
 
-func TestRunRequiresUploadToken(t *testing.T) {
-	t.Setenv("CONTEXT_DROP_UPLOAD_TOKEN", "")
+func TestRunRejectsInvalidTTL(t *testing.T) {
+	t.Setenv("CONTEXT_DROP_DEFAULT_TTL", "bad")
 	err := run()
-	if err == nil || !strings.Contains(err.Error(), "CONTEXT_DROP_UPLOAD_TOKEN is required") {
+	if err == nil || !strings.Contains(err.Error(), "CONTEXT_DROP_DEFAULT_TTL") {
 		t.Fatalf("run() error = %v", err)
 	}
 }
@@ -82,7 +82,7 @@ func TestMainErrorExits(t *testing.T) {
 	}
 	exit = func(code int) { panic(serverExitPanic(code)) }
 	os.Stderr = writer
-	t.Setenv("CONTEXT_DROP_UPLOAD_TOKEN", "")
+	t.Setenv("CONTEXT_DROP_DEFAULT_TTL", "bad")
 	defer func() {
 		exit, os.Stderr = oldExit, oldStderr
 		_ = reader.Close()

@@ -212,9 +212,8 @@ func runSetup(cmd *cobra.Command, ui setupUI) error {
 // mainServer is the hosted Context Drop server uploads default to.
 const mainServer = "https://contextdrop.dev"
 
-// setupUploads sets the endpoint and upload token. The default endpoint is the
-// main server, whose token you paste. For a server you run yourself, setup can
-// generate a token and print the line that server needs.
+// setupUploads uses the public main server without credentials. Private servers
+// can optionally use a shared upload token.
 func setupUploads(ui setupUI, cfg *config.CLIConfig) error {
 	def := 0
 	if cfg.Endpoint != "" && cfg.Endpoint != mainServer {
@@ -242,6 +241,10 @@ func setupUploads(ui setupUI, cfg *config.CLIConfig) error {
 		ui.note(red(oneLineErr(err)) + gray(" (saved anyway; uploads will fail until it responds)"))
 	}
 	cfg.Endpoint = endpoint
+	if endpoint == mainServer {
+		cfg.UploadToken = ""
+		return nil
+	}
 
 	if endpoint != mainServer {
 		generate, err := ui.confirm("Generate a token for this server?", "Choose No if you already have a token for it.", false)
@@ -258,12 +261,7 @@ func setupUploads(ui setupUI, cfg *config.CLIConfig) error {
 			return nil
 		}
 	}
-	token, err := ui.secret("Upload token", "Paste the token for this server. It is saved in ~/.context-drop/config.toml.", func(v string) error {
-		if strings.TrimSpace(v) == "" {
-			return errors.New("a token is required for uploads")
-		}
-		return nil
-	})
+	token, err := ui.secret("Upload token (optional)", "Leave blank for a public server. Saved in ~/.context-drop/config.toml.", func(v string) error { return nil })
 	if err != nil {
 		return err
 	}

@@ -175,7 +175,7 @@ func TestMuxInstalledHonoursBinOverride(t *testing.T) {
 	}
 }
 
-func TestSetupUploadsToMainServerWithPastedToken(t *testing.T) {
+func TestSetupUploadsToMainServerWithoutToken(t *testing.T) {
 	oldCheck := checkEndpoint
 	t.Cleanup(func() { checkEndpoint = oldCheck })
 	checkEndpoint = func(endpoint string) error {
@@ -185,13 +185,12 @@ func TestSetupUploadsToMainServerWithPastedToken(t *testing.T) {
 		return nil
 	}
 	saved, out := runWizard(t, nil, nil,
-		"n",          // skip the summary model
-		"n",          // skip the launcher
-		"y",          // set up uploads
-		"1",          // the main server
-		"main-token", // pasted token
+		"n", // skip the summary model
+		"n", // skip the launcher
+		"y", // set up uploads
+		"1", // the main server
 	)
-	for _, want := range []string{`endpoint = "https://contextdrop.dev"`, `upload_token = "main-token"`} {
+	for _, want := range []string{`endpoint = "https://contextdrop.dev"`, `upload_token = ""`} {
 		if !strings.Contains(saved, want) {
 			t.Errorf("config missing %s:\n%s", want, saved)
 		}
