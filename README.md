@@ -34,7 +34,7 @@ context-drop setup
 Running `context-drop` with nothing configured offers the same setup. It's a terminal UI with one page per question, and each answer leaves a checkmark line behind:
 
 - **Summary model:** a picker of cheap cloud models (Claude Haiku 5.5, GPT-6 Luna, Claude Sonnet 5.5) and the Ollama models installed on this machine. Cloud models use the key variable set in your shell, and setup tries each one until a test request works. You can also enter an Ollama model name, an OpenAI-compatible server, or a command. Only the variable's name is saved, never the key.
-- **Uploads:** the main server (`https://contextdrop.dev`) and its token, or a server you run.
+- **Uploads:** the public main server (`https://contextdrop.dev`), with no token needed, or a server you run.
 - **The launcher:** tmux, herdr, or Rex, and whether agents start directly or through a wrapper such as `dari {agent}`.
 - **The Pi extension**, if Pi is installed.
 
@@ -101,7 +101,7 @@ context-drop summarize
 context-drop upload ./report.txt --ttl 1h
 ```
 
-Uploads need a running server and its upload token. Set `CONTEXT_DROP_ENDPOINT` and `CONTEXT_DROP_UPLOAD_TOKEN`. To run the bundled server, see the [server guide](docs/server.md). Anyone with a download link can open the file until it expires.
+Uploads need a running server. Set `CONTEXT_DROP_ENDPOINT`; `CONTEXT_DROP_UPLOAD_TOKEN` is only needed for private servers. To run the bundled server, see the [server guide](docs/server.md). Anyone with a download link can open the file until it expires.
 
 ## Configuration
 
@@ -198,7 +198,7 @@ context-drop summarize
 context-drop upload ./report.txt --ttl 1h
 ```
 
-Uploads need a running server and its upload token. Set `CONTEXT_DROP_ENDPOINT` and `CONTEXT_DROP_UPLOAD_TOKEN`. To run the bundled server, see the [server guide](docs/server.md). Anyone with a download link can open the file until it expires.
+Uploads need a running server. Set `CONTEXT_DROP_ENDPOINT`; `CONTEXT_DROP_UPLOAD_TOKEN` is only needed for private servers. To run the bundled server, see the [server guide](docs/server.md). Anyone with a download link can open the file until it expires.
 
 ## Configuration
 

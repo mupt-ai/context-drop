@@ -251,9 +251,6 @@ func LoadServerConfig() (ServerConfig, error) {
 		UploadToken: strings.TrimSpace(os.Getenv("CONTEXT_DROP_UPLOAD_TOKEN")),
 		MaxBytes:    envInt64("CONTEXT_DROP_MAX_BYTES", 25*1024*1024),
 	}
-	if cfg.UploadToken == "" {
-		return cfg, fmt.Errorf("CONTEXT_DROP_UPLOAD_TOKEN is required")
-	}
 	var err error
 	cfg.DefaultTTL, err = envDuration("CONTEXT_DROP_DEFAULT_TTL", 24*time.Hour)
 	if err != nil {

@@ -66,6 +66,28 @@ func newTestServer(t *testing.T, ttl time.Duration) *Server {
 	})
 }
 
+func TestPublicServerUploadAndDownload(t *testing.T) {
+	s := NewServer(Options{
+		Store:      storage.NewLocal(t.TempDir()),
+		DefaultTTL: time.Hour, MaxTTL: time.Hour, MaxBytes: 1024,
+	})
+	h := s.Handler()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/drops", strings.NewReader("public upload")))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("upload = %d: %s", rec.Code, rec.Body.String())
+	}
+	var created createDropResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, created.URL, nil))
+	if rec.Code != http.StatusOK || rec.Body.String() != "public upload" {
+		t.Fatalf("download = %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func uploadRequest(body string) *http.Request {
 	req := httptest.NewRequest(http.MethodPost, "/v1/drops", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+testUploadToken)

@@ -33,9 +33,6 @@ func Upload(ctx context.Context, req UploadRequest) (UploadResponse, error) {
 	if req.Endpoint == "" {
 		return UploadResponse{}, fmt.Errorf("endpoint is required")
 	}
-	if req.UploadToken == "" {
-		return UploadResponse{}, fmt.Errorf("upload token is required; set CONTEXT_DROP_UPLOAD_TOKEN or upload_token in config")
-	}
 	if len(req.Data) == 0 {
 		return UploadResponse{}, fmt.Errorf("upload data is empty")
 	}
@@ -44,7 +41,9 @@ func Upload(ctx context.Context, req UploadRequest) (UploadResponse, error) {
 	if err != nil {
 		return UploadResponse{}, err
 	}
-	httpReq.Header.Set("Authorization", "Bearer "+req.UploadToken)
+	if req.UploadToken != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+req.UploadToken)
+	}
 	httpReq.Header.Set("X-Filename", req.Filename)
 	if req.ContentType != "" {
 		httpReq.Header.Set("Content-Type", req.ContentType)

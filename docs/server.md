@@ -1,14 +1,20 @@
 # Server and self-hosting
 
-The Context Drop server is a self-hosted TTL file store. It exposes health checks, one authenticated upload endpoint, and opaque public download URLs. It has no chains, machine pairing, inboxes, handoffs, listing, pull, or delete APIs.
+The Context Drop server is a self-hosted TTL file store. It exposes health checks, one optionally authenticated upload endpoint, and opaque public download URLs. It has no chains, machine pairing, inboxes, handoffs, listing, pull, or delete APIs.
 
 ## API
 
 - `GET /health` and `GET /healthz` return `ok`.
-- `POST /v1/drops` uploads a non-empty body. It requires `Authorization: Bearer <CONTEXT_DROP_UPLOAD_TOKEN>` and accepts `X-Filename`, `Content-Type`, and `X-TTL` headers.
+- `POST /v1/drops` uploads a non-empty body. It accepts anonymous uploads when `CONTEXT_DROP_UPLOAD_TOKEN` is unset; otherwise it requires `Authorization: Bearer <CONTEXT_DROP_UPLOAD_TOKEN>` and accepts `X-Filename`, `Content-Type`, and `X-TTL` headers.
 - `GET /d/<opaque-id>` downloads a file until its TTL expires. Anyone with the unguessable URL can open it; expired links return `410 Gone`.
 
 The server retains content-type and size limits. Safe image, PDF, and text types may render inline; other types download as attachments. There is no listing endpoint. Storage objects may remain physically present after expiry, so configure backend lifecycle rules when deletion timing matters.
+
+## Public hosting
+
+Leave `CONTEXT_DROP_UPLOAD_TOKEN` unset to accept uploads from anyone, including on `https://contextdrop.dev`. Deploy the updated server and remove any existing token from its environment to enable this behavior. Clients need only the endpoint.
+
+Public uploads retain the size and TTL limits, but these are not rate or storage quotas. Put public deployments behind ingress rate limits and configure storage lifecycle deletion: link expiry alone does not delete stored objects. Anonymous uploads can otherwise incur unbounded storage and bandwidth costs.
 
 ## Run locally
 
@@ -63,7 +69,7 @@ docker run --rm -p 8080:8080 \
 
 | Variable | Required | Default | Purpose |
 |---|---:|---|---|
-| `CONTEXT_DROP_UPLOAD_TOKEN` | yes | — | Bearer token accepted by `POST /v1/drops`. |
+| `CONTEXT_DROP_UPLOAD_TOKEN` | no | — | Optional bearer token for private servers. Unset means public uploads. |
 | `CONTEXT_DROP_ADDR` | no | `:8080` | Listen address. |
 | `CONTEXT_DROP_BASE_URL` | no | `http://localhost:8080` | Public origin used in returned download URLs. |
 | `CONTEXT_DROP_STORAGE` | no | `local` | `local` or `gcs`. |
