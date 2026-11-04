@@ -244,7 +244,7 @@ func newSetupCommand() *cobra.Command {
 			if !isInteractive(cmd) {
 				return fmt.Errorf("setup is interactive; run it in a terminal, or edit ~/.context-drop/config.toml (see docs/cli.md)")
 			}
-			return runSetup(cmd, newTUI(cmd))
+			return runSetup(cmd, newTermUI(cmd))
 		},
 	}
 	var printOnly bool
