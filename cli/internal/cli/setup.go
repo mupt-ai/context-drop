@@ -240,10 +240,21 @@ func setupUploads(ui setupUI, cfg *config.CLIConfig) error {
 	if err := ui.run("Checking "+endpoint, func() error { return checkEndpoint(endpoint) }); err != nil {
 		ui.note(red(oneLineErr(err)) + gray(" (saved anyway; uploads will fail until it responds)"))
 	}
+	previousEndpoint := cfg.Endpoint
 	cfg.Endpoint = endpoint
 	if endpoint == mainServer {
 		cfg.UploadToken = ""
 		return nil
+	}
+
+	if endpoint == strings.TrimRight(previousEndpoint, "/") && cfg.UploadToken != "" {
+		keep, err := ui.confirm("Keep the saved upload token?", "Choose No to replace it or switch to public uploads.", true)
+		if err != nil {
+			return err
+		}
+		if keep {
+			return nil
+		}
 	}
 
 	if endpoint != mainServer {
