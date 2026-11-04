@@ -18,9 +18,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/huh"
-	"github.com/charmbracelet/lipgloss"
-
 	"contextdrop.dev/context-drop/internal/agents"
 	"contextdrop.dev/context-drop/internal/config"
 	"contextdrop.dev/context-drop/internal/summarize"
@@ -65,93 +62,10 @@ type setupUI interface {
 	confirm(title, desc string, def bool) (bool, error)
 	note(text string)
 	run(title string, work func() error) error
+	close()
 }
 
 var errAborted = errors.New("setup cancelled; nothing was saved")
-
-// tui renders each question as a huh form.
-type tui struct {
-	in  io.Reader
-	out io.Writer
-}
-
-func newTUI(cmd *cobra.Command) *tui { return &tui{in: cmd.InOrStdin(), out: cmd.OutOrStdout()} }
-
-func (t *tui) form(f huh.Field) error {
-	err := huh.NewForm(huh.NewGroup(f)).WithTheme(huh.ThemeCharm()).WithInput(t.in).WithOutput(t.out).Run()
-	if errors.Is(err, huh.ErrUserAborted) {
-		return errAborted
-	}
-	return err
-}
-
-func (t *tui) choose(title, desc string, options []string, def int) (int, error) {
-	opts := make([]huh.Option[int], len(options))
-	for i, o := range options {
-		opts[i] = huh.NewOption(o, i)
-	}
-	v := def
-	err := t.form(huh.NewSelect[int]().Title(title).Description(desc).Options(opts...).Value(&v))
-	return v, err
-}
-
-func (t *tui) ask(title, desc, def string, validate func(string) error) (string, error) {
-	v := def
-	in := huh.NewInput().Title(title).Description(desc).Value(&v)
-	if validate != nil {
-		in = in.Validate(validate)
-	}
-	err := t.form(in)
-	return strings.TrimSpace(v), err
-}
-
-// secret asks for a value without echoing it.
-func (t *tui) secret(title, desc string, validate func(string) error) (string, error) {
-	v := ""
-	in := huh.NewInput().Title(title).Description(desc).EchoMode(huh.EchoModePassword).Value(&v)
-	if validate != nil {
-		in = in.Validate(validate)
-	}
-	err := t.form(in)
-	return strings.TrimSpace(v), err
-}
-
-func (t *tui) confirm(title, desc string, def bool) (bool, error) {
-	v := def
-	err := t.form(huh.NewConfirm().Title(title).Description(desc).Affirmative("Yes").Negative("No").Value(&v))
-	return v, err
-}
-
-func (t *tui) note(text string) { fmt.Fprintln(t.out, noteStyle.Render(text)) }
-
-var (
-	titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212")).MarginTop(1)
-	noteStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	okStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
-	errStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
-)
-
-// run shows a spinner while work runs.
-func (t *tui) run(title string, work func() error) error {
-	done := make(chan error, 1)
-	go func() { done <- work() }()
-	frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-	tick := time.NewTicker(100 * time.Millisecond)
-	defer tick.Stop()
-	for i := 0; ; i++ {
-		select {
-		case err := <-done:
-			if err != nil {
-				fmt.Fprintf(t.out, "\r\033[K%s %s\n", errStyle.Render("✗"), title)
-			} else {
-				fmt.Fprintf(t.out, "\r\033[K%s %s\n", okStyle.Render("✓"), title)
-			}
-			return err
-		case <-tick.C:
-			fmt.Fprintf(t.out, "\r\033[K%s %s", frames[i%len(frames)], title)
-		}
-	}
-}
 
 // prompter asks plain line-based questions; tests script it.
 type prompter struct {
@@ -224,6 +138,8 @@ func (p *prompter) choose(title, desc string, options []string, def int) (int, e
 
 func (p *prompter) note(text string) { fmt.Fprintln(p.out, text) }
 
+func (p *prompter) close() {}
+
 func (p *prompter) run(title string, work func() error) error {
 	err := work()
 	if err != nil {
@@ -237,12 +153,11 @@ func (p *prompter) run(title string, work func() error) error {
 // runSetup walks through the summary model and the launcher and saves the
 // result. Cancelling at any point saves nothing.
 func runSetup(cmd *cobra.Command, ui setupUI) error {
+	defer ui.close()
 	cfg, err := config.LoadCLIConfigFile()
 	if err != nil {
 		return err
 	}
-	ui.note(titleStyle.Render("Context Drop setup"))
-	ui.note("Two parts: the model that summarizes your sessions, and how new agents are launched.")
 	if ok, err := ui.confirm("Set up the summary model?", "Used by `context-drop summarize`.", true); err != nil {
 		return err
 	} else if ok {
@@ -281,7 +196,7 @@ func runSetup(cmd *cobra.Command, ui setupUI) error {
 		return err
 	}
 	path, _ := config.CLIConfigPath()
-	ui.note(okStyle.Render("✓ Saved " + path))
+	ui.note(green("✓ Saved " + path))
 	if installPi {
 		if err := os.MkdirAll(filepath.Dir(piPath), 0o755); err != nil {
 			return err
@@ -289,7 +204,7 @@ func runSetup(cmd *cobra.Command, ui setupUI) error {
 		if err := os.WriteFile(piPath, agents.PiExtension, 0o644); err != nil {
 			return err
 		}
-		ui.note(okStyle.Render("✓ Installed the Pi extension") + noteStyle.Render(" (restart running Pi sessions to load it)"))
+		ui.note(green("✓ Installed the Pi extension") + gray(" (restart running Pi sessions to load it)"))
 	}
 	return nil
 }
@@ -324,7 +239,7 @@ func setupUploads(ui setupUI, cfg *config.CLIConfig) error {
 	}
 	endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
 	if err := ui.run("Checking "+endpoint, func() error { return checkEndpoint(endpoint) }); err != nil {
-		ui.note(errStyle.Render(oneLineErr(err)) + noteStyle.Render(" (saved anyway; uploads will fail until it responds)"))
+		ui.note(red(oneLineErr(err)) + gray(" (saved anyway; uploads will fail until it responds)"))
 	}
 	cfg.Endpoint = endpoint
 
@@ -339,7 +254,7 @@ func setupUploads(ui setupUI, cfg *config.CLIConfig) error {
 				return err
 			}
 			cfg.UploadToken = token
-			ui.note(okStyle.Render("✓ Generated a token. Start your server with this value:") + "\n  CONTEXT_DROP_UPLOAD_TOKEN=" + token)
+			ui.note(green("✓ Generated a token. Start your server with this value:") + "\n  CONTEXT_DROP_UPLOAD_TOKEN=" + token)
 			return nil
 		}
 	}
@@ -379,100 +294,177 @@ var newUploadToken = func() (string, error) {
 	return hex.EncodeToString(buf), nil
 }
 
-func setupSummarize(ctx context.Context, ui setupUI, cur config.SummarizeConfig) (config.SummarizeConfig, error) {
-	labels := []string{
-		"Ollama: a local model, transcripts stay on this machine",
-		"Anthropic: Claude through the Anthropic API or a gateway",
-		"OpenAI-compatible: OpenAI, LM Studio, llama.cpp, vLLM",
-		"Command: any CLI that reads the prompt on stdin, like `claude -p`",
+// modelChoice is one row of the summary model picker.
+type modelChoice struct {
+	label   string
+	detail  string
+	sc      config.SummarizeConfig
+	keyEnvs []string // variables a cloud model's key may come from
+	// ask is what to request after picking: "model", "url", or "command".
+	ask string
+}
+
+var (
+	anthropicKeyEnvs = []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"}
+	openAIKeyEnvs    = []string{"OPENAI_API_KEY"}
+)
+
+// summaryChoices lists the cheap cloud models, the Ollama models installed on
+// this machine, and the ways to enter a custom model.
+func summaryChoices() []modelChoice {
+	choices := []modelChoice{
+		{label: "Claude Haiku 5.5", detail: "Anthropic · cheap and fast",
+			sc: config.SummarizeConfig{Provider: summarize.ProviderAnthropic, Model: "claude-haiku-5-5"}, keyEnvs: anthropicKeyEnvs},
+		{label: "GPT-6 Luna", detail: "OpenAI · cheap",
+			sc: config.SummarizeConfig{Provider: summarize.ProviderOpenAI, Model: "gpt-6-luna", BaseURL: "https://api.openai.com/v1"}, keyEnvs: openAIKeyEnvs},
+		{label: "Claude Sonnet 5.5", detail: "Anthropic · stronger, costs more",
+			sc: config.SummarizeConfig{Provider: summarize.ProviderAnthropic, Model: "claude-sonnet-5-5"}, keyEnvs: anthropicKeyEnvs},
 	}
-	names := []string{summarize.ProviderOllama, summarize.ProviderAnthropic, summarize.ProviderOpenAI, summarize.ProviderCommand}
-	def := indexOf(names, cur.Provider)
+	for _, m := range ollamaModels() {
+		choices = append(choices, modelChoice{label: m, detail: "Ollama · installed here, runs locally",
+			sc: config.SummarizeConfig{Provider: summarize.ProviderOllama, Model: m, BaseURL: ollamaBase()}})
+	}
+	return append(choices,
+		modelChoice{label: "Other Ollama model…", detail: "type a model name", sc: config.SummarizeConfig{Provider: summarize.ProviderOllama}, ask: "model"},
+		modelChoice{label: "OpenAI-compatible server…", detail: "LM Studio, llama.cpp, vLLM", sc: config.SummarizeConfig{Provider: summarize.ProviderOpenAI}, ask: "url"},
+		modelChoice{label: "Command…", detail: "any CLI that reads the prompt on stdin", sc: config.SummarizeConfig{Provider: summarize.ProviderCommand}, ask: "command"},
+	)
+}
+
+// keyStatusText says whether one of a cloud model's key variables is set in this shell.
+func keyStatusText(envs []string) string {
+	for _, e := range envs {
+		if getenv(e) != "" {
+			return "key in $" + e
+		}
+	}
+	return "no key set"
+}
+
+// defaultChoice starts the picker on the model already configured, else on a
+// cloud model whose key is set, else on the first installed Ollama model.
+func defaultChoice(choices []modelChoice, cur config.SummarizeConfig) int {
+	for i, c := range choices {
+		if cur.Model != "" && c.sc.Model == cur.Model && c.sc.Provider == cur.Provider {
+			return i
+		}
+	}
+	for i, c := range choices {
+		if len(c.keyEnvs) > 0 && keyStatusText(c.keyEnvs) != "no key set" {
+			return i
+		}
+	}
+	for i, c := range choices {
+		if c.sc.Provider == summarize.ProviderOllama && c.ask == "" {
+			return i
+		}
+	}
+	return 0
+}
+
+func setupSummarize(ctx context.Context, ui setupUI, cur config.SummarizeConfig) (config.SummarizeConfig, error) {
+	choices := summaryChoices()
+	rows := make([]string, len(choices))
+	for i, c := range choices {
+		status := ""
+		if len(c.keyEnvs) > 0 {
+			status = " · " + keyStatusText(c.keyEnvs)
+		}
+		rows[i] = fmt.Sprintf("%-26s %s%s", c.label, c.detail, status)
+	}
+	def := defaultChoice(choices, cur)
 	for {
-		i, err := ui.choose("Which model provider?", "Transcript excerpts are sent to it.", labels, def)
+		i, err := ui.choose("Which model summarizes your sessions?", "Transcript excerpts are sent to it. Cheap cloud models need a key; Ollama models run here.", rows, def)
 		if err != nil {
 			return cur, err
 		}
-		sc := config.SummarizeConfig{Provider: names[i]}
-		keep := func(v string) string {
-			if cur.Provider == sc.Provider {
-				return v
-			}
-			return ""
-		}
-		required := func(what string) func(string) error {
-			return func(v string) error {
-				if strings.TrimSpace(v) == "" {
-					return fmt.Errorf("%s is required", what)
-				}
-				return nil
-			}
-		}
-		switch sc.Provider {
-		case summarize.ProviderOllama:
-			models := ollamaModels()
-			if len(models) > 0 {
-				options := append(append([]string{}, models...), "another model…")
-				j, err := ui.choose("Which Ollama model?", "Models installed in Ollama.", options, max(indexOf(models, keep(cur.Model)), 0))
-				if err != nil {
-					return cur, err
-				}
-				if j < len(models) {
-					sc.Model = models[j]
-				}
-			}
-			if sc.Model == "" {
-				if sc.Model, err = ui.ask("Ollama model", "For example qwen3.8:27b-mlx.", keep(cur.Model), required("a model")); err != nil {
-					return cur, err
-				}
-			}
-			if sc.BaseURL, err = ui.ask("Ollama URL", "", firstNonEmptyString(keep(cur.BaseURL), ollamaHost(), "http://localhost:11434"), required("a URL")); err != nil {
+		choice := choices[i]
+		sc := choice.sc
+		switch choice.ask {
+		case "model":
+			if sc.Model, err = ui.ask("Ollama model", "The name Ollama uses, for example qwen3.8:27b-mlx.", "", requiredValue("a model name")); err != nil {
 				return cur, err
 			}
-		case summarize.ProviderAnthropic:
-			if sc.Model, err = ui.ask("Model", "", firstNonEmptyString(keep(cur.Model), getenv("ANTHROPIC_DEFAULT_SONNET_MODEL"), "claude-sonnet-5-5"), required("a model")); err != nil {
+			sc.BaseURL = ollamaBase()
+		case "url":
+			if sc.BaseURL, err = ui.ask("Server URL", "The base URL, usually ending in /v1.", "http://localhost:1234/v1", requiredValue("a URL")); err != nil {
 				return cur, err
 			}
-			if sc.BaseURL, err = ui.ask("API base URL", "Change this to use a gateway.", firstNonEmptyString(keep(cur.BaseURL), getenv("ANTHROPIC_BASE_URL"), "https://api.anthropic.com"), required("a URL")); err != nil {
+			if sc.Model, err = ui.ask("Model name", "The name the server uses for the model.", "", requiredValue("a model name")); err != nil {
 				return cur, err
 			}
-			if sc.BaseURL == "https://api.anthropic.com" {
-				sc.BaseURL = ""
-			}
-			if sc.APIKeyEnv, err = askKeyEnv(ui, keep(cur.APIKeyEnv), true, "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"); err != nil {
-				return cur, err
-			}
-		case summarize.ProviderOpenAI:
-			if sc.BaseURL, err = ui.ask("API base URL", "OpenAI, or a local server such as http://localhost:1234/v1.", firstNonEmptyString(keep(cur.BaseURL), "https://api.openai.com/v1"), required("a URL")); err != nil {
-				return cur, err
-			}
-			if sc.Model, err = ui.ask("Model", "", keep(cur.Model), required("a model")); err != nil {
-				return cur, err
-			}
-			official := strings.TrimRight(sc.BaseURL, "/") == "https://api.openai.com/v1"
-			if sc.APIKeyEnv, err = askKeyEnv(ui, keep(cur.APIKeyEnv), official, "OPENAI_API_KEY"); err != nil {
-				return cur, err
-			}
-		case summarize.ProviderCommand:
-			if sc.Command, err = ui.ask("Command", "Receives the prompt on stdin and prints the summary.", firstNonEmptyString(keep(cur.Command), "claude -p"), required("a command")); err != nil {
+		case "command":
+			if sc.Command, err = ui.ask("Command", "Receives the prompt on stdin and prints the summary.", "claude -p", requiredValue("a command")); err != nil {
 				return cur, err
 			}
 		}
-		test, err := ui.confirm("Test it now?", "Sends a one-word request.", true)
-		if err != nil || !test {
-			return sc, err
+		if sc.Provider == summarize.ProviderOllama {
+			sc.BaseURL = ollamaBase()
 		}
-		testErr := ui.run("Testing "+sc.Provider+" "+firstNonEmptyString(sc.Model, sc.Command), func() error { return testModel(ctx, sc) })
+		testErr := error(nil)
+		if len(choice.keyEnvs) > 0 {
+			if sc.Provider == summarize.ProviderAnthropic {
+				sc.BaseURL = firstNonEmptyString(getenv("ANTHROPIC_BASE_URL"), sc.BaseURL)
+			}
+			sc.APIKeyEnv, testErr = testWithKey(ctx, ui, choice, sc)
+		} else {
+			testErr = ui.run("Testing "+choice.label, func() error { return testModel(ctx, sc) })
+		}
 		if testErr == nil {
 			return sc, nil
 		}
-		ui.note(errStyle.Render(oneLineErr(testErr)))
-		again, err := ui.confirm("Change the settings?", "Choose No to save them anyway.", true)
+		if errors.Is(testErr, errAborted) {
+			return cur, errAborted
+		}
+		ui.note(red("✗ " + oneLineErr(testErr)))
+		again, err := ui.confirm("Choose another model?", "No saves this one anyway.", true)
 		if err != nil || !again {
 			return sc, err
 		}
-		cur, def = sc, indexOf(names, sc.Provider)
+		cur = sc
 	}
+}
+
+// testWithKey tries the variables that hold a key in this shell, in order, and
+// returns the first that works. With none set, it asks for the variable's name.
+func testWithKey(ctx context.Context, ui setupUI, choice modelChoice, sc config.SummarizeConfig) (string, error) {
+	var set []string
+	for _, e := range choice.keyEnvs {
+		if getenv(e) != "" {
+			set = append(set, e)
+		}
+	}
+	if len(set) == 0 {
+		name, err := askKeyEnv(ui, "", true, choice.keyEnvs...)
+		if err != nil {
+			return "", err
+		}
+		sc.APIKeyEnv = name
+		return name, ui.run("Testing "+choice.label, func() error { return testModel(ctx, sc) })
+	}
+	var err error
+	for _, e := range set {
+		sc.APIKeyEnv = e
+		err = ui.run("Testing "+choice.label+" with $"+e, func() error { return testModel(ctx, sc) })
+		if err == nil {
+			return e, nil
+		}
+	}
+	return set[len(set)-1], err
+}
+
+func requiredValue(what string) func(string) error {
+	return func(v string) error {
+		if strings.TrimSpace(v) == "" {
+			return fmt.Errorf("%s is required", what)
+		}
+		return nil
+	}
+}
+
+// ollamaBase is the Ollama URL setup saves: OLLAMA_HOST or the default.
+func ollamaBase() string {
+	return firstNonEmptyString(ollamaHost(), "http://localhost:11434")
 }
 
 // askKeyEnv asks for the name of the environment variable that holds the key,
@@ -485,8 +477,12 @@ func askKeyEnv(ui setupUI, cur string, needed bool, candidates ...string) (strin
 		}
 	}
 	def := cur
-	if def == "" && len(set) > 0 {
+	switch {
+	case def != "":
+	case len(set) > 0:
 		def = set[0]
+	case needed && len(candidates) > 0:
+		def = candidates[0]
 	}
 	desc := "The variable's name, not the key. Only the name is saved."
 	if len(set) > 0 {
@@ -506,7 +502,7 @@ func askKeyEnv(ui setupUI, cur string, needed bool, candidates ...string) (strin
 		return nil
 	})
 	if err == nil && name != "" && getenv(name) == "" {
-		ui.note(noteStyle.Render("$" + name + " is not set in this shell; set it before running summarize."))
+		ui.note(gray("$" + name + " is not set in this shell; set it before running summarize."))
 	}
 	return name, err
 }
@@ -615,7 +611,8 @@ func offerSetup(cmd *cobra.Command, why string) (bool, error) {
 	if !isInteractive(cmd) {
 		return false, nil
 	}
-	ui := newTUI(cmd)
+	ui := newTermUI(cmd)
+	defer ui.close()
 	ok, err := ui.confirm(why, "Set it up now?", true)
 	if err != nil || !ok {
 		return false, nil
@@ -631,3 +628,7 @@ func ollamaHost() string {
 	}
 	return "http://" + h
 }
+
+func green(s string) string { return ansiGreen + s + ansiReset }
+func red(s string) string   { return ansiRed + s + ansiReset }
+func gray(s string) string  { return ansiGray + s + ansiReset }
