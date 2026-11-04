@@ -413,6 +413,9 @@ func setupSummarize(ctx context.Context, ui setupUI, cur config.SummarizeConfig)
 		if testErr == nil {
 			return sc, nil
 		}
+		if errors.Is(testErr, errAborted) {
+			return cur, errAborted
+		}
 		ui.note(red("✗ " + oneLineErr(testErr)))
 		again, err := ui.confirm("Choose another model?", "No saves this one anyway.", true)
 		if err != nil || !again {
@@ -609,6 +612,7 @@ func offerSetup(cmd *cobra.Command, why string) (bool, error) {
 		return false, nil
 	}
 	ui := newTermUI(cmd)
+	defer ui.close()
 	ok, err := ui.confirm(why, "Set it up now?", true)
 	if err != nil || !ok {
 		return false, nil

@@ -223,3 +223,27 @@ func TestSetupGeneratesTokenForSelfHostedServer(t *testing.T) {
 		t.Errorf("output = %s", out)
 	}
 }
+
+func TestCancellingTheKeyPromptSavesNothing(t *testing.T) {
+	path := useTempCLIConfig(t)
+	cmd := &cobra.Command{}
+	// Answer the summary model step, pick Haiku, then end input at the key-name prompt.
+	cmd.SetIn(strings.NewReader("\n1\n"))
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetContext(context.Background())
+	oldGet := getenv
+	t.Cleanup(func() { getenv = oldGet })
+	getenv = func(string) string { return "" }
+	oldLook := lookPath
+	t.Cleanup(func() { lookPath = oldLook })
+	lookPath = func(string) (string, error) { return "", errors.New("not found") }
+	oldRun := runOutput
+	t.Cleanup(func() { runOutput = oldRun })
+	runOutput = func(string, ...string) ([]byte, error) { return nil, errors.New("no ollama") }
+	if err := runSetup(cmd, newPrompter(cmd)); !errors.Is(err, errAborted) {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("config was written: %v", err)
+	}
+}
