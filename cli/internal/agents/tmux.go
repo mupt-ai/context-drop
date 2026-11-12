@@ -85,7 +85,8 @@ func (e *Env) tmuxPanes(ctx context.Context) map[string]Location {
 			}
 			loc := Location{Mux: MuxTmux, Pane: f[0]}
 			if len(f) == 7 {
-				loc.Session, loc.Window, loc.Label = f[2], f[3], f[5]
+				// The window name names the window, so it is a window alias, not the pane's label.
+				loc.Session, loc.Window = f[2], f[3]
 				loc.aliases = [3][]string{nil, {f[4], f[5]}, {f[6]}}
 			}
 			e.tmux[f[1]] = loc
@@ -108,7 +109,7 @@ func (m tmuxMux) submit(ctx context.Context, env *Env, at Location, text string)
 	if at.Pane == "" {
 		return fmt.Errorf("session is not running in a tmux pane")
 	}
-	if _, err := env.Run(ctx, nil, env.Bin("tmux"), "send-keys", "-t", at.Pane, "-l", "--", singleLine(text)); err != nil {
+	if _, err := env.Run(ctx, nil, env.Bin("tmux"), "send-keys", "-t", at.Pane, "-l", "--", tmuxLine(text)); err != nil {
 		return err
 	}
 	select {
@@ -126,4 +127,10 @@ func (tmuxMux) press(ctx context.Context, env *Env, at Location, key string) err
 	}
 	_, err := env.Run(ctx, nil, env.Bin("tmux"), "send-keys", "-t", at.Pane, name)
 	return err
+}
+
+// tmuxLine joins lines with spaces, since a newline would submit early, but
+// keeps the spacing within each line (a literal paste preserves it).
+func tmuxLine(text string) string {
+	return strings.Join(strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n"), " ")
 }

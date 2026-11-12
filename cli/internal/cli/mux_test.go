@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"contextdrop.dev/context-drop/internal/agents"
@@ -32,6 +33,7 @@ func fakeMuxHost(t *testing.T, screen string) *[]string {
 		}
 	}
 	var commands []string
+	var mu sync.Mutex // Locate reads the multiplexers concurrently
 	oldEnv, oldProviders := newEnv, allProviders
 	t.Cleanup(func() { newEnv, allProviders = oldEnv, oldProviders })
 	allProviders = func() []agents.Provider { return agents.Providers() }
@@ -40,7 +42,9 @@ func fakeMuxHost(t *testing.T, screen string) *[]string {
 			Home: home,
 			Run: func(_ context.Context, _ []byte, name string, args ...string) ([]byte, error) {
 				cmd := strings.Join(append([]string{name}, args...), " ")
+				mu.Lock()
 				commands = append(commands, cmd)
+				mu.Unlock()
 				switch {
 				case strings.HasPrefix(cmd, "tmux list-panes"):
 					return []byte("%3\t/dev/ttys010\twork\t2\t@7\teditor\t1\n"), nil

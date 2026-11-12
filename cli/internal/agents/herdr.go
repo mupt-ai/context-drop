@@ -102,19 +102,20 @@ func herdrResolve(ctx context.Context, env *Env, kind, name, workspace string) s
 	if kind == "tab" && workspace != "" {
 		args = append(args, "--workspace", workspace)
 	}
+	byLabel := ""
 	for _, item := range herdrList[herdrNamed](ctx, env, kind+"s", args...) {
 		id := item.WorkspaceID
 		if kind == "tab" {
 			id = item.TabID
 		}
 		if id == name {
-			return id
+			return id // an exact ID wins over any label
 		}
-		if strings.EqualFold(item.Label, name) {
-			name = id
+		if byLabel == "" && strings.EqualFold(item.Label, name) {
+			byLabel = id
 		}
 	}
-	return name
+	return firstNonEmpty(byLabel, name)
 }
 
 // herdrTabPane picks the pane to split in a tab: its focused pane, else its first.

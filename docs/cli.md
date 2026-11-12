@@ -14,11 +14,11 @@ Sessions are found from each agent's own state and processes, so an agent is lis
 
 | | `session` | `window` | `pane` | `label` |
 | --- | --- | --- | --- | --- |
-| tmux | session name | window index | pane ID (`%3`) | window name |
+| tmux | session name | window index | pane ID (`%3`) | |
 | herdr | workspace ID | tab ID | pane ID (`w1:p2`) | |
 | Rex | session label | window ID | block ID | block label |
 
-`--in`, `--session`, `--window`, and `--pane` keep only the sessions in that place. Each takes an ID or a label at that level (herdr workspace and tab labels, tmux window names, Rex block labels). Rex IDs also match without their `block:`/`window:`/`session:` prefix, or by the short form Rex prints (at least six characters).
+`--in`, `--session`, `--window`, and `--pane` keep only the sessions in that place. Each takes an ID or a label at that level (herdr workspace and tab labels, tmux window names for `--window`, Rex block labels for `--pane`). Rex IDs also match without their `block:`/`window:`/`session:` prefix, or by the short form Rex prints (at least six characters).
 
 Finding Rex blocks runs `rex` with `--autostart=false`, so `list` never starts a Rex server.
 

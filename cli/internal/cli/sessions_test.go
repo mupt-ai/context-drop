@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,6 +32,7 @@ func fakePiHost(t *testing.T) *[]string {
 		t.Fatal(err)
 	}
 	var commands []string
+	var mu sync.Mutex // Locate reads the multiplexers concurrently
 	oldEnv, oldProviders := newEnv, allProviders
 	t.Cleanup(func() { newEnv, allProviders = oldEnv, oldProviders })
 	allProviders = func() []agents.Provider { return agents.Providers() }
@@ -38,7 +40,9 @@ func fakePiHost(t *testing.T) *[]string {
 		return &agents.Env{
 			Home: home,
 			Run: func(_ context.Context, _ []byte, name string, args ...string) ([]byte, error) {
+				mu.Lock()
 				commands = append(commands, strings.Join(append([]string{name}, args...), " "))
+				mu.Unlock()
 				switch {
 				case name == "herdr" && args[0] == "pane" && args[1] == "list":
 					return []byte(`{"result":{"panes":[{"pane_id":"w9N:p2"}]}}`), nil

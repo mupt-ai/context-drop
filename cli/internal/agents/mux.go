@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 )
 
 // Multiplexers Context Drop can start agents in, locate them in, and type into.
@@ -86,7 +87,8 @@ func (l Location) Matches(at Placement) bool {
 
 // nameMatches compares a user-supplied name with a pane's names. Rex IDs
 // ("block:01a1…") also match without their kind and by the short form Rex
-// prints (a prefix or suffix of at least six characters).
+// prints: a suffix of at least six characters. Prefixes are not accepted,
+// because Rex IDs are time-ordered and blocks made near each other share them.
 func nameMatches(want string, names ...string) bool {
 	for _, n := range names {
 		if n == "" {
@@ -97,7 +99,7 @@ func nameMatches(want string, names ...string) bool {
 		}
 		// Only rex IDs have a word kind; herdr's "w1:p2" does not.
 		if kind, id, ok := strings.Cut(n, ":"); ok && len(want) >= 6 && (kind == "session" || kind == "window" || kind == "block") &&
-			(strings.HasPrefix(id, strings.TrimPrefix(want, kind+":")) || strings.HasSuffix(id, want)) {
+			(id == strings.TrimPrefix(want, kind+":") || strings.HasSuffix(id, want)) {
 			return true
 		}
 	}
@@ -147,6 +149,15 @@ func locate(ctx context.Context, env *Env, pid int, tty string) (Location, bool)
 // Locate fills in the Location of every session whose process runs in a
 // tmux, herdr, or rex pane, whether or not Context Drop started it.
 func Locate(ctx context.Context, env *Env, sessions []Session) {
+	// Read the three multiplexers at once; each caches its panes on env.
+	var wg sync.WaitGroup
+	for _, scan := range []func(){
+		func() { env.tmuxPanes(ctx) }, func() { env.herdrPanes(ctx) }, func() { env.rexPanes(ctx) },
+	} {
+		wg.Add(1)
+		go func(scan func()) { defer wg.Done(); scan() }(scan)
+	}
+	wg.Wait()
 	found := map[int]*Location{}
 	for i := range sessions {
 		s := &sessions[i]

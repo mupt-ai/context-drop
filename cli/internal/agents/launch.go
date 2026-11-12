@@ -182,7 +182,7 @@ func Launch(ctx context.Context, newEnv func() (*Env, error), providers []Provid
 				res.Session, res.Registered = s, true
 			}
 		}
-		screen, _ := mux.capture(ctx, env, res.Location, firstRunLines)
+		screen, captureErr := mux.capture(ctx, env, res.Location, firstRunLines)
 		waiting := firstRunScreen(screen)
 		if waiting == ScreenTrust && opts.Trust && keys < maxTrustKeys {
 			if key := trustKey(screen); key != "" {
@@ -200,9 +200,13 @@ func Launch(ctx context.Context, newEnv func() (*Env, error), providers []Provid
 				opts.OnScreen(waiting, res.Location)
 			}
 			reported = waiting
-		case res.Registered:
+		case res.Registered && captureErr == nil:
 			res.Status = LaunchRegistered
 			return res, nil
+		case res.Registered:
+			// The pane could not be read, so a dialog cannot be ruled out yet;
+			// keep checking, and settle for registered at the deadline.
+			res.Status = LaunchRegistered
 		default:
 			res.Status = LaunchNotRegistered
 		}

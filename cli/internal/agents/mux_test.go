@@ -315,14 +315,16 @@ func TestLocateFindsAgentsInEveryMultiplexer(t *testing.T) {
 		{tmux, Placement{Window: "editor"}, true},
 		{tmux, Placement{Window: "@7", Pane: "%3"}, true},
 		{tmux, Placement{Session: "play"}, false},
+		{tmux, Placement{Pane: "editor"}, false}, // a window name is not a pane name
 		{herdr, Placement{Session: "api", Window: "agents"}, true},
 		{herdr, Placement{Session: "w1", Pane: "w1:p2"}, true},
 		{herdr, Placement{Pane: "w1:p"}, false},
 		{rex, Placement{Session: "calm-prairie", Pane: "reviewer"}, true},
 		{rex, Placement{Session: "session:01a1b8fb-603e"}, true},
-		{rex, Placement{Pane: "e32e20a00ee"}, true}, // the short ID rex prints
-		{rex, Placement{Pane: "01a1cbb1-08ae"}, true},
-		{rex, Placement{Pane: "block:01a1cbb1"}, true},
+		{rex, Placement{Pane: "e32e20a00ee"}, true},                          // the short ID rex prints
+		{rex, Placement{Pane: "01a1cbb1-08ae-7f3e-8fb3-ae32e20a00ee"}, true}, // the full ID without its kind
+		{rex, Placement{Pane: "01a1cbb1-08ae"}, false},                       // prefixes are shared by blocks made near each other
+		{rex, Placement{Pane: "block:01a1cbb1"}, false},
 		{rex, Placement{Pane: "a00ee"}, false}, // too short to be an ID
 		{rex, Placement{Session: "calm"}, false},
 	}
@@ -367,5 +369,85 @@ func TestTmuxTarget(t *testing.T) {
 		if got := tmuxTarget(at); got != want {
 			t.Errorf("tmuxTarget(%+v) = %q, want %q", at, got, want)
 		}
+	}
+}
+
+func TestHerdrResolvePrefersAnExactID(t *testing.T) {
+	h := newFakeHost(t)
+	h.respond = func(args []string) ([]byte, error) {
+		// Workspace w1 is labelled "w2", and w2 exists too.
+		return []byte(`{"result":{"workspaces":[{"workspace_id":"w1","label":"w2"},{"workspace_id":"w2","label":"api"}]}}`), nil
+	}
+	env := h.env()
+	for name, want := range map[string]string{"w2": "w2", "api": "w2", "W1": "W1", "nope": "nope"} {
+		if got := herdrResolve(context.Background(), env, "workspace", name, ""); got != want {
+			t.Errorf("herdrResolve(%q) = %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestLaunchFindsTheSessionOfARexSplit(t *testing.T) {
+	h := newFakeHost(t)
+	h.vars = map[string]string{"CONTEXT_DROP_REX_BIN": "rex"}
+	h.respond = func(args []string) ([]byte, error) {
+		switch cmd := strings.Join(args, " "); {
+		case strings.HasPrefix(cmd, "rex run"):
+			return []byte(`{"anchor_id":"block:a","block_ids":["block:new"]}`), nil
+		case strings.HasSuffix(cmd, " ls --json"):
+			return []byte(`{"sessions":[{"session_id":"session:s0","label":"other"},{"session_id":"session:s1","label":"calm"}]}`), nil
+		case strings.Contains(cmd, "block ls -s session:s1"):
+			return []byte(`{"blocks":[{"block_id":"block:new","window_id":"window:w"}]}`), nil
+		}
+		return nil, nil
+	}
+	res, err := Launch(context.Background(), newEnvFor(h), []Provider{claudeProvider{}}, LaunchOptions{
+		Kind: Claude, Dir: t.TempDir(), Name: "x", Mux: MuxRex, At: Placement{Pane: "reviewer"},
+		Timeout: 5 * time.Millisecond, Interval: time.Millisecond,
+	})
+	if err != nil || res.Location.Session != "calm" {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+	for _, cmd := range h.commands {
+		if strings.Join(cmd, " ") == "rex capture -s session:s1 -b block:new --trim" {
+			return
+		}
+	}
+	t.Fatalf("the split was read without its session: %q", h.commands)
+}
+
+func TestLaunchDoesNotTreatAnUnreadablePaneAsReady(t *testing.T) {
+	h := newFakeHost(t)
+	dir := t.TempDir()
+	// The agent registers at once, but its pane cannot be read at first.
+	h.procs[900] = Process{PID: 900, TTY: "/dev/ttys050", Command: "claude", Start: time.Now().Add(time.Second)}
+	captures := 0
+	h.respond = func(args []string) ([]byte, error) {
+		switch args[1] {
+		case "new-window":
+			h.write(".claude/sessions/900.json", fmt.Sprintf(`{"pid":900,"sessionId":"s","cwd":%q,"status":"idle"}`, dir))
+			return []byte("%4\tcontext-drop\t1\n"), nil
+		case "capture-pane":
+			if captures++; captures == 1 {
+				return nil, fmt.Errorf("can't find pane")
+			}
+			return []byte(claudeTrustNo), nil
+		}
+		return nil, nil
+	}
+	res, err := Launch(context.Background(), newEnvFor(h), []Provider{claudeProvider{}}, LaunchOptions{
+		Kind: Claude, Dir: dir, Name: "x", Mux: MuxTmux, Timeout: 30 * time.Millisecond, Interval: time.Millisecond,
+	})
+	if err != nil || !res.Registered || res.Status != LaunchWaitingForTrust {
+		t.Fatalf("res=%+v err=%v", res, err)
+	}
+}
+
+func TestTmuxSubmitKeepsSpacingWithinLines(t *testing.T) {
+	h := newFakeHost(t)
+	if err := (tmuxMux{}).submit(context.Background(), h.env(), Location{Mux: MuxTmux, Pane: "%1"}, "a  b\tc\nnext"); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.commands[0][len(h.commands[0])-1]; got != "a  b\tc next" {
+		t.Fatalf("typed %q", got)
 	}
 }
