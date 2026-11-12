@@ -35,6 +35,7 @@ func newWatchCommand() *cobra.Command {
 			// poll reports ok=false for a pass that may have missed sessions: a
 			// provider failed, the process table could not be read, or time ran
 			// out mid-pass. Such a pass is skipped rather than shown as sessions ending.
+			var prev []agents.Session
 			poll := func() ([]agents.Session, bool, error) {
 				env, _, idx, err := discover(ctx)
 				if err != nil {
@@ -43,13 +44,12 @@ func newWatchCommand() *cobra.Command {
 				if _, err := env.Procs(ctx); err != nil || len(idx.Warnings) > 0 || ctx.Err() != nil {
 					return nil, false, nil
 				}
-				sessions := filter.apply(ctx, env, idx.Sessions)
+				sessions := keepUnlocated(filter.apply(ctx, env, idx.Sessions), prev, idx, filter.byPlace())
 				if !subagents {
 					sessions = topLevel(sessions)
 				}
 				return sessions, ctx.Err() == nil, nil
 			}
-			var prev []agents.Session
 			for ok := false; !ok; {
 				var err error
 				if prev, ok, err = poll(); err != nil {
@@ -99,6 +99,31 @@ func newWatchCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print one JSON object per change")
 	filter.register(cmd, "only watch")
 	return cmd
+}
+
+// keepUnlocated keeps a previously matched session that is still live but
+// whose pane could not be found this time (a multiplexer listing failed), so
+// a place filter does not report it as ended and then started again.
+func keepUnlocated(matched, prev []agents.Session, idx agents.Index, byPlace bool) []agents.Session {
+	if !byPlace {
+		return matched
+	}
+	in := map[string]bool{}
+	for _, s := range matched {
+		in[s.ID] = true
+	}
+	for _, p := range prev {
+		if in[p.ID] {
+			continue
+		}
+		for _, s := range idx.Sessions {
+			if s.ID == p.ID && s.Location == nil {
+				s.Location = p.Location
+				matched = append(matched, s)
+			}
+		}
+	}
+	return matched
 }
 
 func describeChange(c agents.Change) string {

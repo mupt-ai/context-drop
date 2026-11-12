@@ -41,13 +41,21 @@ func (e *Env) recordLaunch(s Session, at Location) error {
 
 // takeLaunch finds and removes the record of the pane `start` opened for
 // this run of the session.
-func (e *Env) takeLaunch(s Session) (Location, bool) {
+// A session that changed ID since (a Pi session without the extension takes
+// its file's ID after its first message) matches by its process, as long as
+// it still runs in the recorded pane.
+func (e *Env) takeLaunch(ctx context.Context, s Session) (Location, bool) {
 	var records []launchRecord
 	var found Location
 	ok := false
+	here, located := Location{}, false
+	if s.PID > 0 {
+		here, located = locate(ctx, e, s.PID, s.TTY)
+	}
 	_ = updateJSON(e.launchesPath(), &records, func() (bool, error) {
 		for i, r := range records {
-			if r.Session == s.ID && r.PID == s.PID {
+			renamed := r.Session != s.ID && r.PID > 0 && located && here.Mux == r.Mux && here.Pane == r.Pane
+			if r.PID == s.PID && (r.Session == s.ID || renamed) {
 				found, ok = Location{Mux: r.Mux, Pane: r.Pane, scope: r.Scope}, true
 				records = append(records[:i], records[i+1:]...)
 				return true, nil
@@ -68,7 +76,7 @@ func Stop(ctx context.Context, env *Env, s Session) (string, error) {
 	if s.Subagent {
 		return "", fmt.Errorf("%s is a subagent; stop its parent %s instead", s.ID, s.ParentID)
 	}
-	if at, ok := env.takeLaunch(s); ok {
+	if at, ok := env.takeLaunch(ctx, s); ok {
 		m, err := muxFor(at.Mux)
 		if err != nil {
 			return "", err

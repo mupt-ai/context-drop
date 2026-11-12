@@ -243,3 +243,15 @@ func TestGroupsSkipEverySessionTheCallerMayBe(t *testing.T) {
 		t.Fatalf("group = %+v", got)
 	}
 }
+
+func TestWatchWithAPlaceKeepsSessionsWhosePaneWasMissed(t *testing.T) {
+	prev := []agents.Session{{ID: "a", Location: &agents.Location{Mux: agents.MuxTmux, Pane: "%1"}}}
+	idx := agents.Index{Sessions: []agents.Session{{ID: "a"}, {ID: "b"}}}
+	got := keepUnlocated(nil, prev, idx, true)
+	if len(got) != 1 || got[0].ID != "a" || got[0].Location == nil {
+		t.Fatalf("kept = %+v", got)
+	}
+	if got := keepUnlocated(nil, prev, agents.Index{}, true); len(got) != 0 {
+		t.Fatalf("an ended session was kept: %+v", got)
+	}
+}

@@ -65,6 +65,9 @@ func (c ClaimConflict) Error() string {
 	return fmt.Sprintf("%s is claimed by %s (%s)", c.Wanted.Target, c.Held.Session, c.Held.Target)
 }
 
+// ErrNoProcess means a session has no process to tie claims to.
+var ErrNoProcess = errors.New("has no process Context Drop can follow, so its claims could not end with it")
+
 // NewClaim builds a claim on target for owner. A target that exists, or
 // that looks like a path (contains a slash or starts with "."), is a path,
 // resolved against dir; anything else is a task name.
@@ -100,6 +103,7 @@ func (s ClaimStore) Live(idx Index) ([]Claim, error) {
 	if err := updateJSON(s.Path, &stored, func() (bool, error) { return false, nil }); err != nil {
 		return nil, err
 	}
+	rebind(stored, idx)
 	live := map[string]bool{}
 	for _, sess := range idx.Sessions {
 		live[sess.ID] = true
@@ -111,6 +115,11 @@ func (s ClaimStore) Live(idx Index) ([]Claim, error) {
 // the same target. Unless force is set, a claim that overlaps another
 // session's claim is refused and nothing is recorded.
 func (s ClaimStore) Add(idx Index, wanted []Claim, force bool) error {
+	for _, w := range wanted {
+		if w.PID <= 0 {
+			return fmt.Errorf("%s %w (OpenCode sessions cannot claim)", w.Session, ErrNoProcess)
+		}
+	}
 	return s.update(idx, func(claims []Claim) ([]Claim, error) {
 		var conflicts []error
 		for _, w := range wanted {
@@ -162,23 +171,17 @@ func (s ClaimStore) Release(idx Index, session string, targets []Claim) ([]Claim
 func (s ClaimStore) update(idx Index, fn func([]Claim) ([]Claim, error)) error {
 	var stored []Claim
 	return updateJSON(s.Path, &stored, func() (bool, error) {
-		live := map[string]bool{}
-		for _, sess := range idx.Sessions {
-			live[sess.ID] = true
-		}
+		rebind(stored, idx)
 		procs, procErr := map[int]Process(nil), error(nil)
 		if s.env != nil {
 			procs, procErr = s.env.Procs(context.Background())
 		}
 		claims := removeClaims(stored, func(c Claim) bool {
-			if procErr != nil || procs == nil {
+			if procErr != nil || procs == nil || c.PID <= 0 {
 				return false
 			}
-			if c.PID > 0 {
-				_, alive := procs[c.PID]
-				return !alive
-			}
-			return !live[c.Session]
+			_, alive := procs[c.PID]
+			return !alive
 		})
 		updated, err := fn(claims)
 		if err != nil {
@@ -189,6 +192,25 @@ func (s ClaimStore) update(idx Index, fn func([]Claim) ([]Claim, error)) error {
 		stored = updated
 		return changed, nil
 	})
+}
+
+// rebind moves claims of a session that changed ID to its new ID: a Pi
+// session without the extension takes its file's ID after its first message
+// but keeps its process. A process shared by several sessions is left alone.
+func rebind(claims []Claim, idx Index) {
+	live := map[string]bool{}
+	byPID := map[int][]Session{}
+	for _, s := range idx.Sessions {
+		live[s.ID] = true
+		if !s.Subagent && s.PID > 0 {
+			byPID[s.PID] = append(byPID[s.PID], s)
+		}
+	}
+	for i, c := range claims {
+		if found := byPID[c.PID]; !live[c.Session] && c.PID > 0 && len(found) == 1 && found[0].Agent == c.Agent {
+			claims[i].Session = found[0].ID
+		}
+	}
 }
 
 // sameClaim reports whether two claims are on the same path (compared within

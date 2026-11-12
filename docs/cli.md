@@ -37,7 +37,7 @@ Print the last `N` transcript messages (default 20, `0` for all). Tool calls app
 
 Deliver a message into a live session as its next prompt; a busy agent receives it as a queued follow-up. Use `-` as the message to read it from stdin. `--wait` waits until the agent has replied and settled, then prints the new messages (default timeout 30 minutes).
 
-`--all` sends the message to every live top-level session that matches the filters (the same filters as `list`), except the session running the command. When the command runs under a process that serves several sessions (a Codex app-server), all of them are skipped, since it cannot tell which one is the sender. Each delivery is reported on stderr; a failed one does not stop the others, and `send` exits non-zero if any failed. With `--wait` it waits for all the replies at once and prints each under `== ID`. The filters are refused without `--all`, so a forgotten `--all` never turns a target into part of the message.
+`--all` sends the message to every live top-level session that matches the filters (the same filters as `list`), except the session running the command. When the command runs under a process that serves several sessions (a Codex app-server, or OpenCode), all of those sessions are skipped, since it cannot tell which one is the sender. Each delivery is reported on stderr; a failed one does not stop the others, and `send` exits non-zero if any failed. With `--wait` it waits for all the replies at once and prints each under `== ID`. The filters are refused without `--all`, so a forgotten `--all` never turns a target into part of the message.
 
 Delivery per agent:
 
@@ -65,7 +65,7 @@ Advisory claims let agents tell each other what they are working on. Nothing is 
 
 - `claim` records that the calling session is working on each `TARGET`: a file or directory (anything that exists, contains a `/`, or starts with `.`, resolved against the current directory) or else a task name. The session is the nearest agent session among the command's parent processes, so an agent runs `context-drop claim src/parser` as is; `--as` names a session explicitly, and a subagent's claims belong to its parent.
 - A claim that overlaps another live session's claim is refused, and nothing is recorded, unless `--force`: a path inside another claimed path (either way round), or the same task name (case-insensitive). Paths in different worktrees of one repository are compared by their path within the repository.
-- `release` drops the caller's claims on the given targets (matched by path in any worktree of the repository, or by the name as given), or all of them. A claim also disappears when its session's process exits; a discovery pass that misses a session hides its claims without dropping them.
+- `release` drops the caller's claims on the given targets (matched by path in any worktree of the repository, or by the name as given), or all of them. A claim also disappears when its session's process exits; a discovery pass that misses a session hides its claims without dropping them, and a Pi session that changes ID keeps its claims. OpenCode sessions cannot claim, because they have no process of their own to follow.
 - `claims` lists live claims; `list` adds a `CLAIMS` column (and `claims` in JSON) when there are any. Claims are stored in `~/.context-drop/claims.json` under a file lock.
 
 ### `context-drop overlaps [--since D] [--json]`

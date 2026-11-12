@@ -84,9 +84,10 @@ func gitRepo(t *testing.T) (main, feature string) {
 func TestClaims(t *testing.T) {
 	main, feature := gitRepo(t)
 	h := newFakeHost(t)
+	h.procs[300], h.procs[400] = Process{PID: 300}, Process{PID: 400}
 	env := h.env()
 	store := env.Claims()
-	a, b := Session{ID: "cc-a", Agent: Claude}, Session{ID: "cx-b", Agent: Codex}
+	a, b := Session{ID: "cc-a", Agent: Claude, PID: 300}, Session{ID: "cx-b", Agent: Codex, PID: 400}
 	idx := Index{Sessions: []Session{a, b}}
 	now := time.Now()
 
@@ -321,8 +322,61 @@ func TestLaunchRecordsSurviveConcurrentStarts(t *testing.T) {
 	}
 	wg.Wait()
 	for i := 1; i <= 20; i++ {
-		if _, ok := env.takeLaunch(Session{ID: fmt.Sprint("s", i), PID: i}); !ok {
+		if _, ok := env.takeLaunch(context.Background(), Session{ID: fmt.Sprint("s", i), PID: i}); !ok {
 			t.Fatalf("record %d was lost", i)
 		}
+	}
+}
+
+func TestClaimsFollowARenamedSessionAndRefuseSessionsWithoutAProcess(t *testing.T) {
+	h := newFakeHost(t)
+	h.procs[42] = Process{PID: 42}
+	store := h.env().Claims()
+	before := Session{ID: "pi-old", Agent: Pi, PID: 42}
+	if err := store.Add(Index{Sessions: []Session{before}}, []Claim{NewClaim(before, "release notes", "/", "", time.Now())}, false); err != nil {
+		t.Fatal(err)
+	}
+	// After its first message the Pi session has a new ID but the same process.
+	after := Session{ID: "pi-new", Agent: Pi, PID: 42}
+	live, err := store.Live(Index{Sessions: []Session{after}})
+	if err != nil || len(live) != 1 || live[0].Session != "pi-new" {
+		t.Fatalf("live = %+v, %v", live, err)
+	}
+	if released, _ := store.Release(Index{Sessions: []Session{after}}, "pi-new", nil); len(released) != 1 {
+		t.Fatalf("the renamed session could not release: %+v", released)
+	}
+	oc := Session{ID: "oc-1", Agent: OpenCode}
+	if err := store.Add(Index{Sessions: []Session{oc}}, []Claim{NewClaim(oc, "x", "/", "", time.Now())}, false); !errors.Is(err, ErrNoProcess) {
+		t.Fatalf("OpenCode claim: %v", err)
+	}
+}
+
+func TestSelfUnderOpenCodeIsEveryOpenCodeSession(t *testing.T) {
+	h := newFakeHost(t)
+	h.procs[500] = Process{PID: 500, PPID: 90}
+	h.procs[90] = Process{PID: 90, PPID: 1, Command: "/opt/bin/opencode"}
+	idx := Index{Sessions: []Session{{ID: "oc-1", Agent: OpenCode}, {ID: "oc-2", Agent: OpenCode}, {ID: "cc-1", Agent: Claude, PID: 7}}}
+	found, err := SelfCandidates(context.Background(), h.env(), idx, 500)
+	if err != nil || len(found) != 2 || found[0].ID != "oc-1" || found[1].ID != "oc-2" {
+		t.Fatalf("candidates = %+v, %v", found, err)
+	}
+}
+
+func TestStopFindsTheRecordOfARenamedPiSession(t *testing.T) {
+	h := muxHost(t) // pid 10 runs in tmux pane %3
+	inner := h.respond
+	h.respond = func(args []string) ([]byte, error) {
+		if args[0] == "tmux" && args[1] == "kill-pane" {
+			return nil, nil
+		}
+		return inner(args)
+	}
+	env := h.env()
+	if err := env.recordLaunch(Session{ID: "pi-pid-10", PID: 10}, Location{Mux: MuxTmux, Pane: "%3"}); err != nil {
+		t.Fatal(err)
+	}
+	how, err := Stop(context.Background(), h.env(), Session{ID: "pi-file-id", Agent: Pi, PID: 10, TTY: "/dev/ttys010"})
+	if err != nil || how != "closed tmux pane %3" {
+		t.Fatalf("stop = %q, %v", how, err)
 	}
 }

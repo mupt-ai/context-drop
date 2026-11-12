@@ -57,6 +57,17 @@ func SelfCandidates(ctx context.Context, env *Env, idx Index, pid int) ([]Sessio
 		if !ok {
 			break
 		}
+		if strings.HasPrefix(commandBase(p.Command), "opencode") {
+			// OpenCode sessions have no process of their own: the caller is
+			// one of them, but it cannot be told which.
+			var found []Session
+			for _, s := range idx.Sessions {
+				if s.Agent == OpenCode && !s.Subagent {
+					found = append(found, s)
+				}
+			}
+			return found, nil
+		}
 		pid = p.PPID
 	}
 	return nil, nil
