@@ -47,13 +47,15 @@ context-drop list
 ```
 
 ```text
-ID             AGENT     STATUS   ACTIVE  CWD                     NAME
-cc-6a79295a    claude    working  now     ~/code/app              app-ee
-└ cc-43eeb069  claude    idle     2m      ~/code/app              sleeper — general-purpose
-cx-739b53b2    codex     idle     5m      ~/code/api
-pi-0b9d88cf    pi        idle     now     ~/code/site             fix the nav
-oc-079ea5e4    opencode  idle     12m     ~/code/cli              Quick acknowledgment request
+ID             AGENT     STATUS   ACTIVE  CWD          NAME                          WHERE
+cc-6a79295a    claude    working  now     ~/code/app   app-ee                        rex calm-prairie/app
+└ cc-43eeb069  claude    idle     2m      ~/code/app   sleeper — general-purpose     rex calm-prairie/app
+cx-739b53b2    codex     idle     5m      ~/code/api                                 tmux work:2 %5
+pi-0b9d88cf    pi        idle     now     ~/code/site  fix the nav                   herdr w1:p2
+oc-079ea5e4    opencode  idle     12m     ~/code/cli   Quick acknowledgment request  -
 ```
+
+`WHERE` is the tmux, herdr, or Rex pane the agent runs in. `--in`, `--session`, `--window`, and `--pane` filter by it, e.g. `context-drop list --in rex --session calm-prairie`.
 
 ## Usage
 
@@ -61,6 +63,7 @@ oc-079ea5e4    opencode  idle     12m     ~/code/cli              Quick acknowle
 
 ```sh
 context-drop read cc-6a79295a                          # recent transcript
+context-drop read cc-6a79295a --screen                 # its terminal pane, dialogs included
 context-drop send cc-6a79295a 'Also update the docs' --wait
 ```
 
@@ -83,9 +86,13 @@ Pi has no built-in inbox. To message Pi sessions anywhere, install the extension
 context-drop start claude --cwd ~/code/app --prompt 'Fix the failing tests' --wait
 context-drop start codex --in herdr
 context-drop start pi --in rex -- --model fast
+context-drop start claude --in rex --session calm-prairie --pane reviewer
+context-drop start codex --in tmux --session work --window 2
 ```
 
-`start` opens the agent in a tmux window (in a `context-drop` session), a herdr tab, or a Rex block. It waits until the agent appears in `context-drop list` and prints its ID. `--prompt` sends a first message, and `--wait` prints the reply. Arguments after `--` go to the agent.
+`start` opens the agent in a tmux window (in a `context-drop` session), a herdr tab, or a Rex block. `--session`, `--window`, and `--pane` put it somewhere specific instead: a new window in that session (a tab in that herdr workspace), or a new pane split beside that window or pane (a Rex block). It waits until the agent appears in `context-drop list` and prints its ID. `--prompt` sends a first message, and `--wait` prints the reply. Arguments after `--` go to the agent.
+
+If the new agent stops at a folder-trust prompt or a login screen, `start` says so and keeps waiting for you to answer it, and it never types `--prompt` into the dialog. `--trust` answers a folder-trust prompt by trusting the folder.
 
 ### Summarize everything
 
@@ -124,104 +131,7 @@ launch_command = "dari {agent}"                 # {agent} becomes claude, codex,
 
 - Discovery uses `ps` and `lsof` and is tested on macOS. On Linux, only the unit tests run in CI.
 - Without the extension, a Pi session is identified by its process until it writes a session file, so its ID changes after its first message. `send --wait` and `start --wait` follow the change.
-- A newly started agent may stop at first-run prompts, such as trusting a folder, before it reads messages.
-
-## Development
-
-```sh
-cd cli
-make test     # go test ./...
-make race     # with the race detector
-```
-
-## License
-
-[MIT](LICENSE).
-Then:
-
-```sh
-context-drop list
-```
-
-```text
-ID             AGENT     STATUS   ACTIVE  CWD                     NAME
-cc-6a79295a    claude    working  now     ~/code/app              app-ee
-└ cc-43eeb069  claude    idle     2m      ~/code/app              sleeper — general-purpose
-cx-739b53b2    codex     idle     5m      ~/code/api
-pi-0b9d88cf    pi        idle     now     ~/code/site             fix the nav
-oc-079ea5e4    opencode  idle     12m     ~/code/cli              Quick acknowledgment request
-```
-
-## Usage
-
-### Read and message a session
-
-```sh
-context-drop read cc-6a79295a                          # recent transcript
-context-drop send cc-6a79295a 'Also update the docs' --wait
-```
-
-`send` delivers the message as the session's next prompt. A busy agent gets it as a queued follow-up. `--wait` prints the reply.
-
-An ID is a short hash of the agent and its native session ID, so a session always keeps the same ID. Commands also accept the native ID, a unique prefix of either, or the session name. Only live sessions appear: an agent process must be running.
-
-| Agent | How a live session is found | How `send` delivers |
-| --- | --- | --- |
-| Claude Code | Its `~/.claude/sessions/<pid>.json` registry entry, while the process runs | Claude Code's peer-messaging socket. Subagents get messages through their parent (`SendMessage`). |
-| Codex | A Codex process holds the thread's writer lock | `codex queue`, against the session's own app-server when it has one |
-| Pi | The Context Drop Pi extension's registry, or a running `pi` process | The extension's socket. Without the extension: the tmux, herdr, or Rex pane it runs in. |
-| OpenCode | The background service reports it running, or an OpenCode client in its directory has viewed it | The service's prompt API |
-
-Pi has no built-in inbox. To message Pi sessions anywhere, install the extension with `context-drop setup pi` (or during setup), then restart running Pi sessions.
-
-### Start an agent
-
-```sh
-context-drop start claude --cwd ~/code/app --prompt 'Fix the failing tests' --wait
-context-drop start codex --in herdr
-context-drop start pi --in rex -- --model fast
-```
-
-`start` opens the agent in a tmux window (in a `context-drop` session), a herdr tab, or a Rex block. It waits until the agent appears in `context-drop list` and prints its ID. `--prompt` sends a first message, and `--wait` prints the reply. Arguments after `--` go to the agent.
-
-### Summarize everything
-
-```sh
-context-drop summarize
-```
-
-`summarize` reads each live session's transcript and asks your chosen model what it is doing, what changed, and whether it needs you. When more than one session is live, it adds an overview across them. Sessions with no new activity reuse their last summary, so repeated runs only pay for what changed. State lives in `~/.context-drop/summaries.json`. Transcript excerpts go to the configured model, so use a local provider if they must stay on your machine.
-
-### Upload a file
-
-```sh
-context-drop upload ./report.txt --ttl 1h
-```
-
-Uploads need a running server. Set `CONTEXT_DROP_ENDPOINT`; `CONTEXT_DROP_UPLOAD_TOKEN` is only needed for private servers. To run the bundled server, see the [server guide](docs/server.md). Anyone with a download link can open the file until it expires.
-
-## Configuration
-
-`context-drop setup` writes these keys to `~/.context-drop/config.toml`. You can also edit the file directly:
-
-```toml
-summarize_provider = "ollama"                   # anthropic, openai, ollama, or command
-summarize_model = "qwen3.8:27b-mlx"
-summarize_base_url = "http://localhost:11434"
-# summarize_api_key_env = "ANTHROPIC_API_KEY"   # name of the variable holding the key
-# summarize_command = "claude -p"               # for provider "command"
-
-launch_in = "rex"                               # tmux, herdr, or rex
-launch_command = "dari {agent}"                 # {agent} becomes claude, codex, pi, or opencode
-```
-
-`summarize` never picks a provider or key from your environment. Without a provider, it stops and offers setup. Flags such as `--provider` and `--in`, and `CONTEXT_DROP_*` environment variables, override the file. The [CLI reference](docs/cli.md) covers every command, flag, and variable.
-
-## Limitations
-
-- Discovery uses `ps` and `lsof` and is tested on macOS. On Linux, only the unit tests run in CI.
-- Without the extension, a Pi session is identified by its process until it writes a session file, so its ID changes after its first message. `send --wait` and `start --wait` follow the change.
-- A newly started agent may stop at first-run prompts, such as trusting a folder, before it reads messages.
+- A newly started agent may stop at first-run prompts, such as trusting a folder or logging in, before it reads messages. `start` detects and reports them; only folder-trust prompts can be answered for you (`--trust`).
 
 ## Development
 

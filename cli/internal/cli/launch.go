@@ -15,7 +15,8 @@ import (
 
 func newStartCommand() *cobra.Command {
 	var dir, name, in, command, prompt string
-	var wait, asJSON bool
+	var at agents.Placement
+	var wait, asJSON, trust bool
 	var timeout, waitTimeout time.Duration
 	cmd := &cobra.Command{
 		Use:   "start AGENT [-- AGENT_ARGS...]",
@@ -24,6 +25,11 @@ func newStartCommand() *cobra.Command {
 			"block, wait until it appears in `context-drop list`, and print its ID.\n\n" +
 			"--in picks the multiplexer; the default is launch_in in ~/.context-drop/config.toml, then the one you are\n" +
 			"running inside, then whichever is installed. Arguments after -- go to the agent.\n\n" +
+			"--session, --window, and --pane name where to open it, in the multiplexer's own terms (rex session, window,\n" +
+			"block; tmux session, window, pane; herdr workspace, tab, pane), by ID or label. --session alone opens a new\n" +
+			"window (herdr: tab) there; --window or --pane opens a new pane split beside it. Nothing existing is typed into.\n\n" +
+			"If the agent stops at a folder-trust or first-run screen, start says so and keeps waiting until --timeout\n" +
+			"so you can answer it. --trust answers a folder-trust prompt by choosing to trust the folder.\n\n" +
 			"--command (or launch_command in config) is the command line that starts the agent instead of its bare\n" +
 			"executable; {agent} becomes the agent name, so launch_command = \"dari {agent}\" runs `dari claude`,\n" +
 			"`dari codex`, and so on. The agent kind still decides how the session is found.\n\n" +
@@ -56,17 +62,36 @@ func newStartCommand() *cobra.Command {
 				name = kind + "-" + filepath.Base(abs)
 			}
 			res, err := agents.Launch(cmd.Context(), newEnv, allProviders(), agents.LaunchOptions{
-				Kind: kind, Dir: abs, Name: name, Mux: strings.ToLower(in), Command: command, Args: agentArgs,
-				Prompt: prompt, Timeout: timeout,
+				Kind: kind, Dir: abs, Name: name, Mux: strings.ToLower(in), At: at, Command: command, Args: agentArgs,
+				Prompt: prompt, Trust: trust, Timeout: timeout,
+				OnScreen: func(screen string, at agents.Location) {
+					fmt.Fprintf(cmd.ErrOrStderr(), "%s in %s pane %s is %s; still waiting up to %s\n", kind, at.Mux, at.Pane, screenAdvice(screen, trust), timeout)
+				},
 			})
+			where := fmt.Sprintf("%s pane %s", res.Mux, res.Pane)
 			if err != nil {
 				if res.Pane != "" {
-					return fmt.Errorf("%w (opened %s pane %s)", err, res.Mux, res.Pane)
+					return fmt.Errorf("%w (opened %s)", err, where)
 				}
 				return err
 			}
+			if screen := strings.TrimPrefix(res.Status, "waiting_for_"); screen != res.Status {
+				started := kind
+				if res.Registered {
+					started = res.Session.ID
+				}
+				msg := fmt.Sprintf("started %s in %s, but it is %s", started, where, screenAdvice(screen, trust))
+				if prompt != "" {
+					return fmt.Errorf("%s; the prompt was not sent", msg)
+				}
+				fmt.Fprintln(cmd.ErrOrStderr(), msg)
+				if asJSON {
+					return writeJSON(cmd.OutOrStdout(), res)
+				}
+				return nil
+			}
 			if !res.Registered {
-				msg := fmt.Sprintf("started %s in %s pane %s, but it has not appeared in `context-drop list` after %s", kind, res.Mux, res.Pane, timeout)
+				msg := fmt.Sprintf("started %s in %s, but it has not appeared in `context-drop list` after %s", kind, where, timeout)
 				if kind == agents.OpenCode && prompt == "" {
 					msg += "; OpenCode creates its session when it gets its first message"
 				}
@@ -79,7 +104,7 @@ func newStartCommand() *cobra.Command {
 				}
 				return nil
 			}
-			fmt.Fprintf(cmd.ErrOrStderr(), "started %s in %s pane %s\n", res.Session.ID, res.Mux, res.Pane)
+			fmt.Fprintf(cmd.ErrOrStderr(), "started %s in %s\n", res.Session.ID, where)
 			if prompt != "" && kind == agents.OpenCode && wait {
 				// OpenCode got the prompt on its command line; wait for its reply.
 				// A brand-new session has no earlier copy of the prompt.
@@ -110,6 +135,10 @@ func newStartCommand() *cobra.Command {
 	cmd.Flags().StringVar(&dir, "cwd", "", "directory to start the agent in (default: current directory)")
 	cmd.Flags().StringVar(&name, "name", "", "label for the window, tab, or block (default: AGENT-DIRNAME)")
 	cmd.Flags().StringVar(&in, "in", "", "multiplexer: tmux, herdr, or rex")
+	cmd.Flags().StringVar(&at.Session, "session", "", "open a new window in this session (herdr: a tab in this workspace)")
+	cmd.Flags().StringVar(&at.Window, "window", "", "open a new pane split in this window (herdr: tab)")
+	cmd.Flags().StringVar(&at.Pane, "pane", "", "open a new pane split beside this pane (rex: block)")
+	cmd.Flags().BoolVar(&trust, "trust", false, "accept a folder-trust prompt by trusting the folder")
 	cmd.Flags().StringVar(&command, "command", "", `command line that starts the agent, e.g. "dari {agent}"`)
 	cmd.Flags().StringVar(&prompt, "prompt", "", "first message to send once the agent is up")
 	cmd.Flags().BoolVar(&wait, "wait", false, "with --prompt, wait for the reply and print it")
@@ -160,6 +189,17 @@ func waitForPrompt(cmd *cobra.Command, s agents.Session, prompt string, since ti
 	fmt.Fprintf(cmd.ErrOrStderr(), "%s is %s\n", final.ID, final.Status)
 	printMessages(cmd.ErrOrStderr(), msgs)
 	return final, nil
+}
+
+// screenAdvice says what a first-run screen is waiting for and how to get past it.
+func screenAdvice(screen string, trust bool) string {
+	if screen == agents.ScreenTrust {
+		if trust {
+			return "waiting at a folder-trust prompt that --trust could not answer; answer it in the pane"
+		}
+		return "waiting at a folder-trust prompt; answer it in the pane, or pass --trust"
+	}
+	return "waiting at a first-run " + screen + " screen (such as login); finish it in the pane"
 }
 
 func firstNonEmptyString(values ...string) string {

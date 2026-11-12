@@ -20,7 +20,7 @@ var PiExtension []byte
 // piProvider finds Pi sessions through the registry the Context Drop Pi
 // extension publishes, and falls back to matching running `pi` processes to
 // their newest session file. Messages go through the extension's socket, or
-// into the session's tmux or herdr pane when the extension is not loaded.
+// into the session's tmux, herdr, or rex pane when the extension is not loaded.
 type piProvider struct{}
 
 func (piProvider) Kind() string { return Pi }
@@ -141,9 +141,9 @@ func (piProvider) Discover(ctx context.Context, env *Env) ([]Session, error) {
 			// No session file can be attributed to this process yet.
 			s.NativeID = fmt.Sprintf("pid-%d-%d", p.PID, p.Start.Unix())
 		}
-		s.pane = resolvePane(ctx, env, p.PID, p.TTY)
-		if s.pane.backend != "" {
-			s.Delivery = s.pane.describe()
+		if loc, ok := locate(ctx, env, p.PID, p.TTY); ok {
+			s.Location = &loc
+			s.Delivery = loc.describe()
 		} else {
 			s.Delivery = "unavailable (run `context-drop setup pi`, then restart pi)"
 		}
@@ -230,10 +230,14 @@ func (piProvider) Transcript(_ context.Context, _ *Env, s Session) ([]Message, e
 
 func (piProvider) Send(ctx context.Context, env *Env, s Session, text string, _ SendOptions) error {
 	if s.socket == "" {
-		if s.pane.backend != "" {
-			return submitToPane(ctx, env, s.pane, text)
+		if s.Location != nil {
+			m, err := muxFor(s.Location.Mux)
+			if err != nil {
+				return err
+			}
+			return m.submit(ctx, env, *s.Location, text)
 		}
-		return fmt.Errorf("pi session %s has no Context Drop extension loaded and is not in tmux or herdr; run `context-drop setup pi` and restart pi", s.ID)
+		return fmt.Errorf("pi session %s has no Context Drop extension loaded and is not in a tmux, herdr, or rex pane; run `context-drop setup pi` and restart pi", s.ID)
 	}
 	dialer := net.Dialer{Timeout: 5 * time.Second}
 	conn, err := dialer.DialContext(ctx, "unix", s.socket)

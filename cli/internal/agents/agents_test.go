@@ -9,12 +9,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 // fakeHost is a home directory plus a scripted process table and command runner.
 type fakeHost struct {
+	mu       sync.Mutex
 	t        *testing.T
 	home     string
 	procs    map[int]Process
@@ -34,6 +36,8 @@ func newFakeHost(t *testing.T) *fakeHost {
 
 func (h *fakeHost) env() *Env {
 	run := func(_ context.Context, extra []string, stdin []byte, name string, args ...string) ([]byte, error) {
+		h.mu.Lock() // Locate reads the multiplexers concurrently
+		defer h.mu.Unlock()
 		h.commands = append(h.commands, append([]string{name}, args...))
 		h.extraEnv = append(h.extraEnv, extra)
 		h.stdin = append(h.stdin, string(stdin))

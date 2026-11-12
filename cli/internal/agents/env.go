@@ -46,34 +46,14 @@ type Env struct {
 	procs    map[int]Process
 	procErr  error
 
-	tmuxOnce  sync.Once
-	tmuxPanes map[string]string
+	tmuxOnce sync.Once
+	tmux     map[string]Location
 
 	herdrOnce sync.Once
-	herdr     map[int]string
+	herdr     map[int]Location
 
 	rexOnce sync.Once
-	rex     map[int]string
-}
-
-// tmuxPane returns the tmux pane attached to tty, if tmux is running.
-func (e *Env) tmuxPane(ctx context.Context, tty string) string {
-	if tty == "" {
-		return ""
-	}
-	e.tmuxOnce.Do(func() {
-		e.tmuxPanes = map[string]string{}
-		out, err := e.Run(ctx, nil, e.Bin("tmux"), "list-panes", "-a", "-F", "#{pane_id} #{pane_tty}")
-		if err != nil {
-			return
-		}
-		for _, line := range strings.Split(string(out), "\n") {
-			if id, paneTTY, ok := strings.Cut(strings.TrimSpace(line), " "); ok {
-				e.tmuxPanes[paneTTY] = id
-			}
-		}
-	})
-	return e.tmuxPanes[tty]
+	rex     map[int]Location
 }
 
 // NewEnv returns an Env bound to the real machine.

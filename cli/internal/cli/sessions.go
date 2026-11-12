@@ -38,23 +38,28 @@ func printWarnings(w io.Writer, idx agents.Index) {
 
 func newListCommand() *cobra.Command {
 	var asJSON, topLevel bool
-	var agentFilter string
+	var agentFilter, in string
+	var at agents.Placement
 	cmd := &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "List live agent sessions and subagents with their IDs",
 		Long: "List every live Claude Code, Codex, Pi, and OpenCode session on this machine, including subagents.\n" +
-			"IDs are deterministic: the same session always gets the same ID.",
+			"IDs are deterministic: the same session always gets the same ID.\n\n" +
+			"Sessions are found from their processes, wherever they run. WHERE shows the tmux, herdr, or rex pane a\n" +
+			"session runs in; --in, --session, --window, and --pane keep only the sessions in that place.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			_, _, idx, err := discover(cmd.Context())
+			env, _, idx, err := discover(cmd.Context())
 			if err != nil {
 				return err
 			}
 			printWarnings(cmd.ErrOrStderr(), idx)
+			agents.Locate(cmd.Context(), env, idx.Sessions)
+			in = strings.ToLower(in)
 			var sessions []agents.Session
 			for _, s := range idx.Sessions {
-				if (agentFilter == "" || s.Agent == agentFilter) && (!topLevel || !s.Subagent) {
+				if (agentFilter == "" || s.Agent == agentFilter) && (!topLevel || !s.Subagent) && inPlace(s, in, at) {
 					sessions = append(sessions, s)
 				}
 			}
@@ -69,13 +74,17 @@ func newListCommand() *cobra.Command {
 				return nil
 			}
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
-			fmt.Fprintln(w, "ID\tAGENT\tSTATUS\tACTIVE\tCWD\tNAME")
+			fmt.Fprintln(w, "ID\tAGENT\tSTATUS\tACTIVE\tCWD\tNAME\tWHERE")
 			for _, s := range sessions {
 				id := s.ID
 				if s.Subagent {
 					id = "└ " + id
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", id, s.Agent, s.Status, ago(s.UpdatedAt), shortPath(s.Cwd), label(s))
+				where := "-"
+				if s.Location != nil {
+					where = s.Location.String()
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", id, s.Agent, s.Status, ago(s.UpdatedAt), shortPath(s.Cwd), label(s), where)
 			}
 			return w.Flush()
 		},
@@ -83,7 +92,20 @@ func newListCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
 	cmd.Flags().BoolVar(&topLevel, "top-level", false, "hide subagents")
 	cmd.Flags().StringVar(&agentFilter, "agent", "", "only show one agent kind (claude, codex, pi, opencode)")
+	cmd.Flags().StringVar(&in, "in", "", "only show sessions running in this multiplexer (tmux, herdr, rex)")
+	cmd.Flags().StringVar(&at.Session, "session", "", "only show sessions in this multiplexer session (herdr: workspace)")
+	cmd.Flags().StringVar(&at.Window, "window", "", "only show sessions in this window (herdr: tab)")
+	cmd.Flags().StringVar(&at.Pane, "pane", "", "only show the session in this pane (rex: block)")
 	return cmd
+}
+
+// inPlace reports whether s runs in the multiplexer and place given; with
+// neither, every session matches.
+func inPlace(s agents.Session, in string, at agents.Placement) bool {
+	if in == "" && at.IsZero() {
+		return true
+	}
+	return s.Location != nil && (in == "" || s.Location.Mux == in) && s.Location.Matches(at)
 }
 
 func newShowCommand() *cobra.Command {
@@ -92,7 +114,7 @@ func newShowCommand() *cobra.Command {
 		Short: "Print everything known about one session as JSON",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, _, idx, err := discover(cmd.Context())
+			env, _, idx, err := discover(cmd.Context())
 			if err != nil {
 				return err
 			}
@@ -100,18 +122,23 @@ func newShowCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return writeJSON(cmd.OutOrStdout(), s)
+			located := []agents.Session{s}
+			agents.Locate(cmd.Context(), env, located)
+			return writeJSON(cmd.OutOrStdout(), located[0])
 		},
 	}
 }
 
 func newReadCommand() *cobra.Command {
 	var count int
-	var asJSON bool
+	var asJSON, screen bool
 	cmd := &cobra.Command{
 		Use:   "read TARGET",
 		Short: "Print the recent transcript of a session",
-		Args:  cobra.ExactArgs(1),
+		Long: "Print the last messages of a session's transcript. --screen prints the last lines of the tmux, herdr,\n" +
+			"or rex pane the session runs in instead (-n lines, default 40), which shows prompts and dialogs that\n" +
+			"never reach the transcript.",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			env, providers, idx, err := discover(cmd.Context())
 			if err != nil {
@@ -120,6 +147,17 @@ func newReadCommand() *cobra.Command {
 			s, err := idx.Resolve(args[0])
 			if err != nil {
 				return err
+			}
+			if screen {
+				if !cmd.Flags().Changed("messages") {
+					count = 40
+				}
+				text, err := agents.Capture(cmd.Context(), env, s, count)
+				if err != nil {
+					return err
+				}
+				fmt.Fprintln(cmd.OutOrStdout(), text)
+				return nil
 			}
 			p, err := agents.ProviderFor(providers, s.Agent)
 			if err != nil {
@@ -140,8 +178,10 @@ func newReadCommand() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().IntVarP(&count, "messages", "n", 20, "number of recent messages to print (0 for all)")
+	cmd.Flags().IntVarP(&count, "messages", "n", 20, "number of recent messages to print (0 for all), or lines with --screen")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
+	cmd.Flags().BoolVar(&screen, "screen", false, "print the session's terminal pane instead of its transcript")
+	cmd.MarkFlagsMutuallyExclusive("screen", "json")
 	return cmd
 }
 
