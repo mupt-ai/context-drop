@@ -180,6 +180,8 @@ func Launch(ctx context.Context, newEnv func() (*Env, error), providers []Provid
 			}
 			if s, ok := pickLaunched(ctx, env, mux, fresh, res.Location, launchedAt); ok {
 				res.Session, res.Registered = s, true
+				// Remember the pane is ours, so `stop` may close it.
+				_ = env.recordLaunch(s, res.Location)
 			}
 		}
 		screen, captureErr := mux.capture(ctx, env, res.Location, firstRunLines)

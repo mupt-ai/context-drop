@@ -125,6 +125,8 @@ type multiplexer interface {
 	submit(ctx context.Context, env *Env, at Location, text string) error
 	// press presses a key: "enter" or "down".
 	press(ctx context.Context, env *Env, at Location, key string) error
+	// close closes the pane and ends what runs in it.
+	close(ctx context.Context, env *Env, at Location) error
 }
 
 var muxes = map[string]multiplexer{MuxTmux: tmuxMux{}, MuxHerdr: herdrMux{}, MuxRex: rexMux{}}

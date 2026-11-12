@@ -30,6 +30,18 @@ The message arrives as the session's next prompt (queued if it is busy). `--wait
 
 Claude Code subagents are reached through their parent session, which is asked to forward the message. If `send` reports that a Pi session has no delivery channel (it is not in a tmux, herdr, or Rex pane and has no Context Drop extension), the user must run `context-drop setup pi` and restart that Pi session.
 
+## Coordinate with other agents
+
+```bash
+context-drop overlaps                         # who shares your worktree or has edited the same files
+context-drop claims                           # what other agents have claimed
+context-drop claim path/or/task --note "why"  # before working on something others might touch
+context-drop release                          # when you are done
+context-drop watch --for 10m --json           # status changes as they happen
+```
+
+Before editing in a shared repository, check `overlaps` and `claims`. If someone else holds a claim on what you need, coordinate with them (`send`) instead of passing `--force`. Claims are advisory and disappear when your session ends; release them when you finish early. `send --all` (with `--in`, `--session`, `--agent`, and similar filters) messages a whole group and skips you; use it only when the user asked to involve those sessions. Do not `stop` sessions the user did not ask you to stop.
+
 ## Start an agent
 
 ```bash

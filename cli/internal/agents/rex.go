@@ -181,3 +181,8 @@ func (rexMux) press(ctx context.Context, env *Env, at Location, key string) erro
 	_, err := env.Run(ctx, nil, env.rexBin(), append(rexScope([]string{"send-key"}, at.scope), "-b", at.Pane, key)...)
 	return err
 }
+
+func (rexMux) close(ctx context.Context, env *Env, at Location) error {
+	_, err := env.Run(ctx, nil, env.rexBin(), append(rexScope([]string{"block", "close"}, at.scope), at.Pane)...)
+	return err
+}

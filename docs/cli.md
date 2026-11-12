@@ -33,8 +33,11 @@ Print the last `N` transcript messages (default 20, `0` for all). Tool calls app
 `--screen` prints the last `N` lines (default 40) of the tmux, herdr, or Rex pane the session runs in instead. Use it to see prompts and dialogs that never reach the transcript.
 
 ### `context-drop send TARGET MESSAGE... [--wait] [--timeout D] [--from NAME]`
+### `context-drop send --all [--agent KIND] [--in MUX] [--session S] [--window W] [--pane P] MESSAGE...`
 
 Deliver a message into a live session as its next prompt; a busy agent receives it as a queued follow-up. Use `-` as the message to read it from stdin. `--wait` waits until the agent has replied and settled, then prints the new messages (default timeout 30 minutes).
+
+`--all` sends the message to every live top-level session that matches the filters (the same filters as `list`), except the session running the command. When the command runs under a process that serves several sessions (a Codex app-server, or OpenCode), all of those sessions are skipped, since it cannot tell which one is the sender. Each delivery is reported on stderr; a failed one does not stop the others, and `send` exits non-zero if any failed. With `--wait` it waits for all the replies at once and prints each under `== ID`. The filters are refused without `--all`, so a forgotten `--all` never turns a target into part of the message.
 
 Delivery per agent:
 
@@ -42,6 +45,38 @@ Delivery per agent:
 - **Codex**: `codex queue --thread ID`. Threads served by a private `codex app-server --listen ws://…` (for example a wrapper-launched Codex) are queued against that server using its token file.
 - **Pi**: the socket opened by the Context Drop Pi extension (`context-drop setup pi`). Without the extension, the text is typed into the tmux, herdr, or Rex pane the Pi process runs in. A Pi session without the extension is identified by its process until it writes a session file, then by that file, so its ID changes after its first message; `send --wait` and `start --wait` follow it.
 - **OpenCode**: `opencode api POST /api/session/ID/prompt` on the background service. Child sessions (subagents) accept messages directly.
+
+### `context-drop watch [--interval D] [--for D] [--subagents] [--json] [--agent KIND] [--in MUX] [--session S] [--window W] [--pane P]`
+
+Poll live sessions (every 2s by default) and print a line whenever one starts, ends, or changes status (a pass where a provider failed or the process table could not be read is skipped, so it never reports sessions ending that did not), e.g. `14:02:11  cc-6a79295a  claude  working → blocked  ~/code/app  app-ee`. It runs until interrupted, or for `--for`. `--json` prints one object per change: `time`, `event` (`started`, `ended`, `status`), `id`, `agent`, `from`, `to`, and the `session`. Subagents are left out unless `--subagents` is given. A Pi session without the extension changes ID after its first message, which shows as one session ending and another starting.
+
+### `context-drop stop [TARGET...] [--all [filters]] [--force] [--timeout D]`
+
+Stop the named sessions, or with `--all` every live top-level session matching the filters (never the session running the command). `stop` waits up to `--timeout` (default 10s) for each to leave `list`.
+
+- A session in a pane that `context-drop start` opened for it has that pane closed (`tmux kill-pane`, `herdr pane close`, `rex block close`). `start` records these panes in `~/.context-drop/launched.json`, keyed by the session and its process, so a record never applies to a later run of the session or to a reused pane ID. This also stops OpenCode sessions and Codex threads served by a shared app-server, as long as `start` opened them.
+- Any other session gets SIGTERM, so a pane or terminal you opened yourself keeps its shell.
+- A process that serves several sessions, a Codex `app-server` or `opencode serve`, is never signalled; close that session's terminal instead.
+- Sessions that are `working` or `blocked`, and your own session, are refused unless `--force`. Subagents cannot be stopped on their own.
+
+### `context-drop claim TARGET... [--note TEXT] [--as TARGET] [--force]`, `release [TARGET...]`, `claims [--json]`
+
+Advisory claims let agents tell each other what they are working on. Nothing is locked.
+
+- `claim` records that the calling session is working on each `TARGET`: a file or directory (anything that exists, contains a `/`, or starts with `.`, resolved against the current directory) or else a task name. The session is the nearest agent session among the command's parent processes, so an agent runs `context-drop claim src/parser` as is; `--as` names a session explicitly, and a subagent's claims belong to its parent.
+- A claim that overlaps another live session's claim is refused, and nothing is recorded, unless `--force`: a path inside another claimed path (either way round), or the same task name (case-insensitive). Paths in different worktrees of one repository are compared by their path within the repository.
+- `release` drops the caller's claims on the given targets (matched by path in any worktree of the repository, or by the name as given), or all of them. A claim also disappears when its session's process exits; a discovery pass that misses a session hides its claims without dropping them, and a Pi session that changes ID keeps its claims. OpenCode sessions cannot claim, because they have no process of their own to follow. A claim made through a Codex app-server that serves several threads lasts until that process exits, but stops blocking other claims once its thread is no longer found.
+- `claims` lists live claims; `list` adds a `CLAIMS` column (and `claims` in JSON) when there are any. Claims are stored in `~/.context-drop/claims.json` under a file lock.
+
+### `context-drop overlaps [--since D] [--json]`
+
+Report where live top-level sessions may be stepping on each other:
+
+- `worktree`: several sessions work in one git worktree. `list` also prints this as a warning.
+- `file`: several sessions edited the same file within `--since` (default 2h), in one worktree or in different worktrees of one repository (a likely merge conflict).
+- `claim`: a session edited a file inside a path another session claimed.
+
+Edits come from transcripts: Claude Code's `Edit`, `MultiEdit`, `Write`, and `NotebookEdit`, Codex's `apply_patch`, and Pi's `edit` and `write` tools, from the last 2 MiB of each transcript. OpenCode edits, edits made by subagents, and files written by shell commands are not seen.
 
 ### `context-drop summarize [flags]`
 

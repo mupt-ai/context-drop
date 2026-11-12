@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 
@@ -37,9 +38,8 @@ func printWarnings(w io.Writer, idx agents.Index) {
 }
 
 func newListCommand() *cobra.Command {
-	var asJSON, topLevel bool
-	var agentFilter, in string
-	var at agents.Placement
+	var asJSON, topLevelOnly bool
+	var filter sessionFilter
 	cmd := &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
@@ -47,7 +47,9 @@ func newListCommand() *cobra.Command {
 		Long: "List every live Claude Code, Codex, Pi, and OpenCode session on this machine, including subagents.\n" +
 			"IDs are deterministic: the same session always gets the same ID.\n\n" +
 			"Sessions are found from their processes, wherever they run. WHERE shows the tmux, herdr, or rex pane a\n" +
-			"session runs in; --in, --session, --window, and --pane keep only the sessions in that place.",
+			"session runs in; --in, --session, --window, and --pane keep only the sessions in that place. CLAIMS shows\n" +
+			"what each session has claimed with `context-drop claim`. A warning names worktrees that several sessions\n" +
+			"share; `context-drop overlaps` also checks the files they edit.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			env, _, idx, err := discover(cmd.Context())
@@ -56,12 +58,13 @@ func newListCommand() *cobra.Command {
 			}
 			printWarnings(cmd.ErrOrStderr(), idx)
 			agents.Locate(cmd.Context(), env, idx.Sessions)
-			in = strings.ToLower(in)
-			var sessions []agents.Session
-			for _, s := range idx.Sessions {
-				if (agentFilter == "" || s.Agent == agentFilter) && (!topLevel || !s.Subagent) && inPlace(s, in, at) {
-					sessions = append(sessions, s)
-				}
+			attachClaims(cmd, env, idx)
+			sessions := filter.apply(cmd.Context(), env, idx.Sessions)
+			if topLevelOnly {
+				sessions = topLevel(sessions)
+			}
+			for _, o := range agents.WorktreeOverlaps(sessions) {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s share %s; see `context-drop overlaps`\n", strings.Join(o.Sessions, ", "), shortPath(o.Path))
 			}
 			if asJSON {
 				if sessions == nil {
@@ -73,8 +76,16 @@ func newListCommand() *cobra.Command {
 				fmt.Fprintln(cmd.OutOrStdout(), "No live agent sessions.")
 				return nil
 			}
+			claimed := false
+			for _, s := range sessions {
+				claimed = claimed || len(s.Claims) > 0
+			}
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
-			fmt.Fprintln(w, "ID\tAGENT\tSTATUS\tACTIVE\tCWD\tNAME\tWHERE")
+			header := "ID\tAGENT\tSTATUS\tACTIVE\tCWD\tNAME\tWHERE"
+			if claimed {
+				header += "\tCLAIMS"
+			}
+			fmt.Fprintln(w, header)
 			for _, s := range sessions {
 				id := s.ID
 				if s.Subagent {
@@ -84,28 +95,36 @@ func newListCommand() *cobra.Command {
 				if s.Location != nil {
 					where = s.Location.String()
 				}
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", id, s.Agent, s.Status, ago(s.UpdatedAt), shortPath(s.Cwd), label(s), where)
+				row := fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%s\t%s", id, s.Agent, s.Status, ago(s.UpdatedAt), shortPath(s.Cwd), label(s), where)
+				if claimed {
+					row += "\t" + truncateRunes(strings.Join(s.Claims, ", "), 60)
+				}
+				fmt.Fprintln(w, row)
 			}
 			return w.Flush()
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
-	cmd.Flags().BoolVar(&topLevel, "top-level", false, "hide subagents")
-	cmd.Flags().StringVar(&agentFilter, "agent", "", "only show one agent kind (claude, codex, pi, opencode)")
-	cmd.Flags().StringVar(&in, "in", "", "only show sessions running in this multiplexer (tmux, herdr, rex)")
-	cmd.Flags().StringVar(&at.Session, "session", "", "only show sessions in this multiplexer session (herdr: workspace)")
-	cmd.Flags().StringVar(&at.Window, "window", "", "only show sessions in this window (herdr: tab)")
-	cmd.Flags().StringVar(&at.Pane, "pane", "", "only show the session in this pane (rex: block)")
+	cmd.Flags().BoolVar(&topLevelOnly, "top-level", false, "hide subagents")
+	filter.register(cmd, "only show")
 	return cmd
 }
 
-// inPlace reports whether s runs in the multiplexer and place given; with
-// neither, every session matches.
-func inPlace(s agents.Session, in string, at agents.Placement) bool {
-	if in == "" && at.IsZero() {
-		return true
+// attachClaims fills in each session's live claims. A claims file that
+// cannot be read is reported and otherwise ignored.
+func attachClaims(cmd *cobra.Command, env *agents.Env, idx agents.Index) {
+	claims, err := env.Claims().Live(idx)
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: claims: %v\n", err)
+		return
 	}
-	return s.Location != nil && (in == "" || s.Location.Mux == in) && s.Location.Matches(at)
+	for _, c := range claims {
+		for i := range idx.Sessions {
+			if idx.Sessions[i].ID == c.Session {
+				idx.Sessions[i].Claims = append(idx.Sessions[i].Claims, c.Target)
+			}
+		}
+	}
 }
 
 func newShowCommand() *cobra.Command {
@@ -187,18 +206,31 @@ func newReadCommand() *cobra.Command {
 
 func newSendCommand() *cobra.Command {
 	var from string
-	var wait bool
+	var wait, all bool
 	var timeout time.Duration
+	var filter sessionFilter
 	cmd := &cobra.Command{
-		Use:   "send TARGET MESSAGE...",
-		Short: "Send a message to a live session or subagent",
+		Use:   "send TARGET MESSAGE... | send --all [filters] MESSAGE...",
+		Short: "Send a message to a live session or subagent, or to a group of sessions",
 		Long: "Deliver MESSAGE into a live session as if it were the next prompt. Use - as MESSAGE to read it from stdin.\n\n" +
+			"--all sends it to every live top-level session that matches --agent, --in, --session, --window, and --pane,\n" +
+			"except the session running this command. With --wait, it waits for every reply and prints them in turn.\n\n" +
 			"Delivery uses each agent's own channel: Claude Code's peer socket, `codex queue`, the OpenCode service API,\n" +
-			"the Context Drop Pi extension (see `context-drop setup pi`), or for Pi sessions without it, the tmux or herdr pane they run in.\n" +
-			"Claude Code subagents receive messages through their parent session.",
-		Args: cobra.MinimumNArgs(2),
+			"the Context Drop Pi extension (see `context-drop setup pi`), or for Pi sessions without it, the tmux, herdr,\n" +
+			"or rex pane they run in. Claude Code subagents receive messages through their parent session.",
+		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			text := strings.Join(args[1:], " ")
+			if filter.set() && !all {
+				return fmt.Errorf("--agent, --in, --session, --window, and --pane need --all")
+			}
+			if !all && len(args) < 2 {
+				return fmt.Errorf("give a TARGET and a MESSAGE, or --all and a MESSAGE")
+			}
+			words := args
+			if !all {
+				words = args[1:]
+			}
+			text := strings.Join(words, " ")
 			if text == "-" {
 				data, err := io.ReadAll(cmd.InOrStdin())
 				if err != nil {
@@ -211,44 +243,96 @@ func newSendCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			target, err := idx.Resolve(args[0])
-			if err != nil {
-				return err
-			}
-			sentAt := time.Now()
-			since := sentAt.Add(-5 * time.Second)
-			prior := 0
-			if wait {
-				prior = priorMatches(cmd.Context(), env, providers, idx, target, text, since)
-			}
-			got, err := agents.Send(cmd.Context(), env, providers, idx, target, text, agents.SendOptions{From: from})
-			if err != nil {
-				return err
-			}
-			if got.ID != target.ID {
-				fmt.Fprintf(cmd.ErrOrStderr(), "relayed to %s through parent %s via %s\n", target.ID, got.ID, got.Delivery)
+			var targets []agents.Session
+			if all {
+				targets = withoutSelf(cmd.Context(), env, idx, topLevel(filter.apply(cmd.Context(), env, idx.Sessions)))
+				if len(targets) == 0 {
+					return errNoGroup
+				}
 			} else {
-				fmt.Fprintf(cmd.ErrOrStderr(), "sent to %s via %s\n", got.ID, got.Delivery)
+				target, err := idx.Resolve(args[0])
+				if err != nil {
+					return err
+				}
+				targets = []agents.Session{target}
 			}
-			if !wait {
-				return nil
+			type sent struct {
+				got   agents.Session
+				since time.Time
+				prior int
 			}
-			ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
-			defer cancel()
-			msgs, final, err := agents.WaitForReply(ctx, newEnv, providers, got, agents.WaitOptions{
-				Timeout: timeout, Sent: text, Since: since, PriorMatches: prior,
-			})
-			if err != nil {
-				return err
+			var delivered []sent
+			var failed int
+			for _, target := range targets {
+				since := time.Now().Add(-5 * time.Second)
+				prior := 0
+				if wait {
+					prior = priorMatches(cmd.Context(), env, providers, idx, target, text, since)
+				}
+				got, err := agents.Send(cmd.Context(), env, providers, idx, target, text, agents.SendOptions{From: from})
+				if err != nil {
+					if !all {
+						return err
+					}
+					fmt.Fprintf(cmd.ErrOrStderr(), "failed to send to %s: %v\n", target.ID, err)
+					failed++
+					continue
+				}
+				if got.ID != target.ID {
+					fmt.Fprintf(cmd.ErrOrStderr(), "relayed to %s through parent %s via %s\n", target.ID, got.ID, got.Delivery)
+				} else {
+					fmt.Fprintf(cmd.ErrOrStderr(), "sent to %s via %s\n", got.ID, got.Delivery)
+				}
+				delivered = append(delivered, sent{got, since, prior})
 			}
-			fmt.Fprintf(cmd.ErrOrStderr(), "%s is %s\n", final.ID, final.Status)
-			printMessages(cmd.OutOrStdout(), msgs)
+			if wait {
+				type reply struct {
+					msgs  []agents.Message
+					final agents.Session
+					err   error
+				}
+				replies := make([]reply, len(delivered))
+				ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
+				defer cancel()
+				var wg sync.WaitGroup
+				for i, d := range delivered {
+					wg.Add(1)
+					go func(i int, d sent) {
+						defer wg.Done()
+						msgs, final, err := agents.WaitForReply(ctx, newEnv, providers, d.got, agents.WaitOptions{
+							Timeout: timeout, Sent: text, Since: d.since, PriorMatches: d.prior,
+						})
+						replies[i] = reply{msgs, final, err}
+					}(i, d)
+				}
+				wg.Wait()
+				for i, r := range replies {
+					if r.err != nil {
+						if !all {
+							return r.err
+						}
+						fmt.Fprintf(cmd.ErrOrStderr(), "no reply from %s: %v\n", delivered[i].got.ID, r.err)
+						failed++
+						continue
+					}
+					fmt.Fprintf(cmd.ErrOrStderr(), "%s is %s\n", r.final.ID, r.final.Status)
+					if all {
+						fmt.Fprintf(cmd.OutOrStdout(), "== %s\n", r.final.ID)
+					}
+					printMessages(cmd.OutOrStdout(), r.msgs)
+				}
+			}
+			if failed > 0 {
+				return fmt.Errorf("%d of %d sessions did not get the message or reply", failed, len(targets))
+			}
 			return nil
 		},
 	}
 	cmd.Flags().StringVar(&from, "from", "", "sender name shown to agents that display it (default context-drop)")
 	cmd.Flags().BoolVar(&wait, "wait", false, "wait for the reply and print it")
 	cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Minute, "how long --wait waits")
+	cmd.Flags().BoolVar(&all, "all", false, "send to every live top-level session that matches the filters, except your own")
+	filter.register(cmd, "with --all, only send to")
 	return cmd
 }
 
