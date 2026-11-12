@@ -122,7 +122,8 @@ func (s ClaimStore) Add(idx Index, wanted []Claim, force bool) error {
 			return fmt.Errorf("%s %w (OpenCode sessions cannot claim)", w.Session, ErrNoProcess)
 		}
 	}
-	if procs := s.procs(); procs != nil {
+	procs := s.procs()
+	if procs != nil {
 		for i := range wanted {
 			wanted[i].Started = procs[wanted[i].PID].Start
 		}
@@ -131,7 +132,7 @@ func (s ClaimStore) Add(idx Index, wanted []Claim, force bool) error {
 		var conflicts []error
 		for _, w := range wanted {
 			for _, h := range claims {
-				if h.Session != w.Session && h.Overlaps(w) {
+				if h.Session != w.Session && h.Overlaps(w) && !dormant(h, idx, procs) {
 					conflicts = append(conflicts, ClaimConflict{w, h})
 				}
 			}
@@ -180,7 +181,7 @@ func (s ClaimStore) update(idx Index, fn func([]Claim) ([]Claim, error)) error {
 	return updateJSON(s.Path, &stored, func() (bool, error) {
 		procs := s.procs()
 		rebind(stored, idx, procs)
-		claims := removeClaims(stored, func(c Claim) bool { return claimEnded(c, idx, procs) })
+		claims := removeClaims(stored, func(c Claim) bool { return claimEnded(c, procs) })
 		updated, err := fn(claims)
 		if err != nil {
 			return false, err
@@ -192,19 +193,20 @@ func (s ClaimStore) update(idx Index, fn func([]Claim) ([]Claim, error)) error {
 	})
 }
 
-// claimEnded reports whether a claim's owner has ended. Its process exiting
-// (or its PID being reused) ends it. A process that serves several sessions
-// (a Codex app-server) outlives them, so such a claim also ends when its
-// session is no longer discovered, unless that agent's discovery failed this
-// time. When the process table cannot be read, nothing has ended.
-func claimEnded(c Claim, idx Index, procs map[int]Process) bool {
-	if procs == nil || c.PID <= 0 {
-		return false
-	}
-	if !c.running(procs) {
-		return true
-	}
-	if !sharedServer(procs[c.PID].Command) {
+// claimEnded reports whether a claim's owner has ended: its process exited,
+// or its PID was reused. When the process table cannot be read, nothing has
+// ended.
+func claimEnded(c Claim, procs map[int]Process) bool {
+	return procs != nil && c.PID > 0 && !c.running(procs)
+}
+
+// dormant reports whether a claim held through a process that serves several
+// sessions (a Codex app-server) belongs to a session this pass did not find.
+// Such a process outlives its threads, so the claim may be left over from a
+// thread that ended; it is kept, but it does not block others. It still
+// blocks while that agent's discovery is failing.
+func dormant(c Claim, idx Index, procs map[int]Process) bool {
+	if procs == nil || !sharedServer(procs[c.PID].Command) {
 		return false
 	}
 	for _, s := range idx.Sessions {

@@ -422,11 +422,15 @@ func TestSharedProcessClaimsEndWithTheirThread(t *testing.T) {
 	if err := store.Add(failed, []Claim{NewClaim(two, "api", "/", "", time.Now())}, false); err == nil {
 		t.Fatal("a claim was dropped while discovery was failing")
 	}
-	// Once thread 1 is gone, its claim ends and is never handed to thread 2.
+	// Once thread 1 is not found, its claim stops blocking and is never handed
+	// to thread 2; it is kept in case the thread was only missed.
 	if live, _ := store.Live(Index{Sessions: []Session{two}}); len(live) != 0 {
 		t.Fatalf("claim moved to the remaining thread: %+v", live)
 	}
 	if err := store.Add(Index{Sessions: []Session{two}}, []Claim{NewClaim(two, "api", "/", "", time.Now())}, false); err != nil {
 		t.Fatalf("an ended thread's claim still blocks: %v", err)
+	}
+	if live, _ := store.Live(Index{Sessions: []Session{one, two}}); len(live) != 2 {
+		t.Fatalf("a missed thread's claim was dropped: %+v", live)
 	}
 }
