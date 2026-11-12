@@ -134,3 +134,8 @@ func (tmuxMux) press(ctx context.Context, env *Env, at Location, key string) err
 func tmuxLine(text string) string {
 	return strings.Join(strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n"), " ")
 }
+
+func (tmuxMux) close(ctx context.Context, env *Env, at Location) error {
+	_, err := env.Run(ctx, nil, env.Bin("tmux"), "kill-pane", "-t", at.Pane)
+	return err
+}

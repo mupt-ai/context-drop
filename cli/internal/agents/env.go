@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -41,6 +42,8 @@ type Env struct {
 	Cwds func(ctx context.Context, pids []int) (map[int]string, error)
 	// Getenv reads configuration such as XDG_DATA_HOME and binary overrides.
 	Getenv func(string) string
+	// Signal sends a signal to a process.
+	Signal func(pid int, sig syscall.Signal) error
 
 	procOnce sync.Once
 	procs    map[int]Process
@@ -72,6 +75,7 @@ func NewEnv() (*Env, error) {
 		OpenFiles: lsofOpenFiles,
 		Cwds:      lsofCwds,
 		Getenv:    os.Getenv,
+		Signal:    syscall.Kill,
 	}, nil
 }
 

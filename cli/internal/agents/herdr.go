@@ -207,3 +207,8 @@ func (herdrMux) press(ctx context.Context, env *Env, at Location, key string) er
 	_, err := env.Run(ctx, nil, env.Bin("herdr"), "pane", "send-keys", at.Pane, key)
 	return err
 }
+
+func (herdrMux) close(ctx context.Context, env *Env, at Location) error {
+	_, err := env.Run(ctx, nil, env.Bin("herdr"), "pane", "close", at.Pane)
+	return err
+}

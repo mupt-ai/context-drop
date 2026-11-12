@@ -94,6 +94,18 @@ context-drop start codex --in tmux --session work --window 2
 
 If the new agent stops at a folder-trust prompt or a login screen, `start` says so and keeps waiting for you to answer it, and it never types `--prompt` into the dialog. `--trust` answers a folder-trust prompt by trusting the folder.
 
+### Coordinate agents
+
+```sh
+context-drop watch                                     # a line whenever an agent starts, ends, or changes status
+context-drop send --all --in rex --session calm-prairie 'Rebase on main before you push'
+context-drop stop cc-6a79295a                          # --all with filters to stop a group
+context-drop claim src/parser --note 'splitting it up' # run by an agent; others see it in list and claims
+context-drop overlaps                                  # shared worktrees, files edited by two agents, claimed files edited
+```
+
+`send --all` messages every matching session except the sender. `stop` closes panes `start` opened and sends SIGTERM to everything else, and it refuses busy agents unless `--force`. Claims are advisory and end with the session that made them. `overlaps` reads edits from Claude Code, Codex, and Pi transcripts.
+
 ### Summarize everything
 
 ```sh
