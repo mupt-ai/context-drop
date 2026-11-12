@@ -58,10 +58,11 @@ type Session struct {
 	Transcript     string    `json:"transcript,omitempty"`
 	// Delivery names the channel `send` will use.
 	Delivery string `json:"delivery"`
+	// Location is the tmux, herdr, or rex pane the agent runs in, when known.
+	Location *Location `json:"location,omitempty"`
 
 	// internal routing details, not part of the public JSON.
 	socket string
-	pane   paneRef
 }
 
 // Message is one transcript entry.

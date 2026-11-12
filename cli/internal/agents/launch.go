@@ -2,7 +2,6 @@ package agents
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os/exec"
 	"sort"
@@ -18,6 +17,8 @@ type LaunchOptions struct {
 	Name string
 	// Mux is tmux, herdr, or rex; empty picks one with DefaultMux.
 	Mux string
+	// At names where in the multiplexer to open the agent's pane.
+	At Placement
 	// Command is the command line that starts the agent instead of its bare
 	// executable, e.g. "dari claude". "{agent}" is replaced with Kind, so one
 	// template ("dari {agent}") serves every agent. Args follow it.
@@ -26,18 +27,41 @@ type LaunchOptions struct {
 	// Prompt is passed on the command line for agents that only create a
 	// session once they receive one (OpenCode). Other agents get it with Send.
 	Prompt string
+	// Trust accepts a folder-trust prompt if the agent shows one.
+	Trust bool
+	// OnScreen is called when the agent stops at a first-run screen
+	// (ScreenTrust or ScreenSetup) that Launch will not get past by itself.
+	OnScreen func(screen string, at Location)
 	// Timeout bounds the wait for the new session to appear. Zero skips the wait.
 	Timeout  time.Duration
 	Interval time.Duration
 }
 
+// Launch statuses.
+const (
+	// LaunchRegistered: the agent appears in `context-drop list` and accepts messages.
+	LaunchRegistered = "registered"
+	// LaunchWaitingForTrust: the agent is waiting for its folder to be trusted.
+	LaunchWaitingForTrust = "waiting_for_trust"
+	// LaunchWaitingForSetup: the agent is at a login or other first-run screen.
+	LaunchWaitingForSetup = "waiting_for_setup"
+	// LaunchNotRegistered: the agent did not appear before the timeout.
+	LaunchNotRegistered = "not_registered"
+	// LaunchStarted: Launch did not wait.
+	LaunchStarted = "started"
+)
+
+var screenStatus = map[string]string{ScreenTrust: LaunchWaitingForTrust, ScreenSetup: LaunchWaitingForSetup}
+
 // LaunchResult reports where the agent started and, once it registered, its session.
 type LaunchResult struct {
-	Mux        string  `json:"mux"`
-	Pane       string  `json:"pane"`
-	Command    string  `json:"command"`
-	Registered bool    `json:"registered"`
-	Session    Session `json:"session,omitempty"`
+	Mux        string   `json:"mux"`
+	Pane       string   `json:"pane"`
+	Location   Location `json:"location"`
+	Command    string   `json:"command"`
+	Status     string   `json:"status"`
+	Registered bool     `json:"registered"`
+	Session    Session  `json:"session,omitempty"`
 }
 
 // DefaultMux prefers the multiplexer the caller is running in, then whichever is installed.
@@ -87,8 +111,15 @@ func agentArgv(env *Env, opts LaunchOptions) ([]string, error) {
 	return argv, nil
 }
 
-// Launch starts an agent in a new tmux window, herdr tab, or rex block and,
-// when opts.Timeout is set, waits for its session to appear in discovery.
+// maxTrustKeys bounds the keys pressed to get through a trust prompt.
+const maxTrustKeys = 4
+
+// Launch starts an agent in a new pane (a tmux window, herdr tab, or rex
+// block, or a split beside opts.At) and, when opts.Timeout is set, waits for
+// its session to appear in discovery. While it waits it watches the pane for
+// first-run screens: a folder-trust prompt is accepted when opts.Trust is
+// set, and any other screen is reported through opts.OnScreen and in the
+// result's Status.
 func Launch(ctx context.Context, newEnv func() (*Env, error), providers []Provider, opts LaunchOptions) (LaunchResult, error) {
 	env, err := newEnv()
 	if err != nil {
@@ -98,6 +129,10 @@ func Launch(ctx context.Context, newEnv func() (*Env, error), providers []Provid
 		if opts.Mux, err = DefaultMux(env); err != nil {
 			return LaunchResult{}, err
 		}
+	}
+	mux, err := muxFor(opts.Mux)
+	if err != nil {
+		return LaunchResult{}, err
 	}
 	argv, err := agentArgv(env, opts)
 	if err != nil {
@@ -113,17 +148,9 @@ func Launch(ctx context.Context, newEnv func() (*Env, error), providers []Provid
 	}
 	launchedAt := time.Now()
 
-	res := LaunchResult{Mux: opts.Mux, Command: shellJoin(argv)}
-	switch opts.Mux {
-	case MuxTmux:
-		res.Pane, err = launchTmux(ctx, env, opts, argv)
-	case MuxHerdr:
-		res.Pane, err = launchHerdr(ctx, env, opts, argv)
-	case MuxRex:
-		res.Pane, err = launchRex(ctx, env, opts, argv)
-	default:
-		err = fmt.Errorf("unknown multiplexer %q (want tmux, herdr, or rex)", opts.Mux)
-	}
+	res := LaunchResult{Mux: opts.Mux, Command: shellJoin(argv), Status: LaunchStarted}
+	res.Location, err = mux.open(ctx, env, opts.At, opts.Dir, opts.Name, argv)
+	res.Pane = res.Location.Pane
 	if err != nil || opts.Timeout <= 0 {
 		return res, err
 	}
@@ -131,9 +158,9 @@ func Launch(ctx context.Context, newEnv func() (*Env, error), providers []Provid
 	if opts.Interval <= 0 {
 		opts.Interval = 500 * time.Millisecond
 	}
-	want := paneRef{opts.Mux, res.Pane}
 	dir := canonicalDir(opts.Dir)
 	deadline := time.Now().Add(opts.Timeout)
+	reported, keys := "", 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -144,15 +171,40 @@ func Launch(ctx context.Context, newEnv func() (*Env, error), providers []Provid
 		if err != nil {
 			return res, err
 		}
-		var fresh []Session
-		for _, s := range Discover(ctx, env, []Provider{provider}).Sessions {
-			if !before[s.ID] && !s.Subagent && canonicalDir(s.Cwd) == dir {
-				fresh = append(fresh, s)
+		if !res.Registered {
+			var fresh []Session
+			for _, s := range Discover(ctx, env, []Provider{provider}).Sessions {
+				if !before[s.ID] && !s.Subagent && canonicalDir(s.Cwd) == dir {
+					fresh = append(fresh, s)
+				}
+			}
+			if s, ok := pickLaunched(ctx, env, mux, fresh, res.Location, launchedAt); ok {
+				res.Session, res.Registered = s, true
 			}
 		}
-		if s, ok := pickLaunched(ctx, env, fresh, want, launchedAt); ok {
-			res.Session, res.Registered = s, true
+		screen, _ := mux.capture(ctx, env, res.Location, firstRunLines)
+		waiting := firstRunScreen(screen)
+		if waiting == ScreenTrust && opts.Trust && keys < maxTrustKeys {
+			if key := trustKey(screen); key != "" {
+				if err := mux.press(ctx, env, res.Location, key); err != nil {
+					return res, fmt.Errorf("accept the trust prompt: %w", err)
+				}
+				keys++
+				continue
+			}
+		}
+		switch {
+		case waiting != "":
+			res.Status = screenStatus[waiting]
+			if waiting != reported && opts.OnScreen != nil {
+				opts.OnScreen(waiting, res.Location)
+			}
+			reported = waiting
+		case res.Registered:
+			res.Status = LaunchRegistered
 			return res, nil
+		default:
+			res.Status = LaunchNotRegistered
 		}
 		if time.Now().After(deadline) {
 			return res, nil
@@ -169,9 +221,12 @@ const launchSlack = 5 * time.Second
 // merely became visible (for example because a new client opened in its
 // directory) is never mistaken for it. With no start time to go on, a single
 // new session is accepted and anything more is left until the pane decides.
-func pickLaunched(ctx context.Context, env *Env, fresh []Session, want paneRef, launchedAt time.Time) (Session, bool) {
+func pickLaunched(ctx context.Context, env *Env, mux multiplexer, fresh []Session, want Location, launchedAt time.Time) (Session, bool) {
 	for _, s := range fresh {
-		if s.PID > 0 && resolvePane(ctx, env, s.PID, s.TTY) == want {
+		if s.PID <= 0 {
+			continue
+		}
+		if loc, ok := mux.locate(ctx, env, s.PID, s.TTY); ok && loc.Pane == want.Pane {
 			return s, true
 		}
 	}
@@ -192,63 +247,6 @@ func pickLaunched(ctx context.Context, env *Env, fresh []Session, want paneRef, 
 		return undated[0], true
 	}
 	return Session{}, false
-}
-
-func launchTmux(ctx context.Context, env *Env, opts LaunchOptions, argv []string) (string, error) {
-	tmux := env.Bin("tmux")
-	window := []string{"-n", opts.Name, "-c", opts.Dir, "-P", "-F", "#{pane_id}", "--"}
-	out, err := env.Run(ctx, nil, tmux, append(append([]string{"new-window", "-t", "context-drop:"}, window...), argv...)...)
-	if err != nil {
-		// No context-drop session yet: create it with the agent as its first window.
-		out, err = env.Run(ctx, nil, tmux, append(append([]string{"new-session", "-d", "-s", "context-drop"}, window...), argv...)...)
-		if err != nil {
-			return "", err
-		}
-	}
-	pane := strings.TrimSpace(string(out))
-	if pane == "" {
-		return "", fmt.Errorf("tmux did not report the new pane")
-	}
-	return pane, nil
-}
-
-func launchHerdr(ctx context.Context, env *Env, opts LaunchOptions, argv []string) (string, error) {
-	herdr := env.Bin("herdr")
-	out, err := env.Run(ctx, nil, herdr, "tab", "create", "--cwd", opts.Dir, "--label", opts.Name)
-	if err != nil {
-		return "", err
-	}
-	var created struct {
-		Result struct {
-			RootPane struct {
-				PaneID string `json:"pane_id"`
-			} `json:"root_pane"`
-		} `json:"result"`
-	}
-	if json.Unmarshal(out, &created) != nil || created.Result.RootPane.PaneID == "" {
-		return "", fmt.Errorf("herdr did not report the new pane: %s", oneLine(string(out), 200))
-	}
-	pane := created.Result.RootPane.PaneID
-	// The tab starts a shell; run the agent in it so the user's PATH and profile apply.
-	if _, err := env.Run(ctx, nil, herdr, "pane", "run", pane, shellJoin(argv)); err != nil {
-		return pane, err
-	}
-	return pane, nil
-}
-
-func launchRex(ctx context.Context, env *Env, opts LaunchOptions, argv []string) (string, error) {
-	args := append([]string{"run", "--cwd", opts.Dir, "--label", opts.Name, "--json", "--"}, argv...)
-	out, err := env.Run(ctx, nil, env.rexBin(), args...)
-	if err != nil {
-		return "", err
-	}
-	var created struct {
-		BlockIDs []string `json:"block_ids"`
-	}
-	if json.Unmarshal(out, &created) != nil || len(created.BlockIDs) == 0 {
-		return "", fmt.Errorf("rex did not report the new block: %s", oneLine(string(out), 200))
-	}
-	return created.BlockIDs[0], nil
 }
 
 // shellSplit splits a command line into words, honouring single quotes,

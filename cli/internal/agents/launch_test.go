@@ -43,7 +43,7 @@ func TestLaunchInEachMultiplexer(t *testing.T) {
 			mux:      MuxTmux,
 			create:   func(a []string) []byte { return when(a[0] == "tmux" && a[1] == "new-session", "%7\n") },
 			wantPane: "%7",
-			wantCmd:  "tmux new-session -d -s context-drop -n claude-x -c DIR -P -F #{pane_id} -- dari claude --model opus",
+			wantCmd:  "tmux new-session -d -s context-drop -n claude-x -c DIR -P -F #{pane_id}\t#{session_name}\t#{window_index} -- dari claude --model opus",
 		},
 		{
 			mux: MuxHerdr,
@@ -143,14 +143,16 @@ func TestPiInRexBlockIsTypedIntoThroughItsWrapper(t *testing.T) {
 	h.cwds[61] = "/work/r"
 	h.write(".pi/agent/sessions/--work-r--/s.jsonl", jsonl(map[string]any{"type": "session", "id": "rex-pi"}))
 	h.respond = func(args []string) ([]byte, error) {
-		switch {
+		switch cmd := strings.Join(args, " "); {
 		case args[0] == "tmux" || args[0] == "herdr":
 			return nil, fmt.Errorf("not running")
-		case args[0] == "rex" && args[1] == "block" && args[2] == "ls":
-			return []byte(`{"blocks":[{"block_id":"block:one"},{"block_id":"block:two"}]}`), nil
-		case args[0] == "rex" && args[1] == "block" && args[2] == "call" && args[5] == "block:two":
+		case strings.HasSuffix(cmd, " ls --json"):
+			return []byte(`{"sessions":[{"session_id":"session:s1","label":"calm"}]}`), nil
+		case strings.Contains(cmd, " block ls -s session:s1"):
+			return []byte(`{"blocks":[{"block_id":"block:one"},{"block_id":"block:two","label":"pi"}]}`), nil
+		case strings.HasSuffix(cmd, "block call process -s session:s1 -b block:two"):
 			return []byte(`{"child":{"pid":50},"foreground":{"pid":60}}`), nil
-		case args[0] == "rex" && args[1] == "block" && args[2] == "call":
+		case strings.Contains(cmd, "block call process"):
 			return []byte(`{"child":{"pid":10},"foreground":{"pid":11}}`), nil
 		}
 		return nil, nil
@@ -164,10 +166,11 @@ func TestPiInRexBlockIsTypedIntoThroughItsWrapper(t *testing.T) {
 		t.Fatal(err)
 	}
 	n := len(h.commands)
-	if got := strings.Join(h.commands[n-2], " "); got != "rex send -b block:two go" {
+	// Blocks outside the caller's session are only found with -s.
+	if got := strings.Join(h.commands[n-2], " "); got != "rex send -s session:s1 -b block:two go" {
 		t.Fatalf("send = %q", got)
 	}
-	if got := strings.Join(h.commands[n-1], " "); got != "rex send-key -b block:two enter" {
+	if got := strings.Join(h.commands[n-1], " "); got != "rex send-key -s session:s1 -b block:two enter" {
 		t.Fatalf("key = %q", got)
 	}
 }
@@ -190,7 +193,7 @@ func TestPickLaunchedNeverClaimsAnOlderSession(t *testing.T) {
 		{"several without start times wait for more evidence", []Session{undated, undated2}, ""},
 	}
 	for _, c := range cases {
-		got, ok := pickLaunched(context.Background(), env, c.fresh, paneRef{MuxTmux, "%1"}, launched)
+		got, ok := pickLaunched(context.Background(), env, tmuxMux{}, c.fresh, Location{Mux: MuxTmux, Pane: "%1"}, launched)
 		if (c.want == "") == ok || (ok && got.ID != c.want) {
 			t.Errorf("%s: got %q ok=%v, want %q", c.name, got.ID, ok, c.want)
 		}

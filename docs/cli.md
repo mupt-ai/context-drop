@@ -6,17 +6,31 @@ Context Drop indexes live Claude Code, Codex, Pi, and OpenCode sessions, plus Cl
 
 A `TARGET` is an ID, a native session ID, a unique prefix of either, or a session name. Ambiguous targets are rejected with the candidates listed.
 
-### `context-drop list [--json] [--agent KIND] [--top-level]`
+### `context-drop list [--json] [--agent KIND] [--top-level] [--in MUX] [--session S] [--window W] [--pane P]`
 
-List live sessions with ID, agent, status (`idle`, `working`, `blocked`, `unknown`), last activity, working directory, and name. Subagents are listed under their parent. `--json` includes the native ID, parent, PID, TTY, transcript path, and the delivery channel `send` will use.
+List live sessions with ID, agent, status (`idle`, `working`, `blocked`, `unknown`), last activity, working directory, name, and where it runs. Subagents are listed under their parent. `--json` includes the native ID, parent, PID, TTY, transcript path, the delivery channel `send` will use, and `location`.
+
+Sessions are found from each agent's own state and processes, so an agent is listed wherever it runs, including panes Context Drop did not start. `WHERE` (`location` in JSON) is the tmux, herdr, or Rex pane its process runs in, found from the pane's terminal (tmux) or process tree (herdr, Rex), across every Rex session. It is `-` for a plain terminal tab. `location` has `mux`, `session`, `window`, `pane`, and `label`:
+
+| | `session` | `window` | `pane` | `label` |
+| --- | --- | --- | --- | --- |
+| tmux | session name | window index | pane ID (`%3`) | window name |
+| herdr | workspace ID | tab ID | pane ID (`w1:p2`) | |
+| Rex | session label | window ID | block ID | block label |
+
+`--in`, `--session`, `--window`, and `--pane` keep only the sessions in that place. Each takes an ID or a label at that level (herdr workspace and tab labels, tmux window names, Rex block labels). Rex IDs also match without their `block:`/`window:`/`session:` prefix, or by the short form Rex prints (at least six characters).
+
+Finding Rex blocks runs `rex` with `--autostart=false`, so `list` never starts a Rex server.
 
 ### `context-drop show TARGET`
 
-Print one session as JSON.
+Print one session as JSON, including its `location`.
 
-### `context-drop read TARGET [-n N] [--json]`
+### `context-drop read TARGET [-n N] [--json] [--screen]`
 
 Print the last `N` transcript messages (default 20, `0` for all). Tool calls appear as `[tool: name]`.
+
+`--screen` prints the last `N` lines (default 40) of the tmux, herdr, or Rex pane the session runs in instead. Use it to see prompts and dialogs that never reach the transcript.
 
 ### `context-drop send TARGET MESSAGE... [--wait] [--timeout D] [--from NAME]`
 
@@ -54,17 +68,28 @@ Environment equivalents are `CONTEXT_DROP_SUMMARIZE_PROVIDER`, `_MODEL`, `_BASE_
 
 Transcript excerpts are sent to the chosen model. Use a local provider when transcripts must stay on the machine.
 
-### `context-drop start AGENT [--cwd DIR] [--in tmux|herdr|rex] [--name NAME] [--command CMD] [--prompt TEXT] [--wait] [-- AGENT_ARGS...]`
+### `context-drop start AGENT [--cwd DIR] [--in tmux|herdr|rex] [--session S] [--window W] [--pane P] [--name NAME] [--command CMD] [--prompt TEXT] [--wait] [--trust] [-- AGENT_ARGS...]`
 
 Start `claude`, `codex`, `pi`, or `opencode` in a new terminal and print its ID once it appears in `context-drop list`.
 
 - `--in`: `tmux` opens a window in a tmux session named `context-drop` (created if needed), `herdr` opens a tab in the current workspace and runs the agent in its shell, and `rex` runs the agent in a new block. The default is `launch_in` from the config, then the multiplexer you are running inside (`$TMUX`, `HERDR_ENV`, `REX_BLOCK`), then whichever of tmux, herdr, or rex is installed.
-- `--cwd` defaults to the current directory, and `--name` labels the window, tab, or block (default `AGENT-DIRNAME`).
+- `--session`, `--window`, and `--pane` name where to open the agent, in the multiplexer's own terms. Each takes an ID or a label, and the place must already exist:
+
+  | | `--session` | `--window` | `--pane` |
+  | --- | --- | --- | --- |
+  | tmux | session | window (index, `@ID`, or name) | pane (`%ID` or `SESSION:WINDOW.PANE`) |
+  | herdr | workspace | tab | pane |
+  | Rex | session | window | block |
+
+  `--session` alone opens a new window there (a tab in herdr). `--window` or `--pane` opens a new pane split to the right of that window's focused pane, or of that pane. `start` never types into an existing pane. For example, `context-drop start claude --in rex --session calm-prairie` runs `rex run -s calm-prairie …`, and adding `--pane reviewer` splits beside the block labelled `reviewer`. Herdr commands reach the herdr session you are in (or `HERDR_SESSION`).
+- `--cwd` defaults to the current directory, and `--name` labels the window, tab, or block (default `AGENT-DIRNAME`). A tmux split has no label.
 - `--command` (or `launch_command`) is the command line that starts the agent. `{agent}` becomes the agent name, so `dari {agent}` runs `dari claude`, `dari codex`, and so on. Without it, the agent's executable runs directly. Arguments after `--` are appended.
 - `--prompt` sends a first message once the agent is up, and `--wait` prints the reply. OpenCode gets the prompt on its command line, because it only creates a session when it receives one.
 - `--timeout` (default 60s) bounds the wait for the agent to appear. If it does not appear in time, `start` prints the pane and exits. If a prompt was given, it fails because the prompt was not sent.
+- While it waits, `start` reads the new pane. If the agent stops at a folder-trust prompt (Claude Code, Codex) or a first-run screen such as a login, `start` says so on stderr at once and keeps waiting, so you can answer it in the pane. If it is still there at the timeout, `start` reports it instead of timing out silently, and with `--prompt` it fails without typing the prompt into the dialog.
+- `--trust` answers a folder-trust prompt by choosing the option that trusts the folder (it presses Down until that option is selected, then Enter). It never answers login screens, and it never picks an option that also waives approvals.
 
-A new agent may show its first-run prompts (such as trusting a folder) before it accepts messages.
+`--json` prints the launch result: `mux`, `pane`, `location`, `command`, `registered`, `session`, and `status`, one of `registered`, `waiting_for_trust`, `waiting_for_setup`, `not_registered`, or `started` (with `--timeout 0`).
 
 ### `context-drop setup`
 

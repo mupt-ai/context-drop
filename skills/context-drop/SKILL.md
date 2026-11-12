@@ -10,8 +10,10 @@ description: Use the Context Drop CLI to list, read, message, and summarize live
 ## Find a session
 
 ```bash
-context-drop list            # add --json for native IDs, PIDs, transcripts, delivery channel
+context-drop list            # add --json for native IDs, PIDs, transcripts, delivery channel, location
+context-drop list --in rex --session calm-prairie   # only agents in that place (also --window, --pane)
 context-drop read TARGET     # recent transcript; -n 50 for more
+context-drop read TARGET --screen   # the agent's terminal pane, including prompts and dialogs
 ```
 
 A target is an ID, a native session ID, a unique prefix, or a session name. Choose by working directory, name, or transcript. If several sessions could match the user's description, ask which one.
@@ -26,7 +28,7 @@ context-drop send TARGET "what to do next" --wait
 
 The message arrives as the session's next prompt (queued if it is busy). `--wait` prints the reply once the agent settles. Brief the other agent fully; it cannot see this conversation. Do not message a session the user did not ask you to involve, and ask before sending into a session that is `working` on something unrelated. Read and report the agent's actual reply; sending is not proof of finished work.
 
-Claude Code subagents are reached through their parent session, which is asked to forward the message. If `send` reports that a Pi session has no delivery channel (it is not in tmux or herdr and has no Context Drop extension), the user must run `context-drop setup pi` and restart that Pi session.
+Claude Code subagents are reached through their parent session, which is asked to forward the message. If `send` reports that a Pi session has no delivery channel (it is not in a tmux, herdr, or Rex pane and has no Context Drop extension), the user must run `context-drop setup pi` and restart that Pi session.
 
 ## Start an agent
 
@@ -34,7 +36,7 @@ Claude Code subagents are reached through their parent session, which is asked t
 context-drop start claude --cwd /absolute/path --prompt "the task and relevant context" --wait
 ```
 
-Opens the agent in a tmux window, herdr tab, or Rex block (`--in`, default from config or the one you are in) and prints its ID. Brief it fully in `--prompt`. A new agent may stop at first-run prompts, such as trusting the folder, before it reads messages; check with `context-drop read ID`. Ask before starting agents the user did not request.
+Opens the agent in a tmux window, herdr tab, or Rex block (`--in`, default from config or the one you are in) and prints its ID. To put it somewhere specific, add `--session` (a Rex or tmux session, a herdr workspace) and optionally `--window` or `--pane` (a Rex block) to split beside it, e.g. `--in rex --session calm-prairie`. Brief it fully in `--prompt`. If the agent stops at a folder-trust or login prompt, `start` reports it (`waiting_for_trust`, `waiting_for_setup`) and does not send the prompt; tell the user, or pass `--trust` only if the user agreed to trust that folder. Ask before starting agents the user did not request.
 
 ## Summarize everything
 
