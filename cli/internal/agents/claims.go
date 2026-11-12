@@ -180,9 +180,7 @@ func (s ClaimStore) update(idx Index, fn func([]Claim) ([]Claim, error)) error {
 	return updateJSON(s.Path, &stored, func() (bool, error) {
 		procs := s.procs()
 		rebind(stored, idx, procs)
-		claims := removeClaims(stored, func(c Claim) bool {
-			return procs != nil && c.PID > 0 && !c.running(procs)
-		})
+		claims := removeClaims(stored, func(c Claim) bool { return claimEnded(c, idx, procs) })
 		updated, err := fn(claims)
 		if err != nil {
 			return false, err
@@ -192,6 +190,34 @@ func (s ClaimStore) update(idx Index, fn func([]Claim) ([]Claim, error)) error {
 		stored = updated
 		return changed, nil
 	})
+}
+
+// claimEnded reports whether a claim's owner has ended. Its process exiting
+// (or its PID being reused) ends it. A process that serves several sessions
+// (a Codex app-server) outlives them, so such a claim also ends when its
+// session is no longer discovered, unless that agent's discovery failed this
+// time. When the process table cannot be read, nothing has ended.
+func claimEnded(c Claim, idx Index, procs map[int]Process) bool {
+	if procs == nil || c.PID <= 0 {
+		return false
+	}
+	if !c.running(procs) {
+		return true
+	}
+	if !sharedServer(procs[c.PID].Command) {
+		return false
+	}
+	for _, s := range idx.Sessions {
+		if s.ID == c.Session {
+			return false
+		}
+	}
+	for _, w := range idx.Warnings {
+		if strings.HasPrefix(w, c.Agent+":") {
+			return false
+		}
+	}
+	return true
 }
 
 // procs reads the process table, or returns nil when it cannot be read, in
@@ -214,10 +240,11 @@ func (c Claim) running(procs map[int]Process) bool {
 	return ok && (c.Started.IsZero() || p.Start.Equal(c.Started))
 }
 
-// rebind moves claims of a session that changed ID to its new ID: a Pi
-// session without the extension takes its file's ID after its first message
-// but keeps its process. Only the same process (PID and start time) counts,
-// and a process shared by several sessions is left alone.
+// rebind moves claims of a Pi session that changed ID to its new ID: without
+// the extension it takes its file's ID after its first message but keeps its
+// process. Only the same process (PID and start time) counts. No other agent
+// changes ID, so a claim of another kind is never moved (a Codex app-server
+// may be left serving one session after the claimant's thread ended).
 func rebind(claims []Claim, idx Index, procs map[int]Process) {
 	live := map[string]bool{}
 	byPID := map[int][]Session{}
@@ -228,7 +255,7 @@ func rebind(claims []Claim, idx Index, procs map[int]Process) {
 		}
 	}
 	for i, c := range claims {
-		if found := byPID[c.PID]; !live[c.Session] && c.PID > 0 && len(found) == 1 && found[0].Agent == c.Agent && procs != nil && c.running(procs) {
+		if found := byPID[c.PID]; c.Agent == Pi && !live[c.Session] && c.PID > 0 && len(found) == 1 && found[0].Agent == Pi && procs != nil && c.running(procs) {
 			claims[i].Session = found[0].ID
 		}
 	}

@@ -408,3 +408,25 @@ func TestClaimsEndWhenTheirPIDIsReused(t *testing.T) {
 		t.Fatalf("a dead process's claim still blocks: %v", err)
 	}
 }
+
+func TestSharedProcessClaimsEndWithTheirThread(t *testing.T) {
+	h := newFakeHost(t)
+	h.procs[40] = Process{PID: 40, Command: "codex app-server --listen ws://127.0.0.1:1"}
+	one, two := Session{ID: "cx-1", Agent: Codex, PID: 40}, Session{ID: "cx-2", Agent: Codex, PID: 40}
+	store := h.env().Claims()
+	if err := store.Add(Index{Sessions: []Session{one, two}}, []Claim{NewClaim(one, "api", "/", "", time.Now())}, false); err != nil {
+		t.Fatal(err)
+	}
+	// While codex discovery fails, the thread's claim stands.
+	failed := Index{Sessions: []Session{two}, Warnings: []string{"codex: lsof failed"}}
+	if err := store.Add(failed, []Claim{NewClaim(two, "api", "/", "", time.Now())}, false); err == nil {
+		t.Fatal("a claim was dropped while discovery was failing")
+	}
+	// Once thread 1 is gone, its claim ends and is never handed to thread 2.
+	if live, _ := store.Live(Index{Sessions: []Session{two}}); len(live) != 0 {
+		t.Fatalf("claim moved to the remaining thread: %+v", live)
+	}
+	if err := store.Add(Index{Sessions: []Session{two}}, []Claim{NewClaim(two, "api", "/", "", time.Now())}, false); err != nil {
+		t.Fatalf("an ended thread's claim still blocks: %v", err)
+	}
+}
