@@ -77,25 +77,27 @@ func self(ctx context.Context, env *agents.Env, idx agents.Index, as string) (ag
 	return agents.Self(ctx, env, idx, selfPID())
 }
 
-// selfID is the caller's session ID, or "" when it is not inside one.
-func selfID(ctx context.Context, env *agents.Env, idx agents.Index) string {
-	s, err := agents.Self(ctx, env, idx, selfPID())
-	if err != nil {
-		return ""
+// selves returns the IDs the caller may be: its own session, or every
+// session of a shared process it runs under, since it cannot tell which.
+func selves(ctx context.Context, env *agents.Env, idx agents.Index) map[string]bool {
+	found, _ := agents.SelfCandidates(ctx, env, idx, selfPID())
+	ids := map[string]bool{}
+	for _, s := range found {
+		ids[s.ID] = true
 	}
-	return s.ID
+	return ids
 }
 
-// withoutSelf drops the caller's own session from a group.
-func withoutSelf(ctx context.Context, env *agents.Env, idx agents.Index, sessions []agents.Session) ([]agents.Session, string) {
-	me := selfID(ctx, env, idx)
+// withoutSelf drops the caller's own session (or possible sessions) from a group.
+func withoutSelf(ctx context.Context, env *agents.Env, idx agents.Index, sessions []agents.Session) []agents.Session {
+	me := selves(ctx, env, idx)
 	var out []agents.Session
 	for _, s := range sessions {
-		if s.ID != me {
+		if !me[s.ID] {
 			out = append(out, s)
 		}
 	}
-	return out, me
+	return out
 }
 
 var errNoGroup = errors.New("no live session matches")

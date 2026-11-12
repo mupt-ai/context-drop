@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -32,6 +33,9 @@ func TestSelfFindsTheNearestAgentAncestor(t *testing.T) {
 	}
 	if _, err := Self(context.Background(), env, idx, 600); err == nil || !strings.Contains(err.Error(), "--as") {
 		t.Fatalf("shared process: err = %v", err)
+	}
+	if found, _ := SelfCandidates(context.Background(), env, idx, 600); len(found) != 2 {
+		t.Fatalf("candidates under a shared process = %+v", found)
 	}
 	if _, err := Self(context.Background(), env, idx, 700); !errors.Is(err, ErrNoSelf) {
 		t.Fatalf("outside any session: err = %v", err)
@@ -230,6 +234,10 @@ func TestStop(t *testing.T) {
 	if err != nil || how != "closed tmux pane %3" || strings.Join(h.commands[len(h.commands)-1], " ") != "tmux kill-pane -t %3" {
 		t.Fatalf("stop = %q, %v, last %q", how, err, h.commands[len(h.commands)-1])
 	}
+	// The record is used once: the pane is gone, so a second stop signals.
+	if how, _ := Stop(ctx, env, launched); !strings.HasPrefix(how, "sent SIGTERM") {
+		t.Fatalf("second stop = %q", how)
+	}
 	// The record is per session: another session in the same pane is not ours.
 	if how, _ := Stop(ctx, env, Session{ID: "cc-other", PID: 10, TTY: "/dev/ttys010"}); !strings.HasPrefix(how, "sent SIGTERM") {
 		t.Fatalf("another session's pane was closed: %q", how)
@@ -237,10 +245,84 @@ func TestStop(t *testing.T) {
 	if _, err := Stop(ctx, env, Session{ID: "cx-1", PID: 40}); err == nil || !strings.Contains(err.Error(), "shared process") {
 		t.Fatalf("shared app-server: %v", err)
 	}
+	// A thread `start` opened under a shared app-server is stopped by its pane.
+	codex := Session{ID: "cx-2", PID: 40}
+	if err := env.recordLaunch(codex, Location{Mux: MuxTmux, Pane: "%8"}); err != nil {
+		t.Fatal(err)
+	}
+	if how, err := Stop(ctx, env, codex); err != nil || how != "closed tmux pane %8" {
+		t.Fatalf("recorded codex pane: %q, %v", how, err)
+	}
+	// After a restart the same session has a new process, so an old record does not apply.
+	if err := env.recordLaunch(Session{ID: "cc-old", PID: 77}, Location{Mux: MuxTmux, Pane: "%3"}); err != nil {
+		t.Fatal(err)
+	}
+	if how, _ := Stop(ctx, env, Session{ID: "cc-old", PID: 10, TTY: "/dev/ttys010"}); !strings.HasPrefix(how, "sent SIGTERM") {
+		t.Fatalf("stale record closed a pane: %q", how)
+	}
 	if _, err := Stop(ctx, env, Session{ID: "cc-sub", PID: 10, Subagent: true, ParentID: "cc-launched"}); err == nil {
 		t.Fatal("stopped a subagent on its own")
 	}
 	if _, err := Stop(ctx, env, Session{ID: "gone", PID: 99}); err == nil {
 		t.Fatal("stopped a session with no process")
+	}
+}
+
+func TestClaimsSurviveAPartialDiscovery(t *testing.T) {
+	main, feature := gitRepo(t)
+	h := newFakeHost(t)
+	h.procs[300] = Process{PID: 300}
+	h.procs[400] = Process{PID: 400}
+	env := h.env()
+	store := env.Claims()
+	a, b := Session{ID: "cc-a", PID: 300}, Session{ID: "cc-b", PID: 400}
+	if err := store.Add(Index{Sessions: []Session{a}}, []Claim{NewClaim(a, "src", main, "", time.Now())}, false); err != nil {
+		t.Fatal(err)
+	}
+	// A pass that missed a's session hides its claim but keeps it.
+	if live, _ := store.Live(Index{}); len(live) != 0 {
+		t.Fatalf("live = %+v", live)
+	}
+	if err := store.Add(Index{Sessions: []Session{b}}, []Claim{NewClaim(b, "src", feature, "", time.Now())}, false); err == nil {
+		t.Fatal("a claim was lost to a discovery pass that missed its session")
+	}
+	// A name one agent saw as a task and another as a path still conflicts.
+	if err := store.Add(Index{Sessions: []Session{a}}, []Claim{NewClaim(a, "docs", main, "", time.Now())}, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(feature, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Add(Index{Sessions: []Session{b}}, []Claim{NewClaim(b, "docs", feature, "", time.Now())}, false); err == nil {
+		t.Fatal("task and path claims on the same name did not conflict")
+	}
+	// Releasing from another worktree of the repository matches.
+	released, err := store.Release(Index{Sessions: []Session{a}}, "cc-a", []Claim{NewClaim(a, "src", feature, "", time.Time{})})
+	if err != nil || len(released) != 1 {
+		t.Fatalf("released = %+v, %v", released, err)
+	}
+	// Once a's process exits, its claims go.
+	delete(h.procs, 300)
+	env = h.env()
+	if err := env.Claims().Add(Index{Sessions: []Session{b}}, []Claim{NewClaim(b, "docs", feature, "", time.Now())}, false); err != nil {
+		t.Fatalf("a dead session's claim still blocks: %v", err)
+	}
+}
+
+func TestLaunchRecordsSurviveConcurrentStarts(t *testing.T) {
+	env := newFakeHost(t).env()
+	var wg sync.WaitGroup
+	for i := 1; i <= 20; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_ = env.recordLaunch(Session{ID: fmt.Sprint("s", i), PID: i}, Location{Mux: MuxTmux, Pane: fmt.Sprint("%", i)})
+		}(i)
+	}
+	wg.Wait()
+	for i := 1; i <= 20; i++ {
+		if _, ok := env.takeLaunch(Session{ID: fmt.Sprint("s", i), PID: i}); !ok {
+			t.Fatalf("record %d was lost", i)
+		}
 	}
 }

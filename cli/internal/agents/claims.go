@@ -1,14 +1,13 @@
 package agents
 
 import (
-	"encoding/json"
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -17,6 +16,8 @@ import (
 type Claim struct {
 	Session string `json:"session"`
 	Agent   string `json:"agent"`
+	// PID is the owner's process; the claim ends when it exits.
+	PID int `json:"pid,omitempty"`
 	// Target is what was claimed, as given.
 	Target string `json:"target"`
 	// Path is set when Target names a file or directory: its absolute path.
@@ -34,10 +35,9 @@ type Claim struct {
 // contains the other, or two tasks have the same name.
 func (c Claim) Overlaps(o Claim) bool {
 	switch {
-	case c.Path == "" && o.Path == "":
-		return strings.EqualFold(strings.TrimSpace(c.Target), strings.TrimSpace(o.Target))
 	case c.Path == "" || o.Path == "":
-		return false
+		// A task, or a name one agent saw as a path and another as a task.
+		return sameTarget(c, o)
 	case c.Repo != "" && c.Repo == o.Repo:
 		return pathContains(c.RepoPath, o.RepoPath) || pathContains(o.RepoPath, c.RepoPath)
 	}
@@ -69,7 +69,7 @@ func (c ClaimConflict) Error() string {
 // that looks like a path (contains a slash or starts with "."), is a path,
 // resolved against dir; anything else is a task name.
 func NewClaim(owner Session, target, dir, note string, now time.Time) Claim {
-	c := Claim{Session: owner.ID, Agent: owner.Agent, Target: target, Note: note, ClaimedAt: now}
+	c := Claim{Session: owner.ID, Agent: owner.Agent, PID: owner.PID, Target: target, Note: note, ClaimedAt: now}
 	path := target
 	if !filepath.IsAbs(path) {
 		path = filepath.Join(dir, path)
@@ -85,25 +85,30 @@ func NewClaim(owner Session, target, dir, note string, now time.Time) Claim {
 // agents can claim concurrently.
 type ClaimStore struct {
 	Path string
+	env  *Env
 }
 
 // Claims returns the store at ~/.context-drop/claims.json.
 func (e *Env) Claims() ClaimStore {
-	return ClaimStore{Path: filepath.Join(e.ContextDropHome(), "claims.json")}
+	return ClaimStore{Path: filepath.Join(e.ContextDropHome(), "claims.json"), env: e}
 }
 
-// Live returns the claims whose sessions are in idx.
+// Live returns the claims of the sessions in idx. It never changes the
+// store, so a discovery pass that missed a session cannot drop its claims.
 func (s ClaimStore) Live(idx Index) ([]Claim, error) {
-	var out []Claim
-	err := s.update(idx, func(claims []Claim) ([]Claim, error) {
-		out = claims
-		return claims, nil
-	})
-	return out, err
+	var stored []Claim
+	if err := updateJSON(s.Path, &stored, func() (bool, error) { return false, nil }); err != nil {
+		return nil, err
+	}
+	live := map[string]bool{}
+	for _, sess := range idx.Sessions {
+		live[sess.ID] = true
+	}
+	return removeClaims(stored, func(c Claim) bool { return !live[c.Session] }), nil
 }
 
 // Add records claims for their owner, replacing the owner's earlier claim on
-// the same target. Unless force is set, a claim that overlaps another live
+// the same target. Unless force is set, a claim that overlaps another
 // session's claim is refused and nothing is recorded.
 func (s ClaimStore) Add(idx Index, wanted []Claim, force bool) error {
 	return s.update(idx, func(claims []Claim) ([]Claim, error) {
@@ -127,7 +132,9 @@ func (s ClaimStore) Add(idx Index, wanted []Claim, force bool) error {
 }
 
 // Release removes the session's claims on the given targets, or all of its
-// claims when targets is empty, and returns what it removed.
+// claims when targets is empty, and returns what it removed. A target matches
+// a claim on the same path (in any worktree of the repository) or with the
+// same name as given, so a file deleted since it was claimed still releases.
 func (s ClaimStore) Release(idx Index, session string, targets []Claim) ([]Claim, error) {
 	var released []Claim
 	err := s.update(idx, func(claims []Claim) ([]Claim, error) {
@@ -137,7 +144,7 @@ func (s ClaimStore) Release(idx Index, session string, targets []Claim) ([]Claim
 			}
 			match := len(targets) == 0
 			for _, t := range targets {
-				match = match || sameClaim(c, t)
+				match = match || sameClaim(c, t) || sameTarget(c, t)
 			}
 			if match {
 				released = append(released, c)
@@ -148,11 +155,59 @@ func (s ClaimStore) Release(idx Index, session string, targets []Claim) ([]Claim
 	return released, err
 }
 
+// update changes the stored claims under the lock. It first drops claims
+// whose owner has ended: its process is gone, or, for a session without a
+// process (OpenCode), it is not in idx. When the process table cannot be
+// read, nothing is dropped.
+func (s ClaimStore) update(idx Index, fn func([]Claim) ([]Claim, error)) error {
+	var stored []Claim
+	return updateJSON(s.Path, &stored, func() (bool, error) {
+		live := map[string]bool{}
+		for _, sess := range idx.Sessions {
+			live[sess.ID] = true
+		}
+		procs, procErr := map[int]Process(nil), error(nil)
+		if s.env != nil {
+			procs, procErr = s.env.Procs(context.Background())
+		}
+		claims := removeClaims(stored, func(c Claim) bool {
+			if procErr != nil || procs == nil {
+				return false
+			}
+			if c.PID > 0 {
+				_, alive := procs[c.PID]
+				return !alive
+			}
+			return !live[c.Session]
+		})
+		updated, err := fn(claims)
+		if err != nil {
+			return false, err
+		}
+		sort.SliceStable(updated, func(i, j int) bool { return updated[i].ClaimedAt.Before(updated[j].ClaimedAt) })
+		changed := len(updated) != len(stored) || !sameClaims(updated, stored)
+		stored = updated
+		return changed, nil
+	})
+}
+
+// sameClaim reports whether two claims are on the same path (compared within
+// the repository, so across its worktrees) or the same task.
 func sameClaim(a, b Claim) bool {
-	if a.Path != "" || b.Path != "" {
-		return a.Path == b.Path
+	switch {
+	case a.Path == "" && b.Path == "":
+		return sameTarget(a, b)
+	case a.Path == "" || b.Path == "":
+		return false
+	case a.Repo != "" && a.Repo == b.Repo:
+		return a.RepoPath == b.RepoPath
 	}
-	return strings.EqualFold(strings.TrimSpace(a.Target), strings.TrimSpace(b.Target))
+	return a.Path == b.Path
+}
+
+// sameTarget compares what was claimed, as given.
+func sameTarget(a, b Claim) bool {
+	return strings.EqualFold(strings.Trim(strings.TrimSpace(a.Target), "/"), strings.Trim(strings.TrimSpace(b.Target), "/"))
 }
 
 func removeClaims(claims []Claim, drop func(Claim) bool) []Claim {
@@ -163,55 +218,6 @@ func removeClaims(claims []Claim, drop func(Claim) bool) []Claim {
 		}
 	}
 	return kept
-}
-
-// update loads the claims under the lock, drops those of sessions that are no
-// longer live, applies fn, and saves the result.
-func (s ClaimStore) update(idx Index, fn func([]Claim) ([]Claim, error)) error {
-	if err := os.MkdirAll(filepath.Dir(s.Path), 0o700); err != nil {
-		return err
-	}
-	lock, err := os.OpenFile(s.Path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return err
-	}
-	defer lock.Close()
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
-		return err
-	}
-	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) //nolint:errcheck
-
-	var stored []Claim
-	data, err := os.ReadFile(s.Path)
-	if err == nil {
-		if err := json.Unmarshal(data, &stored); err != nil {
-			return fmt.Errorf("read %s: %w", s.Path, err)
-		}
-	} else if !os.IsNotExist(err) {
-		return err
-	}
-	live := map[string]bool{}
-	for _, sess := range idx.Sessions {
-		live[sess.ID] = true
-	}
-	claims := removeClaims(stored, func(c Claim) bool { return !live[c.Session] })
-	updated, err := fn(claims)
-	if err != nil {
-		return err
-	}
-	sort.SliceStable(updated, func(i, j int) bool { return updated[i].ClaimedAt.Before(updated[j].ClaimedAt) })
-	if len(updated) == len(stored) && sameClaims(updated, stored) {
-		return nil // unchanged
-	}
-	data, err = json.MarshalIndent(updated, "", "  ")
-	if err != nil {
-		return err
-	}
-	tmp := s.Path + ".tmp"
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, s.Path)
 }
 
 func sameClaims(a, b []Claim) bool {

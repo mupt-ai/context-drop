@@ -32,20 +32,36 @@ func newWatchCommand() *cobra.Command {
 				ctx, cancel = context.WithTimeout(ctx, duration)
 				defer cancel()
 			}
-			poll := func() ([]agents.Session, error) {
+			// poll reports ok=false for a pass that may have missed sessions: a
+			// provider failed, the process table could not be read, or time ran
+			// out mid-pass. Such a pass is skipped rather than shown as sessions ending.
+			poll := func() ([]agents.Session, bool, error) {
 				env, _, idx, err := discover(ctx)
 				if err != nil {
-					return nil, err
+					return nil, false, err
+				}
+				if _, err := env.Procs(ctx); err != nil || len(idx.Warnings) > 0 || ctx.Err() != nil {
+					return nil, false, nil
 				}
 				sessions := filter.apply(ctx, env, idx.Sessions)
 				if !subagents {
 					sessions = topLevel(sessions)
 				}
-				return sessions, nil
+				return sessions, ctx.Err() == nil, nil
 			}
-			prev, err := poll()
-			if err != nil {
-				return err
+			var prev []agents.Session
+			for ok := false; !ok; {
+				var err error
+				if prev, ok, err = poll(); err != nil {
+					return err
+				}
+				if !ok {
+					select {
+					case <-ctx.Done():
+						return nil
+					case <-time.After(interval):
+					}
+				}
 			}
 			fmt.Fprintf(cmd.ErrOrStderr(), "watching %d sessions every %s\n", len(prev), interval)
 			for {
@@ -54,12 +70,15 @@ func newWatchCommand() *cobra.Command {
 					return nil
 				case <-time.After(interval):
 				}
-				next, err := poll()
+				next, ok, err := poll()
 				if err != nil {
 					if ctx.Err() != nil {
 						return nil
 					}
 					return err
+				}
+				if !ok {
+					continue
 				}
 				for _, c := range agents.Changes(prev, next, time.Now()) {
 					if asJSON {
@@ -127,17 +146,11 @@ func newStopCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			me := selfID(cmd.Context(), env, idx)
+			me := selves(cmd.Context(), env, idx)
 			var targets []agents.Session
 			if all {
-				targets = topLevel(filter.apply(cmd.Context(), env, idx.Sessions))
-				var others []agents.Session
-				for _, s := range targets {
-					if s.ID != me {
-						others = append(others, s)
-					}
-				}
-				if targets = others; len(targets) == 0 {
+				targets = withoutSelf(cmd.Context(), env, idx, topLevel(filter.apply(cmd.Context(), env, idx.Sessions)))
+				if len(targets) == 0 {
 					return errNoGroup
 				}
 			} else {
@@ -149,15 +162,53 @@ func newStopCommand() *cobra.Command {
 					targets = append(targets, s)
 				}
 			}
-			var failed []error
+			// Stop every target first, then wait for all of them together.
+			how := map[string]string{}
+			failed := 0
 			for _, s := range targets {
-				if err := stopOne(cmd, env, s, me, force, timeout); err != nil {
+				did, err := stopOne(cmd, env, s, me[s.ID], force)
+				if err != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "%s: %v\n", s.ID, err)
-					failed = append(failed, err)
+					failed++
+					continue
+				}
+				how[s.ID] = did
+			}
+			deadline := time.Now().Add(timeout)
+			for len(how) > 0 {
+				_, _, idx, err := discover(cmd.Context())
+				if err != nil {
+					return err
+				}
+				for _, s := range targets {
+					if _, waiting := how[s.ID]; !waiting {
+						continue
+					}
+					if _, err := idx.Resolve(s.ID); errors.Is(err, agents.ErrNotFound) {
+						fmt.Fprintf(cmd.OutOrStdout(), "stopped %s (%s)\n", s.ID, how[s.ID])
+						delete(how, s.ID)
+					}
+				}
+				if len(how) == 0 {
+					break
+				}
+				if time.Now().After(deadline) {
+					for _, s := range targets {
+						if did, waiting := how[s.ID]; waiting {
+							fmt.Fprintf(cmd.ErrOrStderr(), "%s: %s, but it is still running after %s\n", s.ID, did, timeout)
+							failed++
+						}
+					}
+					break
+				}
+				select {
+				case <-cmd.Context().Done():
+					return cmd.Context().Err()
+				case <-time.After(250 * time.Millisecond):
 				}
 			}
-			if len(failed) > 0 {
-				return fmt.Errorf("%d of %d sessions were not stopped", len(failed), len(targets))
+			if failed > 0 {
+				return fmt.Errorf("%d of %d sessions were not stopped", failed, len(targets))
 			}
 			return nil
 		},
@@ -169,38 +220,17 @@ func newStopCommand() *cobra.Command {
 	return cmd
 }
 
-func stopOne(cmd *cobra.Command, env *agents.Env, s agents.Session, me string, force bool, timeout time.Duration) error {
+// stopOne applies the guards and stops one session, returning what it did.
+func stopOne(cmd *cobra.Command, env *agents.Env, s agents.Session, isSelf, force bool) (string, error) {
 	if !force {
 		switch {
-		case s.ID == me:
-			return fmt.Errorf("this is your own session; pass --force to stop it")
+		case isSelf:
+			return "", fmt.Errorf("this may be your own session; pass --force to stop it")
 		case s.Status == agents.StatusWorking || s.Status == agents.StatusBlocked:
-			return fmt.Errorf("is %s; pass --force to stop it anyway", s.Status)
+			return "", fmt.Errorf("is %s; pass --force to stop it anyway", s.Status)
 		}
 	}
-	how, err := agents.Stop(cmd.Context(), env, s)
-	if err != nil {
-		return err
-	}
-	deadline := time.Now().Add(timeout)
-	for {
-		_, _, idx, err := discover(cmd.Context())
-		if err != nil {
-			return err
-		}
-		if _, err := idx.Resolve(s.ID); errors.Is(err, agents.ErrNotFound) {
-			fmt.Fprintf(cmd.OutOrStdout(), "stopped %s (%s)\n", s.ID, how)
-			return nil
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("%s, but it is still running after %s", how, timeout)
-		}
-		select {
-		case <-cmd.Context().Done():
-			return cmd.Context().Err()
-		case <-time.After(250 * time.Millisecond):
-		}
-	}
+	return agents.Stop(cmd.Context(), env, s)
 }
 
 func newClaimCommand() *cobra.Command {

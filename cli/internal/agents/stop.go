@@ -2,9 +2,7 @@ package agents
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -13,10 +11,14 @@ import (
 
 // launchRecord remembers a pane `start` opened for a session, so `stop` can
 // close panes Context Drop created and leave panes the user opened alone.
+// The session's process is part of the key: pane IDs (tmux "%3") are reused
+// after a restart, and a resumed session keeps its ID but not its process.
 type launchRecord struct {
 	Session string    `json:"session"`
+	PID     int       `json:"pid,omitempty"`
 	Mux     string    `json:"mux"`
 	Pane    string    `json:"pane"`
+	Scope   string    `json:"scope,omitempty"`
 	At      time.Time `json:"at"`
 }
 
@@ -25,66 +27,57 @@ const maxLaunchRecords = 500
 
 func (e *Env) launchesPath() string { return filepath.Join(e.ContextDropHome(), "launched.json") }
 
-func (e *Env) launches() []launchRecord {
-	var records []launchRecord
-	if data, err := os.ReadFile(e.launchesPath()); err == nil {
-		_ = json.Unmarshal(data, &records)
-	}
-	return records
-}
-
 // recordLaunch notes that the session runs in a pane `start` opened.
 func (e *Env) recordLaunch(s Session, at Location) error {
-	records := append(e.launches(), launchRecord{Session: s.ID, Mux: at.Mux, Pane: at.Pane, At: time.Now()})
-	if len(records) > maxLaunchRecords {
-		records = records[len(records)-maxLaunchRecords:]
-	}
-	data, err := json.MarshalIndent(records, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(e.ContextDropHome(), 0o700); err != nil {
-		return err
-	}
-	tmp := e.launchesPath() + ".tmp"
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, e.launchesPath())
+	var records []launchRecord
+	return updateJSON(e.launchesPath(), &records, func() (bool, error) {
+		records = append(records, launchRecord{Session: s.ID, PID: s.PID, Mux: at.Mux, Pane: at.Pane, Scope: at.scope, At: time.Now()})
+		if len(records) > maxLaunchRecords {
+			records = records[len(records)-maxLaunchRecords:]
+		}
+		return true, nil
+	})
 }
 
-// launchedHere reports whether `start` opened the pane for this session.
-func (e *Env) launchedHere(s Session, at Location) bool {
-	for _, r := range e.launches() {
-		if r.Session == s.ID && r.Mux == at.Mux && r.Pane == at.Pane {
-			return true
+// takeLaunch finds and removes the record of the pane `start` opened for
+// this run of the session.
+func (e *Env) takeLaunch(s Session) (Location, bool) {
+	var records []launchRecord
+	var found Location
+	ok := false
+	_ = updateJSON(e.launchesPath(), &records, func() (bool, error) {
+		for i, r := range records {
+			if r.Session == s.ID && r.PID == s.PID {
+				found, ok = Location{Mux: r.Mux, Pane: r.Pane, scope: r.Scope}, true
+				records = append(records[:i], records[i+1:]...)
+				return true, nil
+			}
 		}
-	}
-	return false
+		return false, nil
+	})
+	return found, ok
 }
 
 // Stop ends a session. A session in a pane that `start` opened for it has
-// that pane closed. Any other session gets SIGTERM, so a pane the user opened
-// keeps its shell. Processes that serve several sessions (a Codex app-server,
-// `opencode serve`) are never signalled. It returns what it did.
+// that pane closed, found from the launch record even when the session's
+// process does not lead to it (OpenCode, a Codex app-server thread). Any
+// other session gets SIGTERM, so a pane the user opened keeps its shell.
+// Processes that serve several sessions (a Codex app-server, `opencode
+// serve`) are never signalled. It returns what it did.
 func Stop(ctx context.Context, env *Env, s Session) (string, error) {
 	if s.Subagent {
 		return "", fmt.Errorf("%s is a subagent; stop its parent %s instead", s.ID, s.ParentID)
 	}
-	if s.Location == nil && s.PID > 0 {
-		if loc, ok := locate(ctx, env, s.PID, s.TTY); ok {
-			s.Location = &loc
-		}
-	}
-	if s.Location != nil && env.launchedHere(s, *s.Location) {
-		m, err := muxFor(s.Location.Mux)
+	if at, ok := env.takeLaunch(s); ok {
+		m, err := muxFor(at.Mux)
 		if err != nil {
 			return "", err
 		}
-		if err := m.close(ctx, env, *s.Location); err != nil {
+		if err := m.close(ctx, env, at); err != nil {
+			_ = env.recordLaunch(s, at) // keep it, so a retry can close the pane
 			return "", err
 		}
-		return "closed " + s.Location.describe(), nil
+		return "closed " + at.describe(), nil
 	}
 	proc, ok := env.Alive(ctx, s.PID)
 	if !ok {

@@ -245,7 +245,7 @@ func newSendCommand() *cobra.Command {
 			}
 			var targets []agents.Session
 			if all {
-				targets, _ = withoutSelf(cmd.Context(), env, idx, topLevel(filter.apply(cmd.Context(), env, idx.Sessions)))
+				targets = withoutSelf(cmd.Context(), env, idx, topLevel(filter.apply(cmd.Context(), env, idx.Sessions)))
 				if len(targets) == 0 {
 					return errNoGroup
 				}

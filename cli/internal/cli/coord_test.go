@@ -24,7 +24,7 @@ type coordHost struct {
 	mu       sync.Mutex
 	procs    map[int]agents.Process
 	polls    int
-	onPoll   func(n int, procs map[int]agents.Process)
+	onPoll   func(n int, procs map[int]agents.Process) error
 	commands []string
 	signals  []string
 }
@@ -77,7 +77,9 @@ func newCoordHost(t *testing.T) *coordHost {
 				defer h.mu.Unlock()
 				h.polls++
 				if h.onPoll != nil {
-					h.onPoll(h.polls, h.procs)
+					if err := h.onPoll(h.polls, h.procs); err != nil {
+						return nil, err
+					}
 				}
 				out := map[int]agents.Process{}
 				for pid, p := range h.procs {
@@ -207,10 +209,14 @@ func TestClaimOutsideAnAgentNeedsAs(t *testing.T) {
 
 func TestWatchReportsChanges(t *testing.T) {
 	h := newCoordHost(t)
-	h.onPoll = func(n int, procs map[int]agents.Process) {
-		if n == 2 { // after the baseline, b exits
+	h.onPoll = func(n int, procs map[int]agents.Process) error {
+		switch {
+		case n == 2: // ps fails once; that pass must not read as everyone ending
+			return fmt.Errorf("ps: interrupted")
+		case n == 3: // then b really exits
 			delete(procs, 43)
 		}
+		return nil
 	}
 	stdout, _, err := executeRoot(t, "watch", "--for", "150ms", "--interval", "10ms", "--json")
 	if err != nil {
@@ -220,5 +226,20 @@ func TestWatchReportsChanges(t *testing.T) {
 	var c agents.Change
 	if len(lines) != 1 || json.Unmarshal([]byte(lines[0]), &c) != nil || c.Event != agents.ChangeEnded || c.ID != h.b {
 		t.Fatalf("watch = %q", stdout)
+	}
+}
+
+func TestGroupsSkipEverySessionTheCallerMayBe(t *testing.T) {
+	old := selfPID
+	t.Cleanup(func() { selfPID = old })
+	selfPID = func() int { return 500 }
+	// The caller runs under a Codex app-server (100) that serves two threads.
+	env := &agents.Env{Processes: func(context.Context) (map[int]agents.Process, error) {
+		return map[int]agents.Process{500: {PID: 500, PPID: 100}, 100: {PID: 100, PPID: 1}}, nil
+	}}
+	idx := agents.Index{Sessions: []agents.Session{{ID: "cx-1", PID: 100}, {ID: "cx-2", PID: 100}, {ID: "cc-3", PID: 300}}}
+	got := withoutSelf(context.Background(), env, idx, idx.Sessions)
+	if len(got) != 1 || got[0].ID != "cc-3" {
+		t.Fatalf("group = %+v", got)
 	}
 }
