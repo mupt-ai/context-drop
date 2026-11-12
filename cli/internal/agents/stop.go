@@ -15,7 +15,9 @@ import (
 // after a restart, and a resumed session keeps its ID but not its process.
 type launchRecord struct {
 	Session string    `json:"session"`
+	Agent   string    `json:"agent,omitempty"`
 	PID     int       `json:"pid,omitempty"`
+	Started time.Time `json:"started,omitempty"`
 	Mux     string    `json:"mux"`
 	Pane    string    `json:"pane"`
 	Scope   string    `json:"scope,omitempty"`
@@ -30,8 +32,13 @@ func (e *Env) launchesPath() string { return filepath.Join(e.ContextDropHome(), 
 // recordLaunch notes that the session runs in a pane `start` opened.
 func (e *Env) recordLaunch(s Session, at Location) error {
 	var records []launchRecord
+	started := time.Time{}
+	if p, ok := e.Alive(context.Background(), s.PID); ok {
+		started = p.Start
+	}
 	return updateJSON(e.launchesPath(), &records, func() (bool, error) {
-		records = append(records, launchRecord{Session: s.ID, PID: s.PID, Mux: at.Mux, Pane: at.Pane, Scope: at.scope, At: time.Now()})
+		records = append(records, launchRecord{Session: s.ID, Agent: s.Agent, PID: s.PID, Started: started,
+			Mux: at.Mux, Pane: at.Pane, Scope: at.scope, At: time.Now()})
 		if len(records) > maxLaunchRecords {
 			records = records[len(records)-maxLaunchRecords:]
 		}
@@ -41,21 +48,24 @@ func (e *Env) recordLaunch(s Session, at Location) error {
 
 // takeLaunch finds and removes the record of the pane `start` opened for
 // this run of the session.
-// A session that changed ID since (a Pi session without the extension takes
-// its file's ID after its first message) matches by its process, as long as
-// it still runs in the recorded pane.
+// The process must be the one recorded (PID and start time). A Pi session
+// that changed ID since (without the extension it takes its file's ID after
+// its first message) matches by that process, as long as it still runs in
+// the recorded pane; Pi processes are never shared by several sessions.
 func (e *Env) takeLaunch(ctx context.Context, s Session) (Location, bool) {
 	var records []launchRecord
 	var found Location
 	ok := false
+	proc, alive := e.Alive(ctx, s.PID)
 	here, located := Location{}, false
-	if s.PID > 0 {
+	if s.Agent == Pi && alive {
 		here, located = locate(ctx, e, s.PID, s.TTY)
 	}
 	_ = updateJSON(e.launchesPath(), &records, func() (bool, error) {
 		for i, r := range records {
-			renamed := r.Session != s.ID && r.PID > 0 && located && here.Mux == r.Mux && here.Pane == r.Pane
-			if r.PID == s.PID && (r.Session == s.ID || renamed) {
+			sameProcess := r.PID == s.PID && (r.Started.IsZero() || (alive && proc.Start.Equal(r.Started)))
+			renamed := r.Session != s.ID && r.Agent == Pi && s.Agent == Pi && r.PID > 0 && located && here.Mux == r.Mux && here.Pane == r.Pane
+			if sameProcess && (r.Session == s.ID || renamed) {
 				found, ok = Location{Mux: r.Mux, Pane: r.Pane, scope: r.Scope}, true
 				records = append(records[:i], records[i+1:]...)
 				return true, nil

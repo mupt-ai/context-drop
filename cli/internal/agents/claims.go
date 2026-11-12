@@ -16,8 +16,10 @@ import (
 type Claim struct {
 	Session string `json:"session"`
 	Agent   string `json:"agent"`
-	// PID is the owner's process; the claim ends when it exits.
-	PID int `json:"pid,omitempty"`
+	// PID and Started identify the owner's process; the claim ends when it
+	// exits (a reused PID has a different start time).
+	PID     int       `json:"pid,omitempty"`
+	Started time.Time `json:"started,omitempty"`
 	// Target is what was claimed, as given.
 	Target string `json:"target"`
 	// Path is set when Target names a file or directory: its absolute path.
@@ -103,7 +105,7 @@ func (s ClaimStore) Live(idx Index) ([]Claim, error) {
 	if err := updateJSON(s.Path, &stored, func() (bool, error) { return false, nil }); err != nil {
 		return nil, err
 	}
-	rebind(stored, idx)
+	rebind(stored, idx, s.procs())
 	live := map[string]bool{}
 	for _, sess := range idx.Sessions {
 		live[sess.ID] = true
@@ -118,6 +120,11 @@ func (s ClaimStore) Add(idx Index, wanted []Claim, force bool) error {
 	for _, w := range wanted {
 		if w.PID <= 0 {
 			return fmt.Errorf("%s %w (OpenCode sessions cannot claim)", w.Session, ErrNoProcess)
+		}
+	}
+	if procs := s.procs(); procs != nil {
+		for i := range wanted {
+			wanted[i].Started = procs[wanted[i].PID].Start
 		}
 	}
 	return s.update(idx, func(claims []Claim) ([]Claim, error) {
@@ -171,17 +178,10 @@ func (s ClaimStore) Release(idx Index, session string, targets []Claim) ([]Claim
 func (s ClaimStore) update(idx Index, fn func([]Claim) ([]Claim, error)) error {
 	var stored []Claim
 	return updateJSON(s.Path, &stored, func() (bool, error) {
-		rebind(stored, idx)
-		procs, procErr := map[int]Process(nil), error(nil)
-		if s.env != nil {
-			procs, procErr = s.env.Procs(context.Background())
-		}
+		procs := s.procs()
+		rebind(stored, idx, procs)
 		claims := removeClaims(stored, func(c Claim) bool {
-			if procErr != nil || procs == nil || c.PID <= 0 {
-				return false
-			}
-			_, alive := procs[c.PID]
-			return !alive
+			return procs != nil && c.PID > 0 && !c.running(procs)
 		})
 		updated, err := fn(claims)
 		if err != nil {
@@ -194,10 +194,31 @@ func (s ClaimStore) update(idx Index, fn func([]Claim) ([]Claim, error)) error {
 	})
 }
 
+// procs reads the process table, or returns nil when it cannot be read, in
+// which case nothing is judged dead.
+func (s ClaimStore) procs() map[int]Process {
+	if s.env == nil {
+		return nil
+	}
+	procs, err := s.env.Procs(context.Background())
+	if err != nil {
+		return nil
+	}
+	return procs
+}
+
+// running reports whether the claim's process still runs: same PID and, when
+// recorded, the same start time.
+func (c Claim) running(procs map[int]Process) bool {
+	p, ok := procs[c.PID]
+	return ok && (c.Started.IsZero() || p.Start.Equal(c.Started))
+}
+
 // rebind moves claims of a session that changed ID to its new ID: a Pi
 // session without the extension takes its file's ID after its first message
-// but keeps its process. A process shared by several sessions is left alone.
-func rebind(claims []Claim, idx Index) {
+// but keeps its process. Only the same process (PID and start time) counts,
+// and a process shared by several sessions is left alone.
+func rebind(claims []Claim, idx Index, procs map[int]Process) {
 	live := map[string]bool{}
 	byPID := map[int][]Session{}
 	for _, s := range idx.Sessions {
@@ -207,7 +228,7 @@ func rebind(claims []Claim, idx Index) {
 		}
 	}
 	for i, c := range claims {
-		if found := byPID[c.PID]; !live[c.Session] && c.PID > 0 && len(found) == 1 && found[0].Agent == c.Agent {
+		if found := byPID[c.PID]; !live[c.Session] && c.PID > 0 && len(found) == 1 && found[0].Agent == c.Agent && procs != nil && c.running(procs) {
 			claims[i].Session = found[0].ID
 		}
 	}

@@ -372,11 +372,39 @@ func TestStopFindsTheRecordOfARenamedPiSession(t *testing.T) {
 		return inner(args)
 	}
 	env := h.env()
-	if err := env.recordLaunch(Session{ID: "pi-pid-10", PID: 10}, Location{Mux: MuxTmux, Pane: "%3"}); err != nil {
+	env.Signal = func(int, syscall.Signal) error { return nil }
+	// Another kind of session sharing the process is not a rename.
+	if err := env.recordLaunch(Session{ID: "cx-a", Agent: Codex, PID: 10}, Location{Mux: MuxTmux, Pane: "%3"}); err != nil {
+		t.Fatal(err)
+	}
+	if how, _ := Stop(context.Background(), env, Session{ID: "cx-b", Agent: Codex, PID: 10, TTY: "/dev/ttys010"}); !strings.HasPrefix(how, "sent SIGTERM") {
+		t.Fatalf("closed another session's pane: %q", how)
+	}
+	if err := env.recordLaunch(Session{ID: "pi-pid-10", Agent: Pi, PID: 10}, Location{Mux: MuxTmux, Pane: "%3"}); err != nil {
 		t.Fatal(err)
 	}
 	how, err := Stop(context.Background(), h.env(), Session{ID: "pi-file-id", Agent: Pi, PID: 10, TTY: "/dev/ttys010"})
 	if err != nil || how != "closed tmux pane %3" {
 		t.Fatalf("stop = %q, %v", how, err)
+	}
+}
+
+func TestClaimsEndWhenTheirPIDIsReused(t *testing.T) {
+	h := newFakeHost(t)
+	start := time.Now().Add(-time.Hour)
+	h.procs[42] = Process{PID: 42, Start: start}
+	owner := Session{ID: "pi-a", Agent: Pi, PID: 42}
+	if err := h.env().Claims().Add(Index{Sessions: []Session{owner}}, []Claim{NewClaim(owner, "notes", "/", "", time.Now())}, false); err != nil {
+		t.Fatal(err)
+	}
+	// pi-a exits and an unrelated Pi process gets PID 42.
+	h.procs[42] = Process{PID: 42, Start: time.Now()}
+	other := Session{ID: "pi-b", Agent: Pi, PID: 42}
+	store := h.env().Claims()
+	if live, _ := store.Live(Index{Sessions: []Session{other}}); len(live) != 0 {
+		t.Fatalf("claims moved to a reused PID: %+v", live)
+	}
+	if err := store.Add(Index{Sessions: []Session{other}}, []Claim{NewClaim(other, "notes", "/", "", time.Now())}, false); err != nil {
+		t.Fatalf("a dead process's claim still blocks: %v", err)
 	}
 }
