@@ -28,6 +28,8 @@ type Server struct {
 	defaultTTL  time.Duration
 	maxTTL      time.Duration
 	maxBytes    int64
+	limiter     *uploadLimiter
+	trustProxy  bool
 	log         *slog.Logger
 }
 
@@ -38,7 +40,13 @@ type Options struct {
 	DefaultTTL  time.Duration
 	MaxTTL      time.Duration
 	MaxBytes    int64
-	Logger      *slog.Logger
+	// UploadsPerHour and UploadBytesPerHour cap anonymous uploads per client
+	// IP. Zero disables a cap. Uploads with the upload token are not limited.
+	UploadsPerHour     int
+	UploadBytesPerHour int64
+	// TrustProxy identifies clients by the X-Forwarded-For entry a proxy appended.
+	TrustProxy bool
+	Logger     *slog.Logger
 }
 
 func NewServer(opts Options) *Server {
@@ -53,6 +61,8 @@ func NewServer(opts Options) *Server {
 		defaultTTL:  opts.DefaultTTL,
 		maxTTL:      opts.MaxTTL,
 		maxBytes:    opts.MaxBytes,
+		limiter:     newUploadLimiter(opts.UploadsPerHour, opts.UploadBytesPerHour, time.Hour),
+		trustProxy:  opts.TrustProxy,
 		log:         logger,
 	}
 }
@@ -74,6 +84,16 @@ func (s *Server) handleCreateDrop(w http.ResponseWriter, r *http.Request) {
 	if !s.authorizeUpload(r) {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="context-drop-upload"`)
 		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	limiter := s.limiter
+	if s.uploadToken != "" {
+		limiter = nil // authenticated uploaders are trusted
+	}
+	client := clientIP(r, s.trustProxy)
+	if ok, retry := limiter.allow(client); !ok {
+		tooMany(w, retry)
 		return
 	}
 
@@ -101,6 +121,11 @@ func (s *Server) handleCreateDrop(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(data) == 0 {
 		writeError(w, http.StatusBadRequest, "upload is empty")
+		return
+	}
+
+	if ok, retry := limiter.record(client, int64(len(data))); !ok {
+		tooMany(w, retry)
 		return
 	}
 
@@ -271,6 +296,12 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+func tooMany(w http.ResponseWriter, retry time.Duration) {
+	secs := int(retry.Seconds()) + 1
+	w.Header().Set("Retry-After", strconv.Itoa(secs))
+	writeError(w, http.StatusTooManyRequests, fmt.Sprintf("upload limit reached; retry in %s", (time.Duration(secs)*time.Second).String()))
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {

@@ -23,7 +23,7 @@ type sessionFilter struct {
 
 func (f *sessionFilter) register(cmd *cobra.Command, verb string) {
 	cmd.Flags().StringVar(&f.agent, "agent", "", verb+" one agent kind (claude, codex, pi, opencode)")
-	cmd.Flags().StringVar(&f.in, "in", "", verb+" sessions running in this multiplexer (tmux, herdr, rex)")
+	cmd.Flags().StringVar(&f.in, "in", "", verb+" sessions running in this multiplexer (tmux, herdr, rex) or in a desktop app (desktop)")
 	cmd.Flags().StringVar(&f.at.Session, "session", "", verb+" sessions in this multiplexer session (herdr: workspace)")
 	cmd.Flags().StringVar(&f.at.Window, "window", "", verb+" sessions in this window (herdr: tab)")
 	cmd.Flags().StringVar(&f.at.Pane, "pane", "", verb+" the session in this pane (rex: block)")
@@ -53,6 +53,9 @@ func (f sessionFilter) apply(ctx context.Context, env *agents.Env, sessions []ag
 func inPlace(s agents.Session, in string, at agents.Placement) bool {
 	if in == "" && at.IsZero() {
 		return true
+	}
+	if in == agents.MuxDesktop {
+		return s.App != "" && at.IsZero()
 	}
 	return s.Location != nil && (in == "" || s.Location.Mux == in) && s.Location.Matches(at)
 }

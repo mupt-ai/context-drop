@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"contextdrop.dev/context-drop/internal/drop"
 )
@@ -108,4 +109,33 @@ func (s *LocalStore) dropDir(id string) (string, error) {
 		return "", fmt.Errorf("invalid drop id")
 	}
 	return filepath.Join(s.root, "drops", id), nil
+}
+
+// DeleteExpired removes drops whose expiry is before now and returns how many it removed.
+func (s *LocalStore) DeleteExpired(ctx context.Context, now time.Time) (int, error) {
+	entries, err := os.ReadDir(filepath.Join(s.root, "drops"))
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	for _, e := range entries {
+		if err := ctx.Err(); err != nil {
+			return removed, err
+		}
+		if !e.IsDir() || !drop.ValidID(e.Name()) {
+			continue
+		}
+		meta, err := s.GetMeta(ctx, e.Name())
+		if err != nil || meta.ExpiresAt.IsZero() || meta.ExpiresAt.After(now) {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(s.root, "drops", e.Name())); err != nil {
+			return removed, err
+		}
+		removed++
+	}
+	return removed, nil
 }

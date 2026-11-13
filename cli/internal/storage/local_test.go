@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,5 +45,33 @@ func TestLocalStoreErrors(t *testing.T) {
 	cancel()
 	if err := store.Put(ctx, drop.Metadata{ID: "ABCDEFGHIJKLMNOP"}, bytes.NewReader(nil)); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Put(canceled) = %v", err)
+	}
+}
+
+func TestLocalDeleteExpired(t *testing.T) {
+	ctx := context.Background()
+	store := NewLocal(t.TempDir())
+	now := time.Now().UTC()
+	put := func(id string, expires time.Time) {
+		t.Helper()
+		meta := drop.Metadata{ID: id, ExpiresAt: expires}
+		if err := store.Put(ctx, meta, strings.NewReader("x")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oldID, _ := drop.NewID()
+	liveID, _ := drop.NewID()
+	put(oldID, now.Add(-time.Minute))
+	put(liveID, now.Add(time.Hour))
+
+	n, err := store.DeleteExpired(ctx, now)
+	if err != nil || n != 1 {
+		t.Fatalf("DeleteExpired = %d, %v; want 1", n, err)
+	}
+	if _, err := store.GetMeta(ctx, oldID); err != ErrNotFound {
+		t.Fatalf("expired drop still readable: %v", err)
+	}
+	if _, err := store.GetMeta(ctx, liveID); err != nil {
+		t.Fatalf("live drop removed: %v", err)
 	}
 }

@@ -289,3 +289,51 @@ func TestParseTTLValidExplicitValue(t *testing.T) {
 		t.Fatalf("parseTTL() = %s, %v", got, err)
 	}
 }
+
+func TestPublicUploadsAreLimitedPerClient(t *testing.T) {
+	s := NewServer(Options{
+		Store:      storage.NewLocal(t.TempDir()),
+		DefaultTTL: time.Hour, MaxTTL: time.Hour, MaxBytes: 1024,
+		UploadsPerHour: 2, UploadBytesPerHour: 10, TrustProxy: true,
+	})
+	h := s.Handler()
+	upload := func(ip, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/drops", strings.NewReader(body))
+		// The first entry is client-supplied and must not pick the bucket.
+		req.Header.Set("X-Forwarded-For", "203.0.113.9, "+ip)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	for i, want := range []int{http.StatusCreated, http.StatusCreated, http.StatusTooManyRequests} {
+		if rec := upload("198.51.100.1", "abc"); rec.Code != want {
+			t.Fatalf("upload %d = %d, want %d: %s", i, rec.Code, want, rec.Body.String())
+		}
+	}
+	rec := upload("198.51.100.1", "abc")
+	if rec.Header().Get("Retry-After") == "" {
+		t.Fatal("429 without Retry-After")
+	}
+	// Another client has its own budget, and the byte cap applies too.
+	if rec := upload("198.51.100.2", "0123456789x"); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("over-budget bytes = %d, want 429", rec.Code)
+	}
+	if rec := upload("198.51.100.2", "0123456789"); rec.Code != http.StatusCreated {
+		t.Fatalf("second client = %d, want 201", rec.Code)
+	}
+}
+
+func TestTokenUploadsAreNotLimited(t *testing.T) {
+	s := NewServer(Options{
+		Store: storage.NewLocal(t.TempDir()), UploadToken: testUploadToken,
+		DefaultTTL: time.Hour, MaxTTL: time.Hour, MaxBytes: 1024, UploadsPerHour: 1,
+	})
+	h := s.Handler()
+	for i := 0; i < 3; i++ {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, uploadRequest("x"))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("upload %d = %d", i, rec.Code)
+		}
+	}
+}

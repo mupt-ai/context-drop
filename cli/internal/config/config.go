@@ -20,7 +20,7 @@ type CLIConfig struct {
 	DefaultTTL  time.Duration
 	Clipboard   bool
 	Summarize   SummarizeConfig
-	// LaunchIn is the default multiplexer for `context-drop start` (tmux, herdr, or rex).
+	// LaunchIn is the default multiplexer for `context-drop start` (tmux, herdr, rex, or desktop).
 	LaunchIn string
 	// LaunchCommand starts agents instead of their bare executable; "{agent}"
 	// becomes the agent kind, e.g. "dari {agent}".
@@ -238,6 +238,11 @@ type ServerConfig struct {
 	DefaultTTL  time.Duration
 	MaxTTL      time.Duration
 	MaxBytes    int64
+	// UploadsPerHour and UploadBytesPerHour cap anonymous uploads per client IP; 0 disables.
+	UploadsPerHour     int
+	UploadBytesPerHour int64
+	// TrustProxy reads the client IP from X-Forwarded-For.
+	TrustProxy bool
 }
 
 func LoadServerConfig() (ServerConfig, error) {
@@ -250,6 +255,10 @@ func LoadServerConfig() (ServerConfig, error) {
 		GCSPrefix:   strings.Trim(os.Getenv("CONTEXT_DROP_GCS_PREFIX"), "/"),
 		UploadToken: strings.TrimSpace(os.Getenv("CONTEXT_DROP_UPLOAD_TOKEN")),
 		MaxBytes:    envInt64("CONTEXT_DROP_MAX_BYTES", 25*1024*1024),
+
+		UploadsPerHour:     int(envInt64("CONTEXT_DROP_UPLOADS_PER_HOUR", 60)),
+		UploadBytesPerHour: envInt64("CONTEXT_DROP_UPLOAD_BYTES_PER_HOUR", 250*1024*1024),
+		TrustProxy:         envBool("CONTEXT_DROP_TRUST_PROXY"),
 	}
 	var err error
 	cfg.DefaultTTL, err = envDuration("CONTEXT_DROP_DEFAULT_TTL", 24*time.Hour)
@@ -268,6 +277,11 @@ func envString(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func envBool(key string) bool {
+	v, _ := strconv.ParseBool(strings.TrimSpace(os.Getenv(key)))
+	return v
 }
 
 func envInt64(key string, fallback int64) int64 {

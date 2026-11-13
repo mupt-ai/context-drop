@@ -33,6 +33,7 @@ type claudeRegistry struct {
 	Status          string `json:"status"`
 	MessagingSocket string `json:"messagingSocketPath"`
 	Tmux            string `json:"tmux"`
+	Entrypoint      string `json:"entrypoint"`
 }
 
 type claudeSubagentMeta struct {
@@ -81,6 +82,9 @@ func (claudeProvider) Discover(ctx context.Context, env *Env) ([]Session, error)
 			UpdatedAt:  latest(millis(float64(reg.UpdatedAt)), modTime(transcript)),
 			Transcript: transcript,
 			socket:     reg.MessagingSocket,
+		}
+		if strings.HasPrefix(reg.Entrypoint, "claude-desktop") {
+			s.App = AppClaudeDesktop
 		}
 		if s.socket != "" {
 			s.Delivery = "claude peer socket"

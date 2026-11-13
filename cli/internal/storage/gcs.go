@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"cloud.google.com/go/storage"
 	"contextdrop.dev/context-drop/internal/drop"
@@ -118,3 +119,36 @@ func isGCSNotFound(err error) bool {
 }
 
 const timeFormatRFC3339Nano = "2006-01-02T15:04:05.999999999Z07:00"
+
+// HasDeleteLifecycle reports whether the bucket has a lifecycle rule that
+// deletes objects within a day of maxTTL. Expired drops are otherwise kept forever.
+func (s *GCSStore) HasDeleteLifecycle(ctx context.Context, maxTTL time.Duration) (bool, error) {
+	attrs, err := s.client.Bucket(s.bucket).Attrs(ctx)
+	if err != nil {
+		return false, err
+	}
+	return deletesWithin(attrs.Lifecycle, s.objectName("", ""), maxTTL), nil
+}
+
+// deletesWithin checks the rules that cover objects under dropsPrefix.
+func deletesWithin(lc storage.Lifecycle, dropsPrefix string, maxTTL time.Duration) bool {
+	limit := int64(maxTTL.Hours()/24) + 2 // GCS ages are whole days
+	for _, rule := range lc.Rules {
+		if rule.Action.Type != storage.DeleteAction {
+			continue
+		}
+		c := rule.Condition
+		if c.AgeInDays <= 0 || c.AgeInDays > limit {
+			continue
+		}
+		if len(c.MatchesPrefix) == 0 {
+			return true
+		}
+		for _, p := range c.MatchesPrefix {
+			if strings.HasPrefix(dropsPrefix, p) {
+				return true
+			}
+		}
+	}
+	return false
+}

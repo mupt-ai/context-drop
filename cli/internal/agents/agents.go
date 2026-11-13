@@ -58,6 +58,9 @@ type Session struct {
 	Transcript     string    `json:"transcript,omitempty"`
 	// Delivery names the channel `send` will use.
 	Delivery string `json:"delivery"`
+	// App is the desktop app hosting the session (claude-desktop,
+	// codex-desktop); empty for terminal sessions.
+	App string `json:"app,omitempty"`
 	// Location is the tmux, herdr, or rex pane the agent runs in, when known.
 	Location *Location `json:"location,omitempty"`
 	// Claims lists what the session has claimed with `context-drop claim`.

@@ -44,6 +44,9 @@ Configuration is provided with environment variables:
   CONTEXT_DROP_DEFAULT_TTL           default drop TTL (default 24h)
   CONTEXT_DROP_MAX_TTL               maximum drop TTL (default 168h)
   CONTEXT_DROP_MAX_BYTES             maximum upload size in bytes (default 26214400)
+  CONTEXT_DROP_UPLOADS_PER_HOUR      anonymous uploads per client IP per hour (default 60, 0 = off)
+  CONTEXT_DROP_UPLOAD_BYTES_PER_HOUR anonymous upload bytes per client IP per hour (default 262144000, 0 = off)
+  CONTEXT_DROP_TRUST_PROXY           true to take the client IP from X-Forwarded-For (set behind a load balancer)
 `
 
 func wantsHelp(args []string) bool {
@@ -67,6 +70,7 @@ func runWithConfig(ctx context.Context, cfg config.ServerConfig) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	startCleanup(ctx, store, cfg)
 
 	return serve(ctx, httpServer, cfg)
 }
@@ -79,6 +83,10 @@ func newHTTPServer(cfg config.ServerConfig, store storage.Store) *http.Server {
 		DefaultTTL:  cfg.DefaultTTL,
 		MaxTTL:      cfg.MaxTTL,
 		MaxBytes:    cfg.MaxBytes,
+
+		UploadsPerHour:     cfg.UploadsPerHour,
+		UploadBytesPerHour: cfg.UploadBytesPerHour,
+		TrustProxy:         cfg.TrustProxy,
 	})
 
 	return &http.Server{
@@ -120,5 +128,41 @@ func newStore(ctx context.Context, cfg config.ServerConfig) (storage.Store, erro
 		return storage.NewGCS(ctx, cfg.GCSBucket, cfg.GCSPrefix)
 	default:
 		return nil, fmt.Errorf("unknown CONTEXT_DROP_STORAGE %q", cfg.Storage)
+	}
+}
+
+// startCleanup deletes expired drops. Local storage is swept hourly; on GCS the
+// bucket's lifecycle rule deletes objects, so the server only checks one exists.
+func startCleanup(ctx context.Context, store storage.Store, cfg config.ServerConfig) {
+	switch s := store.(type) {
+	case *storage.LocalStore:
+		go func() {
+			sweep := func() {
+				if n, err := s.DeleteExpired(ctx, time.Now()); err != nil {
+					slog.Warn("delete expired drops", "err", err)
+				} else if n > 0 {
+					slog.Info("deleted expired drops", "count", n)
+				}
+			}
+			sweep()
+			t := time.NewTicker(time.Hour)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					sweep()
+				}
+			}
+		}()
+	case *storage.GCSStore:
+		ok, err := s.HasDeleteLifecycle(ctx, cfg.MaxTTL)
+		switch {
+		case err != nil:
+			slog.Warn("could not read the bucket lifecycle; make sure a delete rule removes expired drops", "bucket", cfg.GCSBucket, "err", err)
+		case !ok:
+			slog.Warn("bucket has no lifecycle rule deleting objects after the max TTL; expired drops will never be deleted. See docs/server.md", "bucket", cfg.GCSBucket, "max_ttl", cfg.MaxTTL)
+		}
 	}
 }

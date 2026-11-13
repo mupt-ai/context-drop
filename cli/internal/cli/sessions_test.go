@@ -118,3 +118,25 @@ func TestSetupPiInstallsExtension(t *testing.T) {
 		t.Fatalf("installed %q: %v; stdout %q", path, err, stdout)
 	}
 }
+
+func TestWithFilesListsAbsolutePaths(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "notes.md")
+	if err := os.WriteFile(file, []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := withFiles("review this", []string{file, dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "review this\n\nFiles (on this machine; read them in place):\n- " + file + " (5 bytes)\n- " + dir + "/ (directory)"
+	if got != want {
+		t.Fatalf("got %q\nwant %q", got, want)
+	}
+	if _, err := withFiles("x", []string{filepath.Join(dir, "missing")}); err == nil {
+		t.Fatal("missing file accepted")
+	}
+	if got, _ := withFiles("plain", nil); got != "plain" {
+		t.Fatalf("no files changed the text: %q", got)
+	}
+}
