@@ -47,8 +47,8 @@ func newListCommand() *cobra.Command {
 		Long: "List every live Claude Code, Codex, Pi, and OpenCode session on this machine, including subagents.\n" +
 			"IDs are deterministic: the same session always gets the same ID.\n\n" +
 			"Sessions are found from their processes, wherever they run. WHERE shows the tmux, herdr, or rex pane a\n" +
-			"session runs in; --in, --session, --window, and --pane keep only the sessions in that place. CLAIMS shows\n" +
-			"what each session has claimed with `context-drop claim`. A warning names worktrees that several sessions\n" +
+			"session runs in, or the desktop app (claude desktop, codex desktop) hosting it; --in, --session, --window,\n" +
+			"and --pane keep only the sessions in that place. CLAIMS shows what each session has claimed with `context-drop claim`. A warning names worktrees that several sessions\n" +
 			"share; `context-drop overlaps` also checks the files they edit.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -94,6 +94,8 @@ func newListCommand() *cobra.Command {
 				where := "-"
 				if s.Location != nil {
 					where = s.Location.String()
+				} else if s.App != "" {
+					where = agents.AppLabel(s.App)
 				}
 				row := fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%s\t%s", id, s.Agent, s.Status, ago(s.UpdatedAt), shortPath(s.Cwd), label(s), where)
 				if claimed {
@@ -206,6 +208,7 @@ func newReadCommand() *cobra.Command {
 
 func newSendCommand() *cobra.Command {
 	var from string
+	var files []string
 	var wait, all bool
 	var timeout time.Duration
 	var filter sessionFilter
@@ -217,7 +220,9 @@ func newSendCommand() *cobra.Command {
 			"except the session running this command. With --wait, it waits for every reply and prints them in turn.\n\n" +
 			"Delivery uses each agent's own channel: Claude Code's peer socket, `codex queue`, the OpenCode service API,\n" +
 			"the Context Drop Pi extension (see `context-drop setup pi`), or for Pi sessions without it, the tmux, herdr,\n" +
-			"or rex pane they run in. Claude Code subagents receive messages through their parent session.",
+			"or rex pane they run in. Claude Code subagents receive messages through their parent session.\n\n" +
+			"--file hands the recipient a file on this machine: its absolute path is listed under the message, so the\n" +
+			"agent reads it in place and nothing is uploaded. Use `context-drop upload` for a link to share elsewhere.",
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if filter.set() && !all {
@@ -239,6 +244,10 @@ func newSendCommand() *cobra.Command {
 				text = string(data)
 			}
 			text = strings.TrimSpace(text)
+			text, err := withFiles(text, files)
+			if err != nil {
+				return err
+			}
 			env, providers, idx, err := discover(cmd.Context())
 			if err != nil {
 				return err
@@ -328,6 +337,7 @@ func newSendCommand() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().StringArrayVar(&files, "file", nil, "attach a local file by its absolute path (repeatable)")
 	cmd.Flags().StringVar(&from, "from", "", "sender name shown to agents that display it (default context-drop)")
 	cmd.Flags().BoolVar(&wait, "wait", false, "wait for the reply and print it")
 	cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Minute, "how long --wait waits")
@@ -474,4 +484,31 @@ func ago(t time.Time) string {
 	default:
 		return fmt.Sprintf("%dd", int(d.Hours()/24))
 	}
+}
+
+// withFiles lists local files under a message so the recipient can read them
+// in place. Every file must exist; paths are made absolute.
+func withFiles(text string, files []string) (string, error) {
+	if len(files) == 0 {
+		return text, nil
+	}
+	var b strings.Builder
+	b.WriteString(text)
+	b.WriteString("\n\nFiles (on this machine; read them in place):")
+	for _, f := range files {
+		abs, err := filepath.Abs(f)
+		if err != nil {
+			return "", err
+		}
+		info, err := os.Stat(abs)
+		if err != nil {
+			return "", fmt.Errorf("--file %s: %w", f, err)
+		}
+		if info.IsDir() {
+			fmt.Fprintf(&b, "\n- %s/ (directory)", abs)
+		} else {
+			fmt.Fprintf(&b, "\n- %s (%d bytes)", abs, info.Size())
+		}
+	}
+	return b.String(), nil
 }

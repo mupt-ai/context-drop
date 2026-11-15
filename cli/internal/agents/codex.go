@@ -64,6 +64,9 @@ func (codexProvider) Discover(ctx context.Context, env *Env) ([]Session, error) 
 		if proc, ok := procs[th.pid]; ok {
 			s.StartedAt = proc.Start
 			s.TTY = proc.TTY
+			if codexDesktopProcess(proc.Command) {
+				s.App = AppCodexDesktop
+			}
 		}
 		s.Name = names[th.id]
 		if rollout != "" {
@@ -281,8 +284,17 @@ func (codexProvider) Send(ctx context.Context, env *Env, s Session, text string,
 			}
 		}
 	}
-	_, err := env.runEnv(ctx, extraEnv, nil, env.Bin("codex"), args...)
-	return err
+	if _, err := env.runEnv(ctx, extraEnv, nil, env.Bin("codex"), args...); err != nil {
+		return err
+	}
+	if s.App == AppCodexDesktop {
+		// The desktop app's server is private to it; this link asks the app to
+		// pick up the queued message without bringing a window forward.
+		if err := openURL(ctx, env, "codex://threads/wake/"+s.NativeID, true); err != nil {
+			return fmt.Errorf("queued, but waking the Codex desktop app failed: %w", err)
+		}
+	}
+	return nil
 }
 
 const codexTokenEnv = "CONTEXT_DROP_CODEX_REMOTE_TOKEN"

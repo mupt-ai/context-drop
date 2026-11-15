@@ -28,6 +28,8 @@ type Server struct {
 	defaultTTL  time.Duration
 	maxTTL      time.Duration
 	maxBytes    int64
+	limiter     *uploadLimiter
+	proxyHops   int
 	log         *slog.Logger
 }
 
@@ -38,7 +40,15 @@ type Options struct {
 	DefaultTTL  time.Duration
 	MaxTTL      time.Duration
 	MaxBytes    int64
-	Logger      *slog.Logger
+	// UploadsPerHour and UploadBytesPerHour cap anonymous uploads per client
+	// IP. Zero disables a cap. Uploads with the upload token are not limited.
+	UploadsPerHour     int
+	UploadBytesPerHour int64
+	// ProxyHops is how many trusted proxies append to X-Forwarded-For in front
+	// of the server; clients are identified by the entry the outermost appended.
+	// Zero uses the connection's address.
+	ProxyHops int
+	Logger    *slog.Logger
 }
 
 func NewServer(opts Options) *Server {
@@ -53,6 +63,8 @@ func NewServer(opts Options) *Server {
 		defaultTTL:  opts.DefaultTTL,
 		maxTTL:      opts.MaxTTL,
 		maxBytes:    opts.MaxBytes,
+		limiter:     newUploadLimiter(opts.UploadsPerHour, opts.UploadBytesPerHour, time.Hour),
+		proxyHops:   opts.ProxyHops,
 		log:         logger,
 	}
 }
@@ -77,6 +89,18 @@ func (s *Server) handleCreateDrop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	limiter, client := s.limiter, ""
+	if s.uploadToken != "" {
+		limiter = nil // authenticated uploaders are trusted
+	}
+	if limiter != nil {
+		client = clientIP(r, s.proxyHops)
+	}
+	if ok, retry := limiter.allow(client); !ok {
+		tooMany(w, retry)
+		return
+	}
+
 	filename := drop.SafeFilename(r.Header.Get("X-Filename"))
 	if filename == "drop" {
 		filename = "upload"
@@ -91,6 +115,12 @@ func (s *Server) handleCreateDrop(w http.ResponseWriter, r *http.Request) {
 	body := http.MaxBytesReader(w, r.Body, s.maxBytes+1)
 	defer body.Close()
 	data, err := io.ReadAll(body)
+	// Charge whatever was read, before any rejection, so failed and oversized
+	// bodies count against the byte budget too.
+	if ok, retry := limiter.record(client, int64(len(data))); !ok {
+		tooMany(w, retry)
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("upload exceeds max size of %d bytes", s.maxBytes))
 		return
@@ -271,6 +301,12 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+func tooMany(w http.ResponseWriter, retry time.Duration) {
+	secs := int(retry.Seconds()) + 1
+	w.Header().Set("Retry-After", strconv.Itoa(secs))
+	writeError(w, http.StatusTooManyRequests, fmt.Sprintf("upload limit reached; retry in %ds", secs))
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {

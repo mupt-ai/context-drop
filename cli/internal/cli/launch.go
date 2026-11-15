@@ -34,7 +34,10 @@ func newStartCommand() *cobra.Command {
 			"executable; {agent} becomes the agent name, so launch_command = \"dari {agent}\" runs `dari claude`,\n" +
 			"`dari codex`, and so on. The agent kind still decides how the session is found.\n\n" +
 			"--prompt sends a first message once the agent is up (OpenCode receives it on its command line, because it\n" +
-			"only creates a session when it gets one).",
+			"only creates a session when it gets one).\n\n" +
+			"--in desktop opens a new session in the Claude Code or Codex desktop app instead, in --cwd, with --prompt\n" +
+			"filled into its composer. The apps do not send a prompt by themselves: press Enter in the app, and start\n" +
+			"waits (default 5m) for the session to appear and prints its ID.",
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			kind := strings.ToLower(args[0])
@@ -60,6 +63,15 @@ func newStartCommand() *cobra.Command {
 			}
 			if name == "" {
 				name = kind + "-" + filepath.Base(abs)
+			}
+			if strings.EqualFold(in, agents.MuxDesktop) {
+				if !cmd.Flags().Changed("timeout") {
+					timeout = 5 * time.Minute
+				}
+				return startDesktop(cmd, agents.LaunchOptions{
+					Kind: kind, Dir: abs, At: at, Command: cmd.Flag("command").Value.String(), Args: agentArgs,
+					Prompt: prompt, Timeout: timeout,
+				}, wait, asJSON)
 			}
 			res, err := agents.Launch(cmd.Context(), newEnv, allProviders(), agents.LaunchOptions{
 				Kind: kind, Dir: abs, Name: name, Mux: strings.ToLower(in), At: at, Command: command, Args: agentArgs,
@@ -134,7 +146,7 @@ func newStartCommand() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&dir, "cwd", "", "directory to start the agent in (default: current directory)")
 	cmd.Flags().StringVar(&name, "name", "", "label for the window, tab, or block (default: AGENT-DIRNAME)")
-	cmd.Flags().StringVar(&in, "in", "", "multiplexer: tmux, herdr, or rex")
+	cmd.Flags().StringVar(&in, "in", "", "multiplexer: tmux, herdr, or rex; or desktop for the agent's desktop app")
 	cmd.Flags().StringVar(&at.Session, "session", "", "open a new window in this session (herdr: a tab in this workspace)")
 	cmd.Flags().StringVar(&at.Window, "window", "", "open a new pane split in this window (herdr: tab)")
 	cmd.Flags().StringVar(&at.Pane, "pane", "", "open a new pane split beside this pane (rex: block)")
@@ -146,6 +158,42 @@ func newStartCommand() *cobra.Command {
 	cmd.Flags().DurationVar(&waitTimeout, "wait-timeout", 30*time.Minute, "how long --wait waits for the reply")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print the launch result as JSON")
 	return cmd
+}
+
+// startDesktop opens a session in the agent's desktop app and reports it once
+// the person sends its first message there.
+func startDesktop(cmd *cobra.Command, opts agents.LaunchOptions, wait, asJSON bool) error {
+	if wait {
+		// The prompt can be edited in the app before it is sent, so there is no
+		// known message to wait for a reply to.
+		return fmt.Errorf("--wait does not work with --in desktop; use `context-drop read` or `watch` once it starts")
+	}
+	if opts.Kind != agents.Claude && opts.Kind != agents.Codex {
+		return fmt.Errorf("%s has no desktop app; --in desktop supports claude and codex", opts.Kind)
+	}
+	app := agents.AppLabel(agents.DesktopApp(opts.Kind))
+	action := "send the first message there"
+	if opts.Prompt != "" {
+		action = "the prompt is filled in; press Enter there"
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(), "opening %s; %s to start it (waiting up to %s)\n", app, action, opts.Timeout)
+	res, err := agents.LaunchDesktop(cmd.Context(), newEnv, allProviders(), opts)
+	if err != nil {
+		return err
+	}
+	if !res.Registered {
+		fmt.Fprintf(cmd.ErrOrStderr(), "no new %s session in %s appeared after %s; it starts when its first message is sent\n", app, opts.Dir, opts.Timeout)
+		if asJSON {
+			return writeJSON(cmd.OutOrStdout(), res)
+		}
+		return nil
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(), "started %s in %s\n", res.Session.ID, app)
+	if asJSON {
+		return writeJSON(cmd.OutOrStdout(), res)
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), res.Session.ID)
+	return nil
 }
 
 // sendPrompt delivers the first message to a freshly started session.

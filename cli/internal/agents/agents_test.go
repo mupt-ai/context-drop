@@ -203,7 +203,7 @@ func TestClaudeDiscoverReadAndSend(t *testing.T) {
 	socket := filepath.Join(sockDir, "40825.sock")
 	h.procs[40825] = Process{PID: 40825, TTY: "/dev/ttys012", Command: "/opt/homebrew/bin/claude", Start: time.Now().Add(-time.Hour)}
 	started := time.Now().Add(-time.Hour)
-	h.write(".claude/sessions/40825.json", fmt.Sprintf(`{"pid":40825,"sessionId":"sess-1","cwd":"/work/app","startedAt":%d,"status":"busy","name":"app-1","messagingSocketPath":%q}`, started.UnixMilli(), socket))
+	h.write(".claude/sessions/40825.json", fmt.Sprintf(`{"pid":40825,"sessionId":"sess-1","cwd":"/work/app","startedAt":%d,"status":"busy","name":"app-1","entrypoint":"claude-desktop-3p","messagingSocketPath":%q}`, started.UnixMilli(), socket))
 	h.write(".claude/sessions/40825.deadbeef.key", `{"peerToken":"0123456789abcdef0123456789abcdef"}`)
 	// A registry entry whose process is gone must not be listed.
 	h.write(".claude/sessions/999.json", `{"pid":999,"sessionId":"dead","cwd":"/work/old"}`)
@@ -226,10 +226,10 @@ func TestClaudeDiscoverReadAndSend(t *testing.T) {
 		t.Fatalf("sessions = %+v", idx.Sessions)
 	}
 	main, sub := idx.Sessions[0], idx.Sessions[1]
-	if main.ID != MakeID(Claude, "sess-1") || main.Status != StatusWorking || main.Cwd != "/work/app" || main.Subagent {
+	if main.ID != MakeID(Claude, "sess-1") || main.Status != StatusWorking || main.Cwd != "/work/app" || main.Subagent || main.App != AppClaudeDesktop {
 		t.Fatalf("main = %+v", main)
 	}
-	if !sub.Subagent || sub.ParentID != main.ID || sub.NativeID != "sess-1/a17" || sub.Name != "scan repo" || sub.Status != StatusIdle {
+	if !sub.Subagent || sub.ParentID != main.ID || sub.NativeID != "sess-1/a17" || sub.Name != "scan repo" || sub.Status != StatusIdle || sub.App != AppClaudeDesktop {
 		t.Fatalf("sub = %+v", sub)
 	}
 

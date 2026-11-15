@@ -8,7 +8,7 @@ A `TARGET` is an ID, a native session ID, a unique prefix of either, or a sessio
 
 ### `context-drop list [--json] [--agent KIND] [--top-level] [--in MUX] [--session S] [--window W] [--pane P]`
 
-List live sessions with ID, agent, status (`idle`, `working`, `blocked`, `unknown`), last activity, working directory, name, and where it runs. Subagents are listed under their parent. `--json` includes the native ID, parent, PID, TTY, transcript path, the delivery channel `send` will use, and `location`.
+List live sessions with ID, agent, status (`idle`, `working`, `blocked`, `unknown`), last activity, working directory, name, and where it runs. Subagents are listed under their parent. `--json` includes the native ID, parent, PID, TTY, transcript path, the delivery channel `send` will use, `location`, and `app` (`claude-desktop` or `codex-desktop` for a session in a desktop app). A desktop session shows `claude desktop` or `codex desktop` under `WHERE`, and `--in desktop` keeps only those.
 
 Sessions are found from each agent's own state and processes, so an agent is listed wherever it runs, including panes Context Drop did not start. `WHERE` (`location` in JSON) is the tmux, herdr, or Rex pane its process runs in, found from the pane's terminal (tmux) or process tree (herdr, Rex), across every Rex session. It is `-` for a plain terminal tab. `location` has `mux`, `session`, `window`, `pane`, and `label`:
 
@@ -32,17 +32,17 @@ Print the last `N` transcript messages (default 20, `0` for all). Tool calls app
 
 `--screen` prints the last `N` lines (default 40) of the tmux, herdr, or Rex pane the session runs in instead. Use it to see prompts and dialogs that never reach the transcript.
 
-### `context-drop send TARGET MESSAGE... [--wait] [--timeout D] [--from NAME]`
+### `context-drop send TARGET MESSAGE... [--file PATH]... [--wait] [--timeout D] [--from NAME]`
 ### `context-drop send --all [--agent KIND] [--in MUX] [--session S] [--window W] [--pane P] MESSAGE...`
 
-Deliver a message into a live session as its next prompt; a busy agent receives it as a queued follow-up. Use `-` as the message to read it from stdin. `--wait` waits until the agent has replied and settled, then prints the new messages (default timeout 30 minutes).
+Deliver a message into a live session as its next prompt; a busy agent receives it as a queued follow-up. Use `-` as the message to read it from stdin. `--file PATH` (repeatable) hands the recipient a file or directory on this machine: its absolute path and size are listed under the message for the agent to read in place, and nothing is uploaded; a missing path is an error. `--wait` waits until the agent has replied and settled, then prints the new messages (default timeout 30 minutes).
 
 `--all` sends the message to every live top-level session that matches the filters (the same filters as `list`), except the session running the command. When the command runs under a process that serves several sessions (a Codex app-server, or OpenCode), all of those sessions are skipped, since it cannot tell which one is the sender. Each delivery is reported on stderr; a failed one does not stop the others, and `send` exits non-zero if any failed. With `--wait` it waits for all the replies at once and prints each under `== ID`. The filters are refused without `--all`, so a forgotten `--all` never turns a target into part of the message.
 
 Delivery per agent:
 
 - **Claude Code**: the session's peer-messaging socket, authenticated with the token Claude Code publishes in `~/.claude/sessions`. The agent sees the message as coming from another session (`--from` sets the name). Subagents are reached through their parent, which is asked to forward the message with `SendMessage`; finished subagents stay addressable because `SendMessage` resumes them.
-- **Codex**: `codex queue --thread ID`. Threads served by a private `codex app-server --listen ws://…` (for example a wrapper-launched Codex) are queued against that server using its token file.
+- **Codex**: `codex queue --thread ID`. Threads served by a private `codex app-server --listen ws://…` (for example a wrapper-launched Codex) are queued against that server using its token file. For a thread in the Codex desktop app, `send` then opens `codex://threads/wake/ID` in the background so the app picks the message up.
 - **Pi**: the socket opened by the Context Drop Pi extension (`context-drop setup pi`). Without the extension, the text is typed into the tmux, herdr, or Rex pane the Pi process runs in. A Pi session without the extension is identified by its process until it writes a session file, then by that file, so its ID changes after its first message; `send --wait` and `start --wait` follow it.
 - **OpenCode**: `opencode api POST /api/session/ID/prompt` on the background service. Child sessions (subagents) accept messages directly.
 
@@ -103,7 +103,7 @@ Environment equivalents are `CONTEXT_DROP_SUMMARIZE_PROVIDER`, `_MODEL`, `_BASE_
 
 Transcript excerpts are sent to the chosen model. Use a local provider when transcripts must stay on the machine.
 
-### `context-drop start AGENT [--cwd DIR] [--in tmux|herdr|rex] [--session S] [--window W] [--pane P] [--name NAME] [--command CMD] [--prompt TEXT] [--wait] [--trust] [-- AGENT_ARGS...]`
+### `context-drop start AGENT [--cwd DIR] [--in tmux|herdr|rex|desktop] [--session S] [--window W] [--pane P] [--name NAME] [--command CMD] [--prompt TEXT] [--wait] [--trust] [-- AGENT_ARGS...]`
 
 Start `claude`, `codex`, `pi`, or `opencode` in a new terminal and print its ID once it appears in `context-drop list`.
 
@@ -123,6 +123,8 @@ Start `claude`, `codex`, `pi`, or `opencode` in a new terminal and print its ID 
 - `--timeout` (default 60s) bounds the wait for the agent to appear. If it does not appear in time, `start` prints the pane and exits. If a prompt was given, it fails because the prompt was not sent.
 - While it waits, `start` reads the new pane. If the agent stops at a folder-trust prompt (Claude Code, Codex) or a first-run screen such as a login, `start` says so on stderr at once and keeps waiting, so you can answer it in the pane. If it is still there at the timeout, `start` reports it instead of timing out silently, and with `--prompt` it fails without typing the prompt into the dialog.
 - `--trust` answers a folder-trust prompt by choosing the option that trusts the folder (it presses Down until that option is selected, then Enter). It never answers login screens, and it never picks an option that also waives approvals.
+
+`--in desktop` opens a new session in the agent's desktop app instead of a terminal: `claude://code/new` for Claude Code, `codex://threads/new` for Codex, in `--cwd`, with `--prompt` filled into the composer. The apps fill the prompt in but never send it, and they create the session only when its first message is sent, so press Enter in the app. `start` waits for a new desktop session in that directory (`--timeout`, 5 minutes by default here) and prints its ID. `--wait` is refused, since the prompt may be edited before it is sent; follow the session with `read` or `watch`. A Codex desktop thread runs in the app's shared server, so `stop` cannot end it. `--session`, `--window`, `--pane`, `--command`, and agent arguments do not apply. Other agents have no desktop app.
 
 `--json` prints the launch result: `mux`, `pane`, `location`, `command`, `registered`, `session`, and `status`, one of `registered`, `waiting_for_trust`, `waiting_for_setup`, `not_registered`, or `started` (with `--timeout 0`).
 

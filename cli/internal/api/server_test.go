@@ -289,3 +289,113 @@ func TestParseTTLValidExplicitValue(t *testing.T) {
 		t.Fatalf("parseTTL() = %s, %v", got, err)
 	}
 }
+
+func TestPublicUploadsAreLimitedPerClient(t *testing.T) {
+	s := NewServer(Options{
+		Store:      storage.NewLocal(t.TempDir()),
+		DefaultTTL: time.Hour, MaxTTL: time.Hour, MaxBytes: 1024,
+		UploadsPerHour: 2, UploadBytesPerHour: 10, ProxyHops: 1,
+	})
+	h := s.Handler()
+	upload := func(ip, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/v1/drops", strings.NewReader(body))
+		// The first entry is client-supplied and must not pick the bucket.
+		req.Header.Set("X-Forwarded-For", "203.0.113.9, "+ip)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	for i, want := range []int{http.StatusCreated, http.StatusCreated, http.StatusTooManyRequests} {
+		if rec := upload("198.51.100.1", "abc"); rec.Code != want {
+			t.Fatalf("upload %d = %d, want %d: %s", i, rec.Code, want, rec.Body.String())
+		}
+	}
+	rec := upload("198.51.100.1", "abc")
+	if rec.Header().Get("Retry-After") == "" {
+		t.Fatal("429 without Retry-After")
+	}
+	// Another client has its own budget, and the byte cap applies too. A
+	// rejected body still counts, so retrying it does not reset anything.
+	if rec := upload("198.51.100.2", "0123456789"); rec.Code != http.StatusCreated {
+		t.Fatalf("second client = %d, want 201", rec.Code)
+	}
+	if rec := upload("198.51.100.3", "0123456789x"); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("over-budget bytes = %d, want 429", rec.Code)
+	}
+	if rec := upload("198.51.100.3", "x"); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("after a rejected body = %d, want 429", rec.Code)
+	}
+}
+
+func TestTokenUploadsAreNotLimited(t *testing.T) {
+	s := NewServer(Options{
+		Store: storage.NewLocal(t.TempDir()), UploadToken: testUploadToken,
+		DefaultTTL: time.Hour, MaxTTL: time.Hour, MaxBytes: 1024, UploadsPerHour: 1,
+	})
+	h := s.Handler()
+	for i := 0; i < 3; i++ {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, uploadRequest("x"))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("upload %d = %d", i, rec.Code)
+		}
+	}
+}
+
+func TestUploadCountIsReservedBeforeTheBody(t *testing.T) {
+	l := newUploadLimiter(2, 0, time.Hour)
+	// Three uploads start before any finishes: the third must be refused.
+	for i, want := range []bool{true, true, false} {
+		if ok, _ := l.allow("c"); ok != want {
+			t.Fatalf("allow %d = %v, want %v", i, ok, want)
+		}
+	}
+}
+
+func TestClientIP(t *testing.T) {
+	req := func(remote, xff string) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/v1/drops", nil)
+		r.RemoteAddr = remote
+		if xff != "" {
+			r.Header.Set("X-Forwarded-For", xff)
+		}
+		return r
+	}
+	cases := []struct {
+		name string
+		r    *http.Request
+		hops int
+		want string
+	}{
+		{"direct", req("192.0.2.7:5000", "203.0.113.1"), 0, "192.0.2.7"},
+		{"one proxy", req("10.0.0.1:5000", "6.6.6.6, 203.0.113.1"), 1, "203.0.113.1"},
+		{"load balancer", req("10.0.0.1:5000", "6.6.6.6, 203.0.113.1, 35.1.2.3"), 2, "203.0.113.1"},
+		{"too few entries", req("10.0.0.1:5000", "203.0.113.1"), 2, "10.0.0.1"},
+		{"ipv6 /64", req("[2001:db8:1:2:aaaa::1]:5000", ""), 0, "2001:db8:1:2::/64"},
+	}
+	for _, c := range cases {
+		if got := clientIP(c.r, c.hops); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+func TestOversizedUploadsCountAgainstTheByteBudget(t *testing.T) {
+	s := NewServer(Options{
+		Store:      storage.NewLocal(t.TempDir()),
+		DefaultTTL: time.Hour, MaxTTL: time.Hour, MaxBytes: 4,
+		UploadsPerHour: 100, UploadBytesPerHour: 8,
+	})
+	h := s.Handler()
+	codes := []int{}
+	for i := 0; i < 3; i++ {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/drops", strings.NewReader("0123456789")))
+		codes = append(codes, rec.Code)
+	}
+	// The first oversized body is read up to the cap and charged; once the
+	// budget is spent, further attempts are refused before their body is read.
+	if codes[0] != http.StatusRequestEntityTooLarge || codes[2] != http.StatusTooManyRequests {
+		t.Fatalf("codes = %v", codes)
+	}
+}

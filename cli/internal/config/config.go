@@ -20,7 +20,7 @@ type CLIConfig struct {
 	DefaultTTL  time.Duration
 	Clipboard   bool
 	Summarize   SummarizeConfig
-	// LaunchIn is the default multiplexer for `context-drop start` (tmux, herdr, or rex).
+	// LaunchIn is the default multiplexer for `context-drop start` (tmux, herdr, rex, or desktop).
 	LaunchIn string
 	// LaunchCommand starts agents instead of their bare executable; "{agent}"
 	// becomes the agent kind, e.g. "dari {agent}".
@@ -238,6 +238,11 @@ type ServerConfig struct {
 	DefaultTTL  time.Duration
 	MaxTTL      time.Duration
 	MaxBytes    int64
+	// UploadsPerHour and UploadBytesPerHour cap anonymous uploads per client IP; 0 disables.
+	UploadsPerHour     int
+	UploadBytesPerHour int64
+	// ProxyHops is the number of trusted proxies appending to X-Forwarded-For.
+	ProxyHops int
 }
 
 func LoadServerConfig() (ServerConfig, error) {
@@ -250,8 +255,16 @@ func LoadServerConfig() (ServerConfig, error) {
 		GCSPrefix:   strings.Trim(os.Getenv("CONTEXT_DROP_GCS_PREFIX"), "/"),
 		UploadToken: strings.TrimSpace(os.Getenv("CONTEXT_DROP_UPLOAD_TOKEN")),
 		MaxBytes:    envInt64("CONTEXT_DROP_MAX_BYTES", 25*1024*1024),
+
+		UploadsPerHour:     int(envInt64("CONTEXT_DROP_UPLOADS_PER_HOUR", 60)),
+		UploadBytesPerHour: envInt64("CONTEXT_DROP_UPLOAD_BYTES_PER_HOUR", 250*1024*1024),
 	}
 	var err error
+	if v := strings.TrimSpace(os.Getenv("CONTEXT_DROP_PROXY_HOPS")); v != "" {
+		if cfg.ProxyHops, err = strconv.Atoi(v); err != nil || cfg.ProxyHops < 0 {
+			return cfg, fmt.Errorf("CONTEXT_DROP_PROXY_HOPS must be a whole number of proxies, got %q", v)
+		}
+	}
 	cfg.DefaultTTL, err = envDuration("CONTEXT_DROP_DEFAULT_TTL", 24*time.Hour)
 	if err != nil {
 		return cfg, err

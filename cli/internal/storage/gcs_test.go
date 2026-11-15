@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	gcs "cloud.google.com/go/storage"
 	"contextdrop.dev/context-drop/internal/drop"
@@ -72,6 +73,40 @@ func TestIsGCSNotFound(t *testing.T) {
 	for _, tt := range tests {
 		if got := isGCSNotFound(tt.err); got != tt.want {
 			t.Fatalf("isGCSNotFound(%v) = %v, want %v", tt.err, got, tt.want)
+		}
+	}
+}
+
+func TestDeletesWithin(t *testing.T) {
+	week := 7 * 24 * time.Hour
+	rule := func(age int64, prefixes ...string) gcs.Lifecycle {
+		return gcs.Lifecycle{Rules: []gcs.LifecycleRule{{
+			Action:    gcs.LifecycleAction{Type: gcs.DeleteAction},
+			Condition: gcs.LifecycleCondition{AgeInDays: age, MatchesPrefix: prefixes},
+		}}}
+	}
+	cases := []struct {
+		name string
+		lc   gcs.Lifecycle
+		want bool
+	}{
+		{"none", gcs.Lifecycle{}, false},
+		{"8 days", rule(8), true},
+		{"90 days", rule(90), false},
+		{"matching prefix", rule(8, "ctx/"), true},
+		{"other prefix", rule(8, "logs/"), false},
+		{"noncurrent only", gcs.Lifecycle{Rules: []gcs.LifecycleRule{{
+			Action:    gcs.LifecycleAction{Type: gcs.DeleteAction},
+			Condition: gcs.LifecycleCondition{AgeInDays: 8, Liveness: gcs.Archived},
+		}}}, false},
+		{"suffix only", gcs.Lifecycle{Rules: []gcs.LifecycleRule{{
+			Action:    gcs.LifecycleAction{Type: gcs.DeleteAction},
+			Condition: gcs.LifecycleCondition{AgeInDays: 8, MatchesSuffix: []string{".log"}},
+		}}}, false},
+	}
+	for _, c := range cases {
+		if got := deletesWithin(c.lc, "ctx/drops/", week); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
 		}
 	}
 }
