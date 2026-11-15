@@ -241,8 +241,8 @@ type ServerConfig struct {
 	// UploadsPerHour and UploadBytesPerHour cap anonymous uploads per client IP; 0 disables.
 	UploadsPerHour     int
 	UploadBytesPerHour int64
-	// TrustProxy reads the client IP from X-Forwarded-For.
-	TrustProxy bool
+	// ProxyHops is the number of trusted proxies appending to X-Forwarded-For.
+	ProxyHops int
 }
 
 func LoadServerConfig() (ServerConfig, error) {
@@ -258,9 +258,13 @@ func LoadServerConfig() (ServerConfig, error) {
 
 		UploadsPerHour:     int(envInt64("CONTEXT_DROP_UPLOADS_PER_HOUR", 60)),
 		UploadBytesPerHour: envInt64("CONTEXT_DROP_UPLOAD_BYTES_PER_HOUR", 250*1024*1024),
-		TrustProxy:         envBool("CONTEXT_DROP_TRUST_PROXY"),
 	}
 	var err error
+	if v := strings.TrimSpace(os.Getenv("CONTEXT_DROP_PROXY_HOPS")); v != "" {
+		if cfg.ProxyHops, err = strconv.Atoi(v); err != nil || cfg.ProxyHops < 0 {
+			return cfg, fmt.Errorf("CONTEXT_DROP_PROXY_HOPS must be a whole number of proxies, got %q", v)
+		}
+	}
 	cfg.DefaultTTL, err = envDuration("CONTEXT_DROP_DEFAULT_TTL", 24*time.Hour)
 	if err != nil {
 		return cfg, err
@@ -277,11 +281,6 @@ func envString(key, fallback string) string {
 		return v
 	}
 	return fallback
-}
-
-func envBool(key string) bool {
-	v, _ := strconv.ParseBool(strings.TrimSpace(os.Getenv(key)))
-	return v
 }
 
 func envInt64(key string, fallback int64) int64 {

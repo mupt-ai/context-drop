@@ -71,7 +71,7 @@ func newStartCommand() *cobra.Command {
 				return startDesktop(cmd, agents.LaunchOptions{
 					Kind: kind, Dir: abs, At: at, Command: cmd.Flag("command").Value.String(), Args: agentArgs,
 					Prompt: prompt, Timeout: timeout,
-				}, wait, waitTimeout, asJSON)
+				}, wait, asJSON)
 			}
 			res, err := agents.Launch(cmd.Context(), newEnv, allProviders(), agents.LaunchOptions{
 				Kind: kind, Dir: abs, Name: name, Mux: strings.ToLower(in), At: at, Command: command, Args: agentArgs,
@@ -162,7 +162,12 @@ func newStartCommand() *cobra.Command {
 
 // startDesktop opens a session in the agent's desktop app and reports it once
 // the person sends its first message there.
-func startDesktop(cmd *cobra.Command, opts agents.LaunchOptions, wait bool, waitTimeout time.Duration, asJSON bool) error {
+func startDesktop(cmd *cobra.Command, opts agents.LaunchOptions, wait, asJSON bool) error {
+	if wait {
+		// The prompt can be edited in the app before it is sent, so there is no
+		// known message to wait for a reply to.
+		return fmt.Errorf("--wait does not work with --in desktop; use `context-drop read` or `watch` once it starts")
+	}
 	if opts.Kind != agents.Claude && opts.Kind != agents.Codex {
 		return fmt.Errorf("%s has no desktop app; --in desktop supports claude and codex", opts.Kind)
 	}
@@ -172,7 +177,6 @@ func startDesktop(cmd *cobra.Command, opts agents.LaunchOptions, wait bool, wait
 		action = "the prompt is filled in; press Enter there"
 	}
 	fmt.Fprintf(cmd.ErrOrStderr(), "opening %s; %s to start it (waiting up to %s)\n", app, action, opts.Timeout)
-	startedAt := time.Now()
 	res, err := agents.LaunchDesktop(cmd.Context(), newEnv, allProviders(), opts)
 	if err != nil {
 		return err
@@ -185,13 +189,6 @@ func startDesktop(cmd *cobra.Command, opts agents.LaunchOptions, wait bool, wait
 		return nil
 	}
 	fmt.Fprintf(cmd.ErrOrStderr(), "started %s in %s\n", res.Session.ID, app)
-	if wait && opts.Prompt != "" {
-		final, err := waitForPrompt(cmd, res.Session, opts.Prompt, startedAt, 0, waitTimeout)
-		if err != nil {
-			return err
-		}
-		res.Session = final
-	}
 	if asJSON {
 		return writeJSON(cmd.OutOrStdout(), res)
 	}

@@ -46,7 +46,7 @@ Configuration is provided with environment variables:
   CONTEXT_DROP_MAX_BYTES             maximum upload size in bytes (default 26214400)
   CONTEXT_DROP_UPLOADS_PER_HOUR      anonymous uploads per client IP per hour (default 60, 0 = off)
   CONTEXT_DROP_UPLOAD_BYTES_PER_HOUR anonymous upload bytes per client IP per hour (default 262144000, 0 = off)
-  CONTEXT_DROP_TRUST_PROXY           true to take the client IP from X-Forwarded-For (set behind a load balancer)
+  CONTEXT_DROP_PROXY_HOPS            trusted proxies in front appending X-Forwarded-For (Cloud Run: 1; GCP HTTPS LB: 2)
 `
 
 func wantsHelp(args []string) bool {
@@ -86,7 +86,7 @@ func newHTTPServer(cfg config.ServerConfig, store storage.Store) *http.Server {
 
 		UploadsPerHour:     cfg.UploadsPerHour,
 		UploadBytesPerHour: cfg.UploadBytesPerHour,
-		TrustProxy:         cfg.TrustProxy,
+		ProxyHops:          cfg.ProxyHops,
 	})
 
 	return &http.Server{

@@ -138,7 +138,7 @@ func deletesWithin(lc storage.Lifecycle, dropsPrefix string, maxTTL time.Duratio
 			continue
 		}
 		c := rule.Condition
-		if c.AgeInDays <= 0 || c.AgeInDays > limit {
+		if c.AgeInDays <= 0 || c.AgeInDays > limit || narrowed(c) {
 			continue
 		}
 		if len(c.MatchesPrefix) == 0 {
@@ -151,4 +151,13 @@ func deletesWithin(lc storage.Lifecycle, dropsPrefix string, maxTTL time.Duratio
 		}
 	}
 	return false
+}
+
+// narrowed reports whether a rule condition limits it to some objects beyond
+// prefix and age, so it cannot be relied on to delete every expired drop.
+func narrowed(c storage.LifecycleCondition) bool {
+	return c.Liveness == storage.Archived || c.NumNewerVersions > 0 ||
+		c.DaysSinceNoncurrentTime > 0 || !c.NoncurrentTimeBefore.IsZero() ||
+		c.DaysSinceCustomTime > 0 || !c.CustomTimeBefore.IsZero() || !c.CreatedBefore.IsZero() ||
+		len(c.MatchesSuffix) > 0 || len(c.MatchesStorageClasses) > 0
 }

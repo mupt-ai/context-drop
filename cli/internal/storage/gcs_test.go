@@ -95,6 +95,14 @@ func TestDeletesWithin(t *testing.T) {
 		{"90 days", rule(90), false},
 		{"matching prefix", rule(8, "ctx/"), true},
 		{"other prefix", rule(8, "logs/"), false},
+		{"noncurrent only", gcs.Lifecycle{Rules: []gcs.LifecycleRule{{
+			Action:    gcs.LifecycleAction{Type: gcs.DeleteAction},
+			Condition: gcs.LifecycleCondition{AgeInDays: 8, Liveness: gcs.Archived},
+		}}}, false},
+		{"suffix only", gcs.Lifecycle{Rules: []gcs.LifecycleRule{{
+			Action:    gcs.LifecycleAction{Type: gcs.DeleteAction},
+			Condition: gcs.LifecycleCondition{AgeInDays: 8, MatchesSuffix: []string{".log"}},
+		}}}, false},
 	}
 	for _, c := range cases {
 		if got := deletesWithin(c.lc, "ctx/drops/", week); got != c.want {

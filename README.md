@@ -104,7 +104,7 @@ context-drop start codex --in tmux --session work --window 2
 context-drop start claude --in desktop --cwd ~/code/app --prompt 'Fix the failing tests'
 ```
 
-The desktop apps never send a prompt on their own, so press Enter in the app. `start` waits (5 minutes by default) for the session to appear, then prints its ID, and from then on it can be read, messaged, and stopped like any other.
+The desktop apps never send a prompt on their own, so press Enter in the app. `start` waits (5 minutes by default) for the session to appear, then prints its ID. From then on it can be read and messaged like any other; `--wait` is not available, since you may edit the prompt before sending. `stop` can end a Claude Code desktop session, but not a Codex desktop thread, which runs inside the app's shared server: close it in the app.
 
 If the new agent stops at a folder-trust prompt or a login screen, `start` says so and keeps waiting for you to answer it, and it never types `--prompt` into the dialog. `--trust` answers a folder-trust prompt by trusting the folder.
 

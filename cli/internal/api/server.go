@@ -29,7 +29,7 @@ type Server struct {
 	maxTTL      time.Duration
 	maxBytes    int64
 	limiter     *uploadLimiter
-	trustProxy  bool
+	proxyHops   int
 	log         *slog.Logger
 }
 
@@ -44,9 +44,11 @@ type Options struct {
 	// IP. Zero disables a cap. Uploads with the upload token are not limited.
 	UploadsPerHour     int
 	UploadBytesPerHour int64
-	// TrustProxy identifies clients by the X-Forwarded-For entry a proxy appended.
-	TrustProxy bool
-	Logger     *slog.Logger
+	// ProxyHops is how many trusted proxies append to X-Forwarded-For in front
+	// of the server; clients are identified by the entry the outermost appended.
+	// Zero uses the connection's address.
+	ProxyHops int
+	Logger    *slog.Logger
 }
 
 func NewServer(opts Options) *Server {
@@ -62,7 +64,7 @@ func NewServer(opts Options) *Server {
 		maxTTL:      opts.MaxTTL,
 		maxBytes:    opts.MaxBytes,
 		limiter:     newUploadLimiter(opts.UploadsPerHour, opts.UploadBytesPerHour, time.Hour),
-		trustProxy:  opts.TrustProxy,
+		proxyHops:   opts.ProxyHops,
 		log:         logger,
 	}
 }
@@ -92,7 +94,7 @@ func (s *Server) handleCreateDrop(w http.ResponseWriter, r *http.Request) {
 		limiter = nil // authenticated uploaders are trusted
 	}
 	if limiter != nil {
-		client = clientIP(r, s.trustProxy)
+		client = clientIP(r, s.proxyHops)
 	}
 	if ok, retry := limiter.allow(client); !ok {
 		tooMany(w, retry)

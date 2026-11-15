@@ -50,7 +50,7 @@ context-drop start claude --cwd /absolute/path --prompt "the task and relevant c
 
 Opens the agent in a tmux window, herdr tab, or Rex block (`--in`, default from config or the one you are in) and prints its ID. To put it somewhere specific, add `--session` (a Rex or tmux session, a herdr workspace) and optionally `--window` or `--pane` (a Rex block) to split beside it, e.g. `--in rex --session calm-prairie`. Brief it fully in `--prompt`. If the agent stops at a folder-trust or login prompt, `start` reports it (`waiting_for_trust`, `waiting_for_setup`) and does not send the prompt; tell the user, or pass `--trust` only if the user agreed to trust that folder. Ask before starting agents the user did not request.
 
-`--in desktop` opens the session in the Claude Code or Codex desktop app instead, with `--prompt` filled in. The app does not send it by itself: tell the user to press Enter there. `start` waits up to 5 minutes for the session to appear and prints its ID.
+`--in desktop` opens the session in the Claude Code or Codex desktop app instead, with `--prompt` filled in. The app does not send it by itself: tell the user to press Enter there. `start` waits up to 5 minutes for the session to appear and prints its ID (`--wait` is not supported; use `read`). Codex desktop threads cannot be stopped from the CLI.
 
 ## Summarize everything
 

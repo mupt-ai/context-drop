@@ -129,7 +129,13 @@ func (s *LocalStore) DeleteExpired(ctx context.Context, now time.Time) (int, err
 			continue
 		}
 		meta, err := s.GetMeta(ctx, e.Name())
-		if err != nil || meta.ExpiresAt.IsZero() || meta.ExpiresAt.After(now) {
+		switch {
+		case errors.Is(err, ErrNotFound):
+			// A Put that failed before writing metadata; give an in-flight one a day.
+			if info, err := e.Info(); err != nil || now.Sub(info.ModTime()) < 24*time.Hour {
+				continue
+			}
+		case err != nil || meta.ExpiresAt.IsZero() || meta.ExpiresAt.After(now):
 			continue
 		}
 		if err := os.RemoveAll(filepath.Join(s.root, "drops", e.Name())); err != nil {

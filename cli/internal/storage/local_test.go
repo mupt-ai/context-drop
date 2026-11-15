@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -73,5 +75,25 @@ func TestLocalDeleteExpired(t *testing.T) {
 	}
 	if _, err := store.GetMeta(ctx, liveID); err != nil {
 		t.Fatalf("live drop removed: %v", err)
+	}
+}
+
+func TestLocalDeleteExpiredRemovesStaleHalfWrittenDrops(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	store := NewLocal(root)
+	id, _ := drop.NewID()
+	dir := filepath.Join(root, "drops", id)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, drop.BlobName), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := store.DeleteExpired(ctx, time.Now()); n != 0 {
+		t.Fatal("removed a drop that may still be uploading")
+	}
+	if n, err := store.DeleteExpired(ctx, time.Now().Add(25*time.Hour)); err != nil || n != 1 {
+		t.Fatalf("DeleteExpired = %d, %v; want the stale half-written drop removed", n, err)
 	}
 }
