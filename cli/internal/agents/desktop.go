@@ -108,16 +108,25 @@ func LaunchDesktop(ctx context.Context, newEnv func() (*Env, error), providers [
 		if err != nil {
 			return res, err
 		}
+		// Like pickLaunched: only a session that started after the launch counts,
+		// so an older one missed by the first scan is never taken for it; with
+		// no start time to go on, a lone new session is accepted.
 		var newest Session
+		var undated []Session
 		for _, s := range Discover(ctx, env, []Provider{provider}).Sessions {
-			// Only a session that started after the launch counts, so an older
-			// one that was missed by the first scan is never taken for it.
-			if before[s.ID] || s.Subagent || s.App != app || s.StartedAt.Before(launchedAt.Add(-launchSlack)) || canonicalDir(s.Cwd) != dir {
+			if before[s.ID] || s.Subagent || s.App != app || canonicalDir(s.Cwd) != dir {
 				continue
 			}
-			if newest.ID == "" || s.StartedAt.After(newest.StartedAt) {
+			switch {
+			case s.StartedAt.IsZero():
+				undated = append(undated, s)
+			case s.StartedAt.Before(launchedAt.Add(-launchSlack)):
+			case newest.ID == "" || s.StartedAt.After(newest.StartedAt):
 				newest = s
 			}
+		}
+		if newest.ID == "" && len(undated) == 1 {
+			newest = undated[0]
 		}
 		if newest.ID != "" {
 			res.Session, res.Registered, res.Status = newest, true, LaunchRegistered
