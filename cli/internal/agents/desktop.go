@@ -52,8 +52,8 @@ func desktopURL(kind, dir, prompt string) (string, error) {
 	return "", fmt.Errorf("%s has no desktop app; --in desktop supports claude and codex", kind)
 }
 
-// desktopApp is the app a kind's desktop sessions report.
-func desktopApp(kind string) string {
+// DesktopApp is the app a kind's desktop sessions report.
+func DesktopApp(kind string) string {
 	if kind == Codex {
 		return AppCodexDesktop
 	}
@@ -84,15 +84,16 @@ func LaunchDesktop(ctx context.Context, newEnv func() (*Env, error), providers [
 	for _, s := range Discover(ctx, env, []Provider{provider}).Sessions {
 		before[s.ID] = true
 	}
-	res := LaunchResult{Mux: MuxDesktop, Pane: desktopApp(opts.Kind), Command: link, Status: LaunchStarted}
-	if _, err := env.runEnv(ctx, nil, nil, env.Bin("open"), link); err != nil {
-		return res, fmt.Errorf("open the %s app: %w", AppLabel(desktopApp(opts.Kind)), err)
+	app := DesktopApp(opts.Kind)
+	res := LaunchResult{Mux: MuxDesktop, Pane: app, Command: link, Status: LaunchStarted}
+	if err := openURL(ctx, env, link, false); err != nil {
+		return res, fmt.Errorf("open the %s app: %w", AppLabel(app), err)
 	}
 	if opts.Timeout <= 0 {
 		return res, nil
 	}
 	if opts.Interval <= 0 {
-		opts.Interval = time.Second
+		opts.Interval = 2 * time.Second // the wait is for a person pressing Enter
 	}
 	dir := canonicalDir(opts.Dir)
 	deadline := time.Now().Add(opts.Timeout)
@@ -102,13 +103,13 @@ func LaunchDesktop(ctx context.Context, newEnv func() (*Env, error), providers [
 			return res, ctx.Err()
 		case <-time.After(opts.Interval):
 		}
-		env, err := newEnv()
+		env, err := newEnv() // a fresh Env: each one reads the process table once
 		if err != nil {
 			return res, err
 		}
 		var newest Session
 		for _, s := range Discover(ctx, env, []Provider{provider}).Sessions {
-			if before[s.ID] || s.Subagent || canonicalDir(s.Cwd) != dir || s.App != desktopApp(opts.Kind) {
+			if before[s.ID] || s.Subagent || s.App != app || canonicalDir(s.Cwd) != dir {
 				continue
 			}
 			if newest.ID == "" || s.StartedAt.After(newest.StartedAt) {
@@ -124,4 +125,14 @@ func LaunchDesktop(ctx context.Context, newEnv func() (*Env, error), providers [
 			return res, nil
 		}
 	}
+}
+
+// openURL hands a link to macOS `open`; background keeps the app from coming forward.
+func openURL(ctx context.Context, env *Env, link string, background bool) error {
+	args := []string{link}
+	if background {
+		args = []string{"-g", link}
+	}
+	_, err := env.runEnv(ctx, nil, nil, env.Bin("open"), args...)
+	return err
 }

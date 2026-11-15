@@ -163,14 +163,16 @@ func newStartCommand() *cobra.Command {
 // startDesktop opens a session in the agent's desktop app and reports it once
 // the person sends its first message there.
 func startDesktop(cmd *cobra.Command, opts agents.LaunchOptions, wait bool, waitTimeout time.Duration, asJSON bool) error {
-	app := agents.AppLabel(map[string]string{agents.Claude: agents.AppClaudeDesktop, agents.Codex: agents.AppCodexDesktop}[opts.Kind])
-	if opts.Kind == agents.Claude || opts.Kind == agents.Codex {
-		if opts.Prompt != "" {
-			fmt.Fprintf(cmd.ErrOrStderr(), "opening %s with the prompt filled in; press Enter there to start it (waiting up to %s)\n", app, opts.Timeout)
-		} else {
-			fmt.Fprintf(cmd.ErrOrStderr(), "opening %s; send the first message there to start it (waiting up to %s)\n", app, opts.Timeout)
-		}
+	if opts.Kind != agents.Claude && opts.Kind != agents.Codex {
+		return fmt.Errorf("%s has no desktop app; --in desktop supports claude and codex", opts.Kind)
 	}
+	app := agents.AppLabel(agents.DesktopApp(opts.Kind))
+	action := "send the first message there"
+	if opts.Prompt != "" {
+		action = "the prompt is filled in; press Enter there"
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(), "opening %s; %s to start it (waiting up to %s)\n", app, action, opts.Timeout)
+	startedAt := time.Now()
 	res, err := agents.LaunchDesktop(cmd.Context(), newEnv, allProviders(), opts)
 	if err != nil {
 		return err
@@ -184,7 +186,7 @@ func startDesktop(cmd *cobra.Command, opts agents.LaunchOptions, wait bool, wait
 	}
 	fmt.Fprintf(cmd.ErrOrStderr(), "started %s in %s\n", res.Session.ID, app)
 	if wait && opts.Prompt != "" {
-		final, err := waitForPrompt(cmd, res.Session, opts.Prompt, time.Now().Add(-opts.Timeout), 0, waitTimeout)
+		final, err := waitForPrompt(cmd, res.Session, opts.Prompt, startedAt, 0, waitTimeout)
 		if err != nil {
 			return err
 		}

@@ -157,12 +157,16 @@ func startCleanup(ctx context.Context, store storage.Store, cfg config.ServerCon
 			}
 		}()
 	case *storage.GCSStore:
-		ok, err := s.HasDeleteLifecycle(ctx, cfg.MaxTTL)
-		switch {
-		case err != nil:
-			slog.Warn("could not read the bucket lifecycle; make sure a delete rule removes expired drops", "bucket", cfg.GCSBucket, "err", err)
-		case !ok:
-			slog.Warn("bucket has no lifecycle rule deleting objects after the max TTL; expired drops will never be deleted. See docs/server.md", "bucket", cfg.GCSBucket, "max_ttl", cfg.MaxTTL)
-		}
+		go func() {
+			ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+			defer cancel()
+			ok, err := s.HasDeleteLifecycle(ctx, cfg.MaxTTL)
+			switch {
+			case err != nil:
+				slog.Warn("could not read the bucket lifecycle; make sure a delete rule removes expired drops", "bucket", cfg.GCSBucket, "err", err)
+			case !ok:
+				slog.Warn("bucket has no lifecycle rule deleting objects after the max TTL; expired drops will never be deleted. See docs/server.md", "bucket", cfg.GCSBucket, "max_ttl", cfg.MaxTTL)
+			}
+		}()
 	}
 }

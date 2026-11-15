@@ -87,11 +87,13 @@ func (s *Server) handleCreateDrop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limiter := s.limiter
+	limiter, client := s.limiter, ""
 	if s.uploadToken != "" {
 		limiter = nil // authenticated uploaders are trusted
 	}
-	client := clientIP(r, s.trustProxy)
+	if limiter != nil {
+		client = clientIP(r, s.trustProxy)
+	}
 	if ok, retry := limiter.allow(client); !ok {
 		tooMany(w, retry)
 		return
@@ -301,7 +303,7 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func tooMany(w http.ResponseWriter, retry time.Duration) {
 	secs := int(retry.Seconds()) + 1
 	w.Header().Set("Retry-After", strconv.Itoa(secs))
-	writeError(w, http.StatusTooManyRequests, fmt.Sprintf("upload limit reached; retry in %s", (time.Duration(secs)*time.Second).String()))
+	writeError(w, http.StatusTooManyRequests, fmt.Sprintf("upload limit reached; retry in %ds", secs))
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {

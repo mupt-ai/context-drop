@@ -290,7 +290,7 @@ func (codexProvider) Send(ctx context.Context, env *Env, s Session, text string,
 	if s.App == AppCodexDesktop {
 		// The desktop app's server is private to it; this link asks the app to
 		// pick up the queued message without bringing a window forward.
-		if _, err := env.runEnv(ctx, nil, nil, env.Bin("open"), "-g", "codex://threads/wake/"+s.NativeID); err != nil {
+		if err := openURL(ctx, env, "codex://threads/wake/"+s.NativeID, true); err != nil {
 			return fmt.Errorf("queued, but waking the Codex desktop app failed: %w", err)
 		}
 	}
