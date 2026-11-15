@@ -138,6 +138,7 @@ func claudeSubagents(env *Env, parent Session) []Session {
 			Title:          meta.AgentType,
 			Cwd:            parent.Cwd,
 			PID:            parent.PID,
+			App:            parent.App,
 			Status:         status,
 			UpdatedAt:      updated,
 			Transcript:     transcript,

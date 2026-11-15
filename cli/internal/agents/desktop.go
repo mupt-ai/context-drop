@@ -85,6 +85,7 @@ func LaunchDesktop(ctx context.Context, newEnv func() (*Env, error), providers [
 		before[s.ID] = true
 	}
 	app := DesktopApp(opts.Kind)
+	launchedAt := time.Now()
 	res := LaunchResult{Mux: MuxDesktop, Pane: app, Command: link, Status: LaunchStarted}
 	if err := openURL(ctx, env, link, false); err != nil {
 		return res, fmt.Errorf("open the %s app: %w", AppLabel(app), err)
@@ -109,7 +110,9 @@ func LaunchDesktop(ctx context.Context, newEnv func() (*Env, error), providers [
 		}
 		var newest Session
 		for _, s := range Discover(ctx, env, []Provider{provider}).Sessions {
-			if before[s.ID] || s.Subagent || s.App != app || canonicalDir(s.Cwd) != dir {
+			// Only a session that started after the launch counts, so an older
+			// one that was missed by the first scan is never taken for it.
+			if before[s.ID] || s.Subagent || s.App != app || s.StartedAt.Before(launchedAt.Add(-launchSlack)) || canonicalDir(s.Cwd) != dir {
 				continue
 			}
 			if newest.ID == "" || s.StartedAt.After(newest.StartedAt) {

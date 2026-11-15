@@ -229,7 +229,7 @@ func TestClaudeDiscoverReadAndSend(t *testing.T) {
 	if main.ID != MakeID(Claude, "sess-1") || main.Status != StatusWorking || main.Cwd != "/work/app" || main.Subagent || main.App != AppClaudeDesktop {
 		t.Fatalf("main = %+v", main)
 	}
-	if !sub.Subagent || sub.ParentID != main.ID || sub.NativeID != "sess-1/a17" || sub.Name != "scan repo" || sub.Status != StatusIdle {
+	if !sub.Subagent || sub.ParentID != main.ID || sub.NativeID != "sess-1/a17" || sub.Name != "scan repo" || sub.Status != StatusIdle || sub.App != AppClaudeDesktop {
 		t.Fatalf("sub = %+v", sub)
 	}
 

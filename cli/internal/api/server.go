@@ -115,6 +115,12 @@ func (s *Server) handleCreateDrop(w http.ResponseWriter, r *http.Request) {
 	body := http.MaxBytesReader(w, r.Body, s.maxBytes+1)
 	defer body.Close()
 	data, err := io.ReadAll(body)
+	// Charge whatever was read, before any rejection, so failed and oversized
+	// bodies count against the byte budget too.
+	if ok, retry := limiter.record(client, int64(len(data))); !ok {
+		tooMany(w, retry)
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("upload exceeds max size of %d bytes", s.maxBytes))
 		return
@@ -125,11 +131,6 @@ func (s *Server) handleCreateDrop(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(data) == 0 {
 		writeError(w, http.StatusBadRequest, "upload is empty")
-		return
-	}
-
-	if ok, retry := limiter.record(client, int64(len(data))); !ok {
-		tooMany(w, retry)
 		return
 	}
 

@@ -379,3 +379,23 @@ func TestClientIP(t *testing.T) {
 		}
 	}
 }
+
+func TestOversizedUploadsCountAgainstTheByteBudget(t *testing.T) {
+	s := NewServer(Options{
+		Store:      storage.NewLocal(t.TempDir()),
+		DefaultTTL: time.Hour, MaxTTL: time.Hour, MaxBytes: 4,
+		UploadsPerHour: 100, UploadBytesPerHour: 8,
+	})
+	h := s.Handler()
+	codes := []int{}
+	for i := 0; i < 3; i++ {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/drops", strings.NewReader("0123456789")))
+		codes = append(codes, rec.Code)
+	}
+	// The first oversized body is read up to the cap and charged; once the
+	// budget is spent, further attempts are refused before their body is read.
+	if codes[0] != http.StatusRequestEntityTooLarge || codes[2] != http.StatusTooManyRequests {
+		t.Fatalf("codes = %v", codes)
+	}
+}
