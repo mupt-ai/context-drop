@@ -10,6 +10,7 @@
 <p align="center">
   <a href="https://github.com/mupt-ai/context-drop/releases/latest"><img src="https://img.shields.io/badge/Releases-Download-111111?style=for-the-badge" alt="Download a release"></a>
   <a href="docs/cli.md"><img src="https://img.shields.io/badge/Docs-CLI_reference-0f9d76?style=for-the-badge" alt="Read the CLI reference"></a>
+  <a href="docs/mods.md"><img src="https://img.shields.io/badge/Docs-Mods-5b4fd6?style=for-the-badge" alt="Read the mods guide"></a>
 </p>
 
 <p align="center">
@@ -22,6 +23,8 @@ Context Drop does three things for the agents on your machine:
 - **Talk.** Any agent (or you) can message any other session, or a whole group, as its next prompt, and wait for the reply.
 - **Share files.** Hand another agent a local file with `send --file`, or upload one for an expiring link to give a person.
 - **Oversee.** An orchestrator agent can list every session, read its transcript, watch status changes, see which agents overlap on the same files, track claims, summarize the lot, and start or stop agents.
+
+Join several machines to an **org** and the same commands reach agents on all of them. An org can also add its own commands, called **mods**: one TypeScript file each, run on the org's server, called from the CLI or by agents as tools.
 
 It finds sessions from each agent's own on-disk state and running processes, so it doesn't matter where an agent runs: tmux, herdr, Rex, a plain terminal tab, or the Claude Code and Codex desktop apps. Claude Code subagents are listed under their parent session.
 
@@ -120,6 +123,44 @@ context-drop overlaps                                  # shared worktrees, files
 
 `send --all` messages every matching session except the sender. `stop` closes panes `start` opened and sends SIGTERM to everything else, and it refuses busy agents unless `--force`. Claims are advisory and end with the session that made them. `overlaps` reads edits from Claude Code, Codex, and Pi transcripts.
 
+### Work across machines
+
+```sh
+context-drop join cdj_…            # once per machine, with the org's join token
+context-drop daemon --share ~/code # keep it connected; share agents working under ~/code
+context-drop list                  # agents on every machine, with IDs like laptop/cc-6a79295a
+context-drop send devbox/cx-739b53b2 'Your migration broke the API tests' --wait
+```
+
+An org is a pool of agents across machines. Each machine joins once with the org's join token, then runs `daemon`, which holds one outbound connection to the server (no open port) and answers `read` and `send` for the agents it shares. The daemon makes you choose what to share: `--share DIR` (repeatable) or `--share-all`, and `--read-only` refuses every message from the org. An agent that isn't shared looks like one that doesn't exist.
+
+The server stamps every message with the machine it came from, so no machine can speak as another, and a message from an agent arrives opening with `[context-drop] Agent laptop/cc-6a79295a, not your user.` so the recipient treats it as information rather than as its user's instructions. Orgs are created on the server with its admin token: on `https://contextdrop.dev`, ask for a join token; on your own server, see the [server guide](docs/server.md#orgs). The [CLI reference](docs/cli.md#orgs) covers `join`, `daemon`, `leave`, and how each command behaves across the org.
+
+### Add org commands (mods)
+
+```ts
+// stuck.ts
+import { mod, z } from "@contextdrop/mod"
+
+export default mod({
+  name: "stuck",
+  description: "Agents that are blocked",
+  input: z.object({ machine: z.string().optional() }),
+  can: ["list"],
+  async run({ machine }, cd) {
+    return (await cd.list({ machine })).filter((a) => a.status === "blocked")
+  },
+})
+```
+
+```sh
+context-drop deploy stuck.ts       # live for the whole org at once
+context-drop stuck --machine devbox
+claude mcp add context-drop -- context-drop mcp   # agents get list, read, send, and every mod as tools
+```
+
+A mod is one TypeScript file that the server runs in its own Deno process for each call, with only the capabilities its `can` list names: the org's `list`, `read`, and `send`, calling other mods, a key-value store, secrets, and outbound HTTP to named public hosts. Events can call it too (an agent starting, ending, or changing status, a cron schedule, or a signed webhook). Every deploy is a version, `--preview` deploys a copy only your machine can call, and `rollback`, `logs`, and `secret set` manage it. The [mods guide](docs/mods.md) has the full API; [`mods/`](mods) has two reference mods, `stuck` and `lock` (claims that hold across every machine).
+
 ### Summarize everything
 
 ```sh
@@ -159,6 +200,8 @@ launch_command = "dari {agent}"                 # {agent} becomes claude, codex,
 - Without the extension, a Pi session is identified by its process until it writes a session file, so its ID changes after its first message. `send --wait` and `start --wait` follow the change.
 - Desktop-app sessions have no pane: `start --in desktop` cannot place them with `--session`, `--window`, or `--pane`, `read --screen` does not apply, and the app waits for you to press Enter on the first prompt. A desktop session appears only once its first message is sent.
 - Codex desktop threads are found and sent to through the same `~/.codex` state as terminal Codex; delivery to them is new and less tested than other channels.
+- `daemon` runs in the foreground; keep it running under your own service manager for now. Across an org, `--file`, `read --screen`, and the `--in`/`--session`/`--window`/`--pane` filters work only for this machine's agents.
+- Mods need Deno on the server (`CONTEXT_DROP_DENO`); without it, mods are off. `ask`, `summarize`, and shared files are not available to mods yet.
 - A newly started agent may stop at first-run prompts, such as trusting a folder or logging in, before it reads messages. `start` detects and reports them; only folder-trust prompts can be answered for you (`--trust`).
 
 ## Development
