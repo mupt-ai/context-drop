@@ -24,7 +24,35 @@ Once joined, `upload` defaults to the org's server when no endpoint is configure
 
 ### Mods
 
-An org adds its own commands as mods: `deploy FILE`, `mods`, `rollback NAME`, `logs NAME`, `secret set NAME KEY`, and `call NAME` (or just `context-drop NAME`). `context-drop mcp` serves `list`, `read`, `send`, and every mod to an agent as MCP tools. See [mods](mods.md).
+An org adds its own commands as mods: one TypeScript file each, run on the org's server. The [mods guide](mods.md) covers writing one; these commands manage and call them.
+
+#### `context-drop deploy FILE [--preview] [--yes]`
+
+Upload a mod and make it live for the whole org at once. Every deploy is a new version. A version that asks for a capability the previous one did not lists the new ones and asks to confirm; `--yes` skips the question. `--preview` deploys it as `NAME@<this machine>`, which only this machine can see or call.
+
+#### `context-drop mods [--json]`
+
+List the org's mods with their version, capabilities, events, and author.
+
+#### `context-drop call NAME [--FIELD VALUE]... [--json INPUT] [--print-json]`
+
+Run a mod. Flags fill its input and are converted to the input's types (a repeated flag fills a list); a single positional argument fills the mod's only required field. `--json` passes the whole input as JSON. Text output prints as is, a list of objects as a table, and anything else as JSON; `--print-json` always prints JSON. `context-drop NAME ...` is the same as `context-drop call NAME ...` when `NAME` is not a built-in command, and `context-drop NAME --help` shows the mod's input.
+
+#### `context-drop rollback NAME`
+
+Make the mod's previous version live again. Its key-value data is kept.
+
+#### `context-drop logs NAME [-v] [--json]`
+
+Show the mod's recent calls and errors; `-v` adds what each call printed.
+
+#### `context-drop secret set NAME KEY`
+
+Store a secret for a mod, read from standard input. The mod reads it with `cd.secrets.get(KEY)` if its `can` list names `secret:KEY`. A webhook mod's signing secret is the key `webhook`.
+
+#### `context-drop mcp`
+
+Run an MCP server on standard input and output that gives an agent `list`, `read`, `send`, and every mod as tools, and tells it when the list changes, so a newly deployed mod reaches running agents without a restart. Add it to Claude Code with `claude mcp add context-drop -- context-drop mcp`.
 
 ### `context-drop leave [--force]`
 
