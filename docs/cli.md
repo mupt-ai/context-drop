@@ -6,6 +6,36 @@ Context Drop indexes live Claude Code, Codex, Pi, and OpenCode sessions, plus Cl
 
 A `TARGET` is an ID, a native session ID, a unique prefix of either, or a session name. Ambiguous targets are rejected with the candidates listed.
 
+## Orgs
+
+An org is a pool of agents across many machines. Each machine joins once; from then on `list`, `read`, and `send` work across the whole org, and agents have org IDs like `avyay-mbp/cc-49901f7f` (`<machine>/<session>`).
+
+### `context-drop join TOKEN [--server URL] [--name NAME]`
+
+Exchange an org's join token for a credential for this machine, saved with mode 0600 in `~/.context-drop/org.json`. The machine's name defaults to its hostname (`Avyays-MBP.local` becomes `avyays-mbp`) and must be unique in the org. The server defaults to `https://contextdrop.dev`.
+
+### `context-drop daemon (--share DIR... | --share-all) [--read-only]`
+
+Keep this machine connected to its org: report its shared agents every 2 seconds (whenever the list changes, and at least every 30 seconds) and answer `read` and `send` for them. It holds one outbound WebSocket, so the machine needs no open port, and reconnects with backoff when the connection drops. While it is not running, the machine's agents show as `offline` to the rest of the org. It runs in the foreground; run it under your own service manager for now.
+
+A shared agent can be read by anyone in the org and, unless `--read-only`, sent instructions it may act on with its own permissions, so the daemon makes you choose what to share: `--share DIR` (repeatable; `~` is expanded) shares agents working in that directory or below it, and `--share-all` shares every agent on the machine. To the org, an agent that is not shared looks like one that does not exist. `--read-only` refuses every message from the org.
+
+Once joined, `upload` defaults to the org's server when no endpoint is configured.
+
+### Mods
+
+An org adds its own commands as mods: `deploy FILE`, `mods`, `rollback NAME`, `logs NAME`, `secret set NAME KEY`, and `call NAME` (or just `context-drop NAME`). `context-drop mcp` serves `list`, `read`, `send`, and every mod to an agent as MCP tools. See [mods](mods.md).
+
+### `context-drop leave [--force]`
+
+Remove this machine from the org and revoke its credential. `--force` forgets the org locally even when the server cannot be reached.
+
+### Across the org
+
+- `list` shows every agent in the org, most recently active first, each main agent followed by its subagents. `--machine M` and `--cwd PATH` (that directory or below) narrow it, as does `--agent KIND`; `--local` shows only this machine with local IDs, as before joining. `--in`, `--session`, `--window`, and `--pane` need `--local` for now. `--json` prints `Agent` objects: `id`, `machine`, `kind`, `role` (`main`, `subagent`), `parent`, `root`, `agent_type`, `status` (including `offline`), `cwd`, `name`, `location`, `location_label`, `started_at`, `last_active`.
+- `read MACHINE/SESSION` reads that agent wherever it runs. It shows the current context run, from the last compaction on; `--all` shows every run, `-n` the last N entries, and `--after CURSOR` only entries newer than the `cursor` a previous `read --json` returned. `--json` prints `{agent, run, runs, entries, cursor}`. `--screen` works for this machine's agents only.
+- `send MACHINE/SESSION MESSAGE` delivers through the owning machine's daemon; the server sets the sender to this machine's name, so no machine can speak as another; `--from NAME` only adds a label in front (`NAME@machine`). When an agent sends, the recipient is told its org ID (`laptop/cc-1a2b3c4d`) to reply to. `--wait` works for one agent on another machine: it reads that agent until it has answered and settled. `send --all` goes to every connected main agent in the org, narrowed by `--machine`, `--cwd`, and `--agent`; `--local` keeps it to this machine. `--file` works only for this machine's agents; use `upload` for a link. An org ID for one of this machine's own agents is delivered locally, without the server.
+
 ### `context-drop list [--json] [--agent KIND] [--top-level] [--in MUX] [--session S] [--window W] [--pane P]`
 
 List live sessions with ID, agent, status (`idle`, `working`, `blocked`, `unknown`), last activity, working directory, name, and where it runs. Subagents are listed under their parent. `--json` includes the native ID, parent, PID, TTY, transcript path, the delivery channel `send` will use, `location`, and `app` (`claude-desktop` or `codex-desktop` for a session in a desktop app). A desktop session shows `claude desktop` or `codex desktop` under `WHERE`, and `--in desktop` keeps only those.
@@ -35,13 +65,13 @@ Print the last `N` transcript messages (default 20, `0` for all). Tool calls app
 ### `context-drop send TARGET MESSAGE... [--file PATH]... [--wait] [--timeout D] [--from NAME]`
 ### `context-drop send --all [--agent KIND] [--in MUX] [--session S] [--window W] [--pane P] MESSAGE...`
 
-Deliver a message into a live session as its next prompt; a busy agent receives it as a queued follow-up. Use `-` as the message to read it from stdin. `--file PATH` (repeatable) hands the recipient a file or directory on this machine: its absolute path and size are listed under the message for the agent to read in place, and nothing is uploaded; a missing path is an error. `--wait` waits until the agent has replied and settled, then prints the new messages (default timeout 30 minutes).
+Deliver a message into a live session as its next prompt; a busy agent receives it as a queued follow-up. When the sender is an agent (the session running `send`, found from its process ancestry), the message opens with `[context-drop] Agent <id>, not your user. Reply: context-drop send <id> "..."`, for every kind of agent; `--from NAME` names a sender that is not an agent (`[context-drop] From NAME.`). A message a person sends from a plain terminal arrives as is. Use `-` as the message to read it from stdin. `--file PATH` (repeatable) hands the recipient a file or directory on this machine: its absolute path and size are listed under the message for the agent to read in place, and nothing is uploaded; a missing path is an error. `--wait` waits until the agent has replied and settled, then prints the new messages (default timeout 30 minutes).
 
 `--all` sends the message to every live top-level session that matches the filters (the same filters as `list`), except the session running the command. When the command runs under a process that serves several sessions (a Codex app-server, or OpenCode), all of those sessions are skipped, since it cannot tell which one is the sender. Each delivery is reported on stderr; a failed one does not stop the others, and `send` exits non-zero if any failed. With `--wait` it waits for all the replies at once and prints each under `== ID`. The filters are refused without `--all`, so a forgotten `--all` never turns a target into part of the message.
 
 Delivery per agent:
 
-- **Claude Code**: the session's peer-messaging socket, authenticated with the token Claude Code publishes in `~/.claude/sessions`. The agent sees the message as coming from another session (`--from` sets the name). Subagents are reached through their parent, which is asked to forward the message with `SendMessage`; finished subagents stay addressable because `SendMessage` resumes them.
+- **Claude Code**: the session's peer-messaging socket, authenticated with the token Claude Code publishes in `~/.claude/sessions`. The agent sees the message as coming from another session, named by the sending agent's ID or `--from`. Subagents are reached through their parent, which is asked to forward the message with `SendMessage`; finished subagents stay addressable because `SendMessage` resumes them.
 - **Codex**: `codex queue --thread ID`. Threads served by a private `codex app-server --listen ws://…` (for example a wrapper-launched Codex) are queued against that server using its token file. For a thread in the Codex desktop app, `send` then opens `codex://threads/wake/ID` in the background so the app picks the message up.
 - **Pi**: the socket opened by the Context Drop Pi extension (`context-drop setup pi`). Without the extension, the text is typed into the tmux, herdr, or Rex pane the Pi process runs in. A Pi session without the extension is identified by its process until it writes a session file, then by that file, so its ID changes after its first message; `send --wait` and `start --wait` follow it.
 - **OpenCode**: `opencode api POST /api/session/ID/prompt` on the background service. Child sessions (subagents) accept messages directly.

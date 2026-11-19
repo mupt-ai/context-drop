@@ -31,6 +31,13 @@ type Server struct {
 	limiter     *uploadLimiter
 	proxyHops   int
 	log         *slog.Logger
+	orgs        OrgRoutes
+}
+
+// OrgRoutes adds the org endpoints (join, list, read, send, and the daemon
+// connection) to the server's routes.
+type OrgRoutes interface {
+	Register(mux *http.ServeMux)
 }
 
 type Options struct {
@@ -49,6 +56,8 @@ type Options struct {
 	// Zero uses the connection's address.
 	ProxyHops int
 	Logger    *slog.Logger
+	// Orgs, when set, serves the org endpoints beside the upload endpoints.
+	Orgs OrgRoutes
 }
 
 func NewServer(opts Options) *Server {
@@ -66,6 +75,7 @@ func NewServer(opts Options) *Server {
 		limiter:     newUploadLimiter(opts.UploadsPerHour, opts.UploadBytesPerHour, time.Hour),
 		proxyHops:   opts.ProxyHops,
 		log:         logger,
+		orgs:        opts.Orgs,
 	}
 }
 
@@ -75,6 +85,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.HandleFunc("POST /v1/drops", s.handleCreateDrop)
 	mux.HandleFunc("GET /d/{id}", s.handleGetDrop)
+	if s.orgs != nil {
+		s.orgs.Register(mux)
+	}
 	return secureHeaders(mux)
 }
 

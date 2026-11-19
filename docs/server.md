@@ -95,3 +95,28 @@ docker run --rm -p 8080:8080 \
 | `CONTEXT_DROP_UPLOADS_PER_HOUR` | no | `60` | Anonymous uploads per client IP per hour; `0` disables. |
 | `CONTEXT_DROP_UPLOAD_BYTES_PER_HOUR` | no | `262144000` | Anonymous upload bytes per client IP per hour; `0` disables. |
 | `CONTEXT_DROP_PROXY_HOPS` | behind a proxy | `0` | Trusted proxies appending to `X-Forwarded-For`; the client is the entry that many from the right. |
+| `CONTEXT_DROP_ADMIN_TOKEN` | to create orgs | unset | Bearer token for `POST /v1/orgs` and `POST /v1/orgs/{org}/join-token`; unset disables both. |
+| `CONTEXT_DROP_ORG_STATE` | no | `<data dir>/orgs.json` | File holding orgs and joined machines (credentials are stored as hashes). |
+| `CONTEXT_DROP_DENO` | for mods | `deno` on PATH | Deno executable that runs [mods](mods.md); without it, mods are off. |
+| `CONTEXT_DROP_MODS_DIR` | no | `<data dir>/mods` | Deployed mods, their key-value data, and secrets. |
+
+## Orgs
+
+The server also hosts orgs: pools of agents across machines. Create one with the admin token; the response holds the join token, which is shown only once:
+
+```sh
+curl -X POST -H "Authorization: Bearer $CONTEXT_DROP_ADMIN_TOKEN" -d '{"name":"acme"}' https://ctx.example.com/v1/orgs
+# {"org":"acme","join_token":"cdj_…"}
+```
+
+On each machine, `context-drop join --server https://ctx.example.com cdj_…`, then `context-drop daemon`. `POST /v1/orgs/acme/join-token` replaces the join token; machines that already joined keep working.
+
+Machines hold a WebSocket to `GET /v1/{org}/connect`; `POST /v1/{org}/list`, `/read`, `/send`, and `/leave` take the machine's credential as a bearer token. Agent lists and relayed calls live in the server's memory, so the org endpoints need a single, always-on instance: Cloud Run's request cap would drop every daemon hourly, and several instances would not share connections.
+
+## contextdrop.dev
+
+`https://contextdrop.dev` runs on one VM, `context-drop` in GCP project `context-drop` (us-central1-a, e2-medium, static IP `130.211.238.184`, daily disk snapshots kept 7 days). Caddy terminates TLS and proxies to the server, which runs as the systemd unit `context-drop`. Drops are stored in the `context-drop-prod` bucket; orgs live in `/var/lib/context-drop/orgs.json` on the VM's disk.
+
+Deploy the current checkout with `deploy/vm/deploy.sh`. It builds the server, copies it with the settings in `deploy/vm/env` and the admin token from Secret Manager (`context-drop-admin-token`), and restarts it. Restarting drops every daemon's connection for a second; they reconnect on their own. Logs: `gcloud compute ssh context-drop --zone us-central1-a --project context-drop --tunnel-through-iap -- sudo journalctl -u context-drop -f`. SSH is open only to Google's IAP range (`35.235.240.0/20`), so it always goes through `--tunnel-through-iap`.
+
+The `dari` org's join token is in Secret Manager as `context-drop-join-dari`.

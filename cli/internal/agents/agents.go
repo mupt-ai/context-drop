@@ -79,8 +79,23 @@ type Message struct {
 
 // SendOptions control message delivery.
 type SendOptions struct {
-	// From names the sender in agents that display it (Claude Code peers).
+	// From names a sender that is not an agent, such as a person or a machine.
 	From string
+	// ReplyTo is the ID of the agent that sent the message, where the
+	// recipient sends its answer.
+	ReplyTo string
+}
+
+// senderLine opens a message with who sent it, so an agent of any kind knows
+// the message is not from its user and where to answer.
+func senderLine(opts SendOptions) string {
+	switch {
+	case strings.TrimSpace(opts.ReplyTo) != "":
+		return fmt.Sprintf("[context-drop] Agent %s, not your user. Reply: context-drop send %s \"...\"", opts.ReplyTo, opts.ReplyTo)
+	case strings.TrimSpace(opts.From) != "":
+		return fmt.Sprintf("[context-drop] From %s.", strings.TrimSpace(opts.From))
+	}
+	return ""
 }
 
 // Provider adapts one agent kind.
@@ -286,6 +301,9 @@ func Send(ctx context.Context, env *Env, providers []Provider, idx Index, s Sess
 	p, err := ProviderFor(providers, s.Agent)
 	if err != nil {
 		return s, err
+	}
+	if line := senderLine(opts); line != "" {
+		text = line + "\n\n" + text
 	}
 	if s.Subagent && s.Agent == Claude {
 		parent, ok := idx.Parent(s)

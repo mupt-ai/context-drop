@@ -51,6 +51,9 @@ func NewRootCommand(build BuildInfo) *cobra.Command {
 		}
 		return cmd.Help()
 	}
+	cmd.AddCommand(newJoinCommand())
+	cmd.AddCommand(newLeaveCommand())
+	cmd.AddCommand(newDaemonCommand())
 	cmd.AddCommand(newListCommand())
 	cmd.AddCommand(newShowCommand())
 	cmd.AddCommand(newReadCommand())
@@ -67,6 +70,13 @@ func NewRootCommand(build BuildInfo) *cobra.Command {
 	cmd.AddCommand(newSetupCommand())
 	cmd.AddCommand(newUploadCommand())
 	cmd.AddCommand(newVersionCommand(build))
+	cmd.AddCommand(newDeployCommand())
+	cmd.AddCommand(newModsCommand())
+	cmd.AddCommand(newRollbackCommand())
+	cmd.AddCommand(newLogsCommand())
+	cmd.AddCommand(newSecretCommand())
+	cmd.AddCommand(newCallCommand())
+	cmd.AddCommand(newMCPCommand())
 	return cmd
 }
 
@@ -75,6 +85,7 @@ func Execute(build BuildInfo) error {
 	defer cancel()
 	cmd := NewRootCommand(build)
 	cmd.SetContext(ctx)
+	cmd.SetArgs(ModCallArgs(cmd, os.Args[1:]))
 	return cmd.Execute()
 }
 
@@ -112,6 +123,12 @@ func runUpload(ctx context.Context, cmd *cobra.Command, opts *options, args []st
 	}
 	if opts.endpoint != "" {
 		cfg.Endpoint = opts.endpoint
+	}
+	if cfg.Endpoint == "" {
+		// A machine in an org uploads to the org's server.
+		if m, isJoined, err := joined(); err == nil && isJoined {
+			cfg.Endpoint = m.Server
+		}
 	}
 	if opts.ttl > 0 {
 		cfg.DefaultTTL = opts.ttl

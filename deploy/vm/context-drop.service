@@ -1,0 +1,20 @@
+[Unit]
+Description=Context Drop server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/etc/context-drop/env
+ExecStart=/usr/local/bin/context-drop-server
+Restart=always
+RestartSec=2
+DynamicUser=yes
+StateDirectory=context-drop
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

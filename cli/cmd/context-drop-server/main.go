@@ -4,14 +4,18 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"contextdrop.dev/context-drop/internal/api"
 	"contextdrop.dev/context-drop/internal/config"
+	"contextdrop.dev/context-drop/internal/mods"
+	"contextdrop.dev/context-drop/internal/orgserver"
 	"contextdrop.dev/context-drop/internal/storage"
 )
 
@@ -47,6 +51,10 @@ Configuration is provided with environment variables:
   CONTEXT_DROP_UPLOADS_PER_HOUR      anonymous uploads per client IP per hour (default 60, 0 = off)
   CONTEXT_DROP_UPLOAD_BYTES_PER_HOUR anonymous upload bytes per client IP per hour (default 262144000, 0 = off)
   CONTEXT_DROP_PROXY_HOPS            trusted proxies in front appending X-Forwarded-For (Cloud Run: 1; GCP HTTPS LB: 2)
+  CONTEXT_DROP_ADMIN_TOKEN           bearer token for creating orgs (unset disables org creation)
+  CONTEXT_DROP_ORG_STATE             file holding orgs and joined machines (default <data dir>/orgs.json)
+  CONTEXT_DROP_DENO                  Deno executable for mods (default: deno on PATH; without it mods are off)
+  CONTEXT_DROP_MODS_DIR              deployed mods, their data, and secrets (default <data dir>/mods)
 `
 
 func wantsHelp(args []string) bool {
@@ -66,16 +74,56 @@ func runWithConfig(ctx context.Context, cfg config.ServerConfig) error {
 	if err != nil {
 		return err
 	}
-	httpServer := newHTTPServer(cfg, store)
+	orgs, err := newOrgServer(cfg)
+	if err != nil {
+		return err
+	}
+	httpServer := newHTTPServer(cfg, store, orgs)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	startCleanup(ctx, store, cfg)
+	orgs.Start(ctx)
 
 	return serve(ctx, httpServer, cfg)
 }
 
-func newHTTPServer(cfg config.ServerConfig, store storage.Store) *http.Server {
+func newOrgServer(cfg config.ServerConfig) (*orgserver.Server, error) {
+	path := cfg.OrgState
+	if path == "" {
+		path = filepath.Join(cfg.DataDir, "orgs.json")
+	}
+	st, err := orgserver.OpenStore(path)
+	if err != nil {
+		return nil, err
+	}
+	s := orgserver.New(st, cfg.AdminToken, nil)
+	if rt, err := mods.NewRuntime(cfg.Deno); err != nil {
+		slog.Warn("mods are off", "err", err)
+	} else {
+		dir := cfg.ModsDir
+		if dir == "" {
+			dir = filepath.Join(cfg.DataDir, "mods")
+		}
+		ms, err := mods.OpenStore(dir)
+		if err != nil {
+			return nil, err
+		}
+		s.Mods = mods.NewService(ms, rt, loopback(cfg.Addr), nil)
+	}
+	return s, nil
+}
+
+// loopback is the URL mods use to call this server from the same host.
+func loopback(addr string) string {
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil || port == "" {
+		port = "8080"
+	}
+	return "http://127.0.0.1:" + port
+}
+
+func newHTTPServer(cfg config.ServerConfig, store storage.Store, orgs *orgserver.Server) *http.Server {
 	apiServer := api.NewServer(api.Options{
 		BaseURL:     cfg.BaseURL,
 		Store:       store,
@@ -87,6 +135,7 @@ func newHTTPServer(cfg config.ServerConfig, store storage.Store) *http.Server {
 		UploadsPerHour:     cfg.UploadsPerHour,
 		UploadBytesPerHour: cfg.UploadBytesPerHour,
 		ProxyHops:          cfg.ProxyHops,
+		Orgs:               orgs,
 	})
 
 	return &http.Server{

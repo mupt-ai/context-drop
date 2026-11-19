@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"contextdrop.dev/context-drop/internal/agents"
+	"contextdrop.dev/context-drop/internal/pool"
 	"github.com/spf13/cobra"
 )
 
@@ -40,6 +41,7 @@ func printWarnings(w io.Writer, idx agents.Index) {
 func newListCommand() *cobra.Command {
 	var asJSON, topLevelOnly bool
 	var filter sessionFilter
+	var org orgFlags
 	cmd := &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
@@ -49,9 +51,27 @@ func newListCommand() *cobra.Command {
 			"Sessions are found from their processes, wherever they run. WHERE shows the tmux, herdr, or rex pane a\n" +
 			"session runs in, or the desktop app (claude desktop, codex desktop) hosting it; --in, --session, --window,\n" +
 			"and --pane keep only the sessions in that place. CLAIMS shows what each session has claimed with `context-drop claim`. A warning names worktrees that several sessions\n" +
-			"share; `context-drop overlaps` also checks the files they edit.",
+			"share; `context-drop overlaps` also checks the files they edit.\n\n" +
+			"Once this machine has joined an org (`context-drop join`), list shows every agent in the org, with IDs\n" +
+			"like <machine>/<session>; --machine and --cwd narrow it, and --local shows only this machine as before.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if !org.local {
+				m, isJoined, err := joined()
+				if err != nil {
+					return err
+				}
+				if isJoined {
+					sel, err := org.selector(filter)
+					if err != nil {
+						return err
+					}
+					return orgList(cmd, m, sel, topLevelOnly, asJSON)
+				}
+			}
+			if org.machine != "" {
+				return fmt.Errorf("--machine works across an org; this machine has not joined one, or --local was given")
+			}
 			env, _, idx, err := discover(cmd.Context())
 			if err != nil {
 				return err
@@ -60,6 +80,19 @@ func newListCommand() *cobra.Command {
 			agents.Locate(cmd.Context(), env, idx.Sessions)
 			attachClaims(cmd, env, idx)
 			sessions := filter.apply(cmd.Context(), env, idx.Sessions)
+			if org.cwd != "" {
+				dir, err := filepath.Abs(org.cwd)
+				if err != nil {
+					return err
+				}
+				kept := sessions[:0]
+				for _, s := range sessions {
+					if (pool.Selector{Cwd: dir}).Matches(pool.Agent{Cwd: s.Cwd}) {
+						kept = append(kept, s)
+					}
+				}
+				sessions = kept
+			}
 			if topLevelOnly {
 				sessions = topLevel(sessions)
 			}
@@ -109,6 +142,7 @@ func newListCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
 	cmd.Flags().BoolVar(&topLevelOnly, "top-level", false, "hide subagents")
 	filter.register(cmd, "only show")
+	org.register(cmd, "only show")
 	return cmd
 }
 
@@ -152,15 +186,42 @@ func newShowCommand() *cobra.Command {
 
 func newReadCommand() *cobra.Command {
 	var count int
-	var asJSON, screen bool
+	var asJSON, screen, allRuns bool
+	var after string
 	cmd := &cobra.Command{
 		Use:   "read TARGET",
 		Short: "Print the recent transcript of a session",
 		Long: "Print the last messages of a session's transcript. --screen prints the last lines of the tmux, herdr,\n" +
 			"or rex pane the session runs in instead (-n lines, default 40), which shows prompts and dialogs that\n" +
-			"never reach the transcript.",
+			"never reach the transcript.\n\n" +
+			"An org agent ID (<machine>/<session>) reads that agent wherever it runs. It shows the current context\n" +
+			"run, from the last compaction on; --all shows every run, and --after shows only entries newer than the\n" +
+			"cursor a previous `read --json` returned.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			m, machine, session, isOrg, err := orgID(args[0])
+			if err != nil {
+				return err
+			}
+			switch {
+			case isOrg && screen:
+				if machine != m.Machine {
+					return fmt.Errorf("--screen works only for agents on this machine")
+				}
+				args[0] = session
+			case isOrg:
+				res, err := orgRead(cmd.Context(), m, machine, session, pool.ReadOptions{Last: count, All: allRuns, After: after})
+				if err != nil {
+					return err
+				}
+				if asJSON {
+					return writeJSON(cmd.OutOrStdout(), res)
+				}
+				printEntries(cmd.OutOrStdout(), res.Entries)
+				return nil
+			case allRuns || after != "":
+				return fmt.Errorf("--all and --after work with org agent IDs (<machine>/<session>)")
+			}
 			env, providers, idx, err := discover(cmd.Context())
 			if err != nil {
 				return err
@@ -202,6 +263,8 @@ func newReadCommand() *cobra.Command {
 	cmd.Flags().IntVarP(&count, "messages", "n", 20, "number of recent messages to print (0 for all), or lines with --screen")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
 	cmd.Flags().BoolVar(&screen, "screen", false, "print the session's terminal pane instead of its transcript")
+	cmd.Flags().BoolVar(&allRuns, "all", false, "with an org agent ID, every context run, not just the one since the last compaction")
+	cmd.Flags().StringVar(&after, "after", "", "with an org agent ID, only entries newer than this cursor")
 	cmd.MarkFlagsMutuallyExclusive("screen", "json")
 	return cmd
 }
@@ -212,6 +275,7 @@ func newSendCommand() *cobra.Command {
 	var wait, all bool
 	var timeout time.Duration
 	var filter sessionFilter
+	var org orgFlags
 	cmd := &cobra.Command{
 		Use:   "send TARGET MESSAGE... | send --all [filters] MESSAGE...",
 		Short: "Send a message to a live session or subagent, or to a group of sessions",
@@ -244,6 +308,50 @@ func newSendCommand() *cobra.Command {
 				text = string(data)
 			}
 			text = strings.TrimSpace(text)
+			if !all || !org.local {
+				// An org target, or --all across a joined org, goes through the server.
+				var target pool.Selector
+				var m pool.Membership
+				if all {
+					var isJoined bool
+					var err error
+					if m, isJoined, err = joined(); err != nil {
+						return err
+					}
+					if isJoined {
+						if target, err = org.selector(filter); err != nil {
+							return err
+						}
+						target.All = true
+					}
+				} else {
+					mm, machine, session, isOrg, err := orgID(args[0])
+					if err != nil {
+						return err
+					}
+					if isOrg && machine == mm.Machine {
+						args[0] = session // this machine's own agent: deliver locally
+					} else if isOrg {
+						m, target = mm, pool.Selector{ID: args[0]}
+					}
+				}
+				if !target.IsZero() {
+					if len(files) > 0 {
+						return fmt.Errorf("--file works only for agents on this machine; use `context-drop upload` for a link")
+					}
+					if wait && target.ID == "" {
+						return fmt.Errorf("--wait across an org works for one agent at a time")
+					}
+					agent := callerAgent(cmd.Context())
+					if wait {
+						return orgSendWait(cmd, m, target.ID, text, from, agent, timeout)
+					}
+					return orgSend(cmd, m, target, text, from, agent)
+				}
+			}
+			if org.set() {
+				return fmt.Errorf("--machine and --cwd work with --all across an org")
+			}
 			text, err := withFiles(text, files)
 			if err != nil {
 				return err
@@ -251,6 +359,10 @@ func newSendCommand() *cobra.Command {
 			env, providers, idx, err := discover(cmd.Context())
 			if err != nil {
 				return err
+			}
+			opts := agents.SendOptions{From: from}
+			if me, err := agents.Self(cmd.Context(), env, idx, selfPID()); err == nil {
+				opts.ReplyTo = me.ID
 			}
 			var targets []agents.Session
 			if all {
@@ -278,7 +390,7 @@ func newSendCommand() *cobra.Command {
 				if wait {
 					prior = priorMatches(cmd.Context(), env, providers, idx, target, text, since)
 				}
-				got, err := agents.Send(cmd.Context(), env, providers, idx, target, text, agents.SendOptions{From: from})
+				got, err := agents.Send(cmd.Context(), env, providers, idx, target, text, opts)
 				if err != nil {
 					if !all {
 						return err
@@ -338,11 +450,12 @@ func newSendCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringArrayVar(&files, "file", nil, "attach a local file by its absolute path (repeatable)")
-	cmd.Flags().StringVar(&from, "from", "", "sender name shown to agents that display it (default context-drop)")
+	cmd.Flags().StringVar(&from, "from", "", "name the sender when it is not an agent (an agent sending is named by its ID)")
 	cmd.Flags().BoolVar(&wait, "wait", false, "wait for the reply and print it")
 	cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Minute, "how long --wait waits")
 	cmd.Flags().BoolVar(&all, "all", false, "send to every live top-level session that matches the filters, except your own")
 	filter.register(cmd, "with --all, only send to")
+	org.register(cmd, "with --all, only send to")
 	return cmd
 }
 
