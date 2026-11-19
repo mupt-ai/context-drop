@@ -5,14 +5,13 @@ description: Run a swarm of coding agents on this machine with the Context Drop 
 
 # Context Drop
 
-`context-drop` is how agents on this machine work as a swarm: they talk (`send`), share files (`send --file`, `upload`), and an orchestrator oversees them (`list`, `read`, `watch`, `overlaps`, `claims`, `summarize`, `start`, `stop`). It indexes every live Claude Code, Codex, Pi, and OpenCode session, in terminals or the Claude Code and Codex desktop apps, including Claude Code subagents. Each session has a stable ID such as `cc-6a79295a` (Claude Code), `cx-…` (Codex), `pi-…`, or `oc-…` (OpenCode). Once the machine has joined an org, agents on every machine in it are listed too, with IDs like `laptop/cc-6a79295a`.
+`context-drop` is how agents on this machine work as a swarm: they talk (`send`), share files (`send --file`, `upload`), and an orchestrator oversees them (`list`, `read`, `watch`, `summarize`, `start`, `stop`). It indexes every live Claude Code, Codex, Pi, and OpenCode session, in terminals or the Claude Code and Codex desktop apps, including Claude Code subagents. Each session has a stable ID such as `cc-6a79295a` (Claude Code), `cx-…` (Codex), `pi-…`, or `oc-…` (OpenCode). Once the machine has joined an org, agents on every machine in it are listed too, with IDs like `laptop/cc-6a79295a`.
 
 ## Working alongside other agents
 
 You are one of several agents working for the same people. Keep to these rules:
 
-- **Look before you start.** `context-drop list --cwd .` and `context-drop claims`. If another agent is already on it, work it out with them instead of duplicating it.
-- **Claim what you'll change** (`context-drop claim <path> --note "<why>"`) and `release` it when you're done.
+- **Look before you start.** `context-drop list --cwd .`, then `read` the agents already there. If one is already on it, work it out with them instead of duplicating it.
 - **Read, don't ask.** To see what an agent is doing, `context-drop read <id>`. Don't message it for status.
 - **Message only when you need something.** Write it for a stranger: what you need, why, and what done looks like, in one complete message.
 - **Answer messages meant for you**, briefly, to the ID in their first line. Otherwise stay quiet.
@@ -50,14 +49,10 @@ Claude Code subagents are reached through their parent session, which is asked t
 ## Coordinate with other agents
 
 ```bash
-context-drop overlaps                         # who shares your worktree or has edited the same files
-context-drop claims                           # what other agents have claimed
-context-drop claim path/or/task --note "why"  # before working on something others might touch
-context-drop release                          # when you are done
 context-drop watch --for 10m --json           # status changes as they happen
 ```
 
-If someone else holds a claim on what you need, coordinate with them (`send`) instead of passing `--force`. Claims are advisory and disappear when your session ends; release them when you finish early. `send --all` (with `--in`, `--session`, `--agent`, and similar filters) messages a whole group and skips you; use it only when the user asked to involve those sessions. Do not `stop` sessions the user did not ask you to stop.
+`send --all` (with `--in`, `--session`, `--agent`, and similar filters) messages a whole group and skips you; use it only when the user asked to involve those sessions. Do not `stop` sessions the user did not ask you to stop.
 
 ## Start an agent
 

@@ -22,7 +22,7 @@ Context Drop does three things for the agents on your machine:
 
 - **Talk.** Any agent (or you) can message any other session, or a whole group, as its next prompt, and wait for the reply.
 - **Share files.** Hand another agent a local file with `send --file`, or upload one for an expiring link to give a person.
-- **Oversee.** An orchestrator agent can list every session, read its transcript, watch status changes, see which agents overlap on the same files, track claims, summarize the lot, and start or stop agents.
+- **Oversee.** An orchestrator agent can list every session, read its transcript, watch status changes, summarize the lot, and start or stop agents.
 
 Join several machines to an **org** and the same commands reach agents on all of them. An org can also add its own commands, called **mods**: one TypeScript file each, run on the org's server, called from the CLI or by agents as tools.
 
@@ -117,11 +117,9 @@ If the new agent stops at a folder-trust prompt or a login screen, `start` says 
 context-drop watch                                     # a line whenever an agent starts, ends, or changes status
 context-drop send --all --in rex --session calm-prairie 'Rebase on main before you push'
 context-drop stop cc-6a79295a                          # --all with filters to stop a group
-context-drop claim src/parser --note 'splitting it up' # run by an agent; others see it in list and claims
-context-drop overlaps                                  # shared worktrees, files edited by two agents, claimed files edited
 ```
 
-`send --all` messages every matching session except the sender. `stop` closes panes `start` opened and sends SIGTERM to everything else, and it refuses busy agents unless `--force`. Claims are advisory and end with the session that made them. `overlaps` reads edits from Claude Code, Codex, and Pi transcripts.
+`send --all` messages every matching session except the sender. `stop` closes panes `start` opened and sends SIGTERM to everything else, and it refuses busy agents unless `--force`. Agents sharing a repository resolve conflicts the way people do, through git; an org that wants locks can add them as a mod (see the reference `lock` mod).
 
 ### Work across machines
 
@@ -159,7 +157,7 @@ context-drop stuck --machine devbox
 claude mcp add context-drop -- context-drop mcp   # agents get list, read, send, and every mod as tools
 ```
 
-A mod is one TypeScript file that the server runs in its own Deno process for each call, with only the capabilities its `can` list names: the org's `list`, `read`, and `send`, calling other mods, a key-value store, secrets, and outbound HTTP to named public hosts. Events can call it too (an agent starting, ending, or changing status, a cron schedule, or a signed webhook). Every deploy is a version, `--preview` deploys a copy only your machine can call, and `rollback`, `logs`, and `secret set` manage it. The [mods guide](docs/mods.md) has the full API; [`mods/`](mods) has two reference mods, `stuck` and `lock` (claims that hold across every machine).
+A mod is one TypeScript file that the server runs in its own Deno process for each call, with only the capabilities its `can` list names: the org's `list`, `read`, and `send`, calling other mods, a key-value store, secrets, and outbound HTTP to named public hosts. Events can call it too (an agent starting, ending, or changing status, a cron schedule, or a signed webhook). Every deploy is a version, `--preview` deploys a copy only your machine can call, and `rollback`, `logs`, and `secret set` manage it. The [mods guide](docs/mods.md) has the full API; [`mods/`](mods) has two reference mods, `stuck` and `lock` (an org-wide lock on a path).
 
 ### Summarize everything
 

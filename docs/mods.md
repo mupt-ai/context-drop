@@ -23,7 +23,7 @@ context-drop deploy stuck.ts      # live for the org at once
 context-drop stuck --minutes 5    # call it like any command
 ```
 
-Two reference mods are in [`mods/`](../mods): `stuck` and `lock` (claims that hold across every machine).
+Two reference mods are in [`mods/`](../mods): `stuck` and `lock` (an org-wide lock on a path).
 
 ## Writing one
 

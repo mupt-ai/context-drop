@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -56,149 +54,6 @@ func TestChanges(t *testing.T) {
 	}
 	if len(Changes(next, next, now)) != 0 {
 		t.Fatal("no change reported changes")
-	}
-}
-
-// gitRepo makes a repository at dir/main with a linked worktree at
-// dir/feature, laid out the way git lays them out.
-func gitRepo(t *testing.T) (main, feature string) {
-	t.Helper()
-	dir := t.TempDir()
-	main, feature = filepath.Join(dir, "main"), filepath.Join(dir, "feature")
-	gitdir := filepath.Join(main, ".git", "worktrees", "feature")
-	for _, d := range []string{gitdir, filepath.Join(main, "src"), filepath.Join(feature, "src")} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	write := func(path, content string) {
-		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	write(filepath.Join(feature, ".git"), "gitdir: "+gitdir+"\n")
-	write(filepath.Join(gitdir, "commondir"), "../..\n")
-	return canonicalPath(main), canonicalPath(feature)
-}
-
-func TestClaims(t *testing.T) {
-	main, feature := gitRepo(t)
-	h := newFakeHost(t)
-	h.procs[300], h.procs[400] = Process{PID: 300}, Process{PID: 400}
-	env := h.env()
-	store := env.Claims()
-	a, b := Session{ID: "cc-a", Agent: Claude, PID: 300}, Session{ID: "cx-b", Agent: Codex, PID: 400}
-	idx := Index{Sessions: []Session{a, b}}
-	now := time.Now()
-
-	if err := store.Add(idx, []Claim{NewClaim(a, "src", main, "refactor", now), NewClaim(a, "Release notes", main, "", now)}, false); err != nil {
-		t.Fatal(err)
-	}
-	// The same directory in another worktree of the repository overlaps.
-	err := store.Add(idx, []Claim{NewClaim(b, "src/api.go", feature, "", now)}, false)
-	var conflict ClaimConflict
-	if !errors.As(err, &conflict) || conflict.Held.Session != "cc-a" {
-		t.Fatalf("overlapping path accepted: %v", err)
-	}
-	if err := store.Add(idx, []Claim{NewClaim(b, "release NOTES", main, "", now)}, false); err == nil {
-		t.Fatal("same task name accepted")
-	}
-	if err := store.Add(idx, []Claim{NewClaim(b, "docs", main, "", now)}, false); err != nil {
-		t.Fatalf("a separate path was refused: %v", err)
-	}
-	if err := store.Add(idx, []Claim{NewClaim(b, "src/api.go", feature, "", now)}, true); err != nil {
-		t.Fatalf("--force: %v", err)
-	}
-	live, err := store.Live(idx)
-	if err != nil || len(live) != 4 {
-		t.Fatalf("live = %+v, %v", live, err)
-	}
-	if live[0].Path != filepath.Join(main, "src") || live[0].RepoPath != "src" || live[1].Path != "" {
-		t.Fatalf("path and task claims = %+v", live[:2])
-	}
-
-	released, err := store.Release(idx, "cc-a", []Claim{NewClaim(a, "./src", main, "", time.Time{})})
-	if err != nil || len(released) != 1 || released[0].Target != "src" {
-		t.Fatalf("released = %+v, %v", released, err)
-	}
-	// When b's session ends, its claims go with it.
-	live, err = store.Live(Index{Sessions: []Session{a}})
-	if err != nil || len(live) != 1 || live[0].Target != "Release notes" {
-		t.Fatalf("after b ended = %+v, %v", live, err)
-	}
-	if released, _ := store.Release(Index{Sessions: []Session{a}}, "cc-a", nil); len(released) != 1 {
-		t.Fatalf("release all = %+v", released)
-	}
-}
-
-func TestEditedFiles(t *testing.T) {
-	h := newFakeHost(t)
-	old, recent := "2026-11-11T08:00:00Z", "2026-11-11T12:00:00Z"
-	since := parseTime("2026-11-11T10:00:00Z")
-	claude := h.write("claude.jsonl", jsonl(
-		map[string]any{"type": "assistant", "timestamp": old, "message": map[string]any{"content": []any{
-			map[string]any{"type": "tool_use", "name": "Edit", "input": map[string]any{"file_path": "/w/old.go"}}}}},
-		map[string]any{"type": "assistant", "timestamp": recent, "message": map[string]any{"content": []any{
-			map[string]any{"type": "text", "text": "editing"},
-			map[string]any{"type": "tool_use", "name": "Write", "input": map[string]any{"file_path": "/w/new.go"}},
-			map[string]any{"type": "tool_use", "name": "Read", "input": map[string]any{"file_path": "/w/read.go"}}}}},
-	))
-	codex := h.write("codex.jsonl", jsonl(
-		map[string]any{"type": "response_item", "timestamp": recent, "payload": map[string]any{"type": "custom_tool_call", "name": "apply_patch",
-			"input": "*** Begin Patch\n*** Update File: cli/a.go\n@@\n*** Add File: /abs/b.go\n*** End Patch"}},
-		map[string]any{"type": "response_item", "timestamp": recent, "payload": map[string]any{"type": "function_call", "name": "apply_patch",
-			"arguments": `{"input":"*** Begin Patch\n*** Delete File: c.go\n*** End Patch"}`}},
-	))
-	pi := h.write("pi.jsonl", jsonl(
-		map[string]any{"type": "message", "timestamp": recent, "message": map[string]any{"role": "assistant", "content": []any{
-			map[string]any{"type": "toolCall", "name": "edit", "arguments": map[string]any{"path": "p.go"}}}}},
-	))
-	cases := []struct {
-		s    Session
-		want string
-	}{
-		{Session{Agent: Claude, Transcript: claude, Cwd: "/w"}, "/w/new.go"},
-		{Session{Agent: Codex, Transcript: codex, Cwd: "/repo"}, "/repo/cli/a.go /abs/b.go /repo/c.go"},
-		{Session{Agent: Pi, Transcript: pi, Cwd: "/p"}, "/p/p.go"},
-		{Session{Agent: OpenCode, Transcript: pi, Cwd: "/p"}, ""},
-	}
-	for _, c := range cases {
-		var got []string
-		for _, e := range EditedFiles(c.s, since) {
-			got = append(got, e.Path)
-		}
-		if strings.Join(got, " ") != c.want {
-			t.Errorf("%s edits = %q, want %q", c.s.Agent, got, c.want)
-		}
-	}
-}
-
-func TestFindOverlaps(t *testing.T) {
-	main, feature := gitRepo(t)
-	h := newFakeHost(t)
-	edit := func(name, path string) string {
-		return h.write(name, jsonl(map[string]any{"type": "assistant", "timestamp": time.Now().UTC().Format(time.RFC3339),
-			"message": map[string]any{"content": []any{map[string]any{"type": "tool_use", "name": "Edit", "input": map[string]any{"file_path": path}}}}}))
-	}
-	sessions := []Session{
-		{ID: "cc-a", Agent: Claude, Cwd: main, Transcript: edit("a.jsonl", filepath.Join(main, "src/api.go"))},
-		{ID: "cc-b", Agent: Claude, Cwd: filepath.Join(main, "src"), Transcript: edit("b.jsonl", filepath.Join(main, "README.md"))},
-		{ID: "cc-c", Agent: Claude, Cwd: feature, Transcript: edit("c.jsonl", filepath.Join(feature, "src/api.go"))},
-		{ID: "cc-d", Agent: Claude, Cwd: t.TempDir()}, // outside any repository
-		{ID: "cc-a-sub", Agent: Claude, Cwd: main, Subagent: true},
-	}
-	claims := []Claim{NewClaim(Session{ID: "cc-b"}, "src", main, "", time.Now())}
-	var got []string
-	for _, o := range FindOverlaps(sessions, claims, time.Now().Add(-time.Hour)) {
-		got = append(got, o.Kind+" "+strings.TrimPrefix(o.Path, main)+" "+strings.Join(o.Sessions, ","))
-	}
-	want := []string{
-		"claim /src cc-b,cc-a,cc-c",
-		"file src/api.go cc-a,cc-c", // the same file in two worktrees
-		"worktree  cc-a,cc-b",       // main is shared by a and b; the subagent does not count
-	}
-	if strings.Join(got, "|") != strings.Join(want, "|") {
-		t.Fatalf("overlaps =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
 
@@ -269,47 +124,6 @@ func TestStop(t *testing.T) {
 	}
 }
 
-func TestClaimsSurviveAPartialDiscovery(t *testing.T) {
-	main, feature := gitRepo(t)
-	h := newFakeHost(t)
-	h.procs[300] = Process{PID: 300}
-	h.procs[400] = Process{PID: 400}
-	env := h.env()
-	store := env.Claims()
-	a, b := Session{ID: "cc-a", PID: 300}, Session{ID: "cc-b", PID: 400}
-	if err := store.Add(Index{Sessions: []Session{a}}, []Claim{NewClaim(a, "src", main, "", time.Now())}, false); err != nil {
-		t.Fatal(err)
-	}
-	// A pass that missed a's session hides its claim but keeps it.
-	if live, _ := store.Live(Index{}); len(live) != 0 {
-		t.Fatalf("live = %+v", live)
-	}
-	if err := store.Add(Index{Sessions: []Session{b}}, []Claim{NewClaim(b, "src", feature, "", time.Now())}, false); err == nil {
-		t.Fatal("a claim was lost to a discovery pass that missed its session")
-	}
-	// A name one agent saw as a task and another as a path still conflicts.
-	if err := store.Add(Index{Sessions: []Session{a}}, []Claim{NewClaim(a, "docs", main, "", time.Now())}, false); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(feature, "docs"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Add(Index{Sessions: []Session{b}}, []Claim{NewClaim(b, "docs", feature, "", time.Now())}, false); err == nil {
-		t.Fatal("task and path claims on the same name did not conflict")
-	}
-	// Releasing from another worktree of the repository matches.
-	released, err := store.Release(Index{Sessions: []Session{a}}, "cc-a", []Claim{NewClaim(a, "src", feature, "", time.Time{})})
-	if err != nil || len(released) != 1 {
-		t.Fatalf("released = %+v, %v", released, err)
-	}
-	// Once a's process exits, its claims go.
-	delete(h.procs, 300)
-	env = h.env()
-	if err := env.Claims().Add(Index{Sessions: []Session{b}}, []Claim{NewClaim(b, "docs", feature, "", time.Now())}, false); err != nil {
-		t.Fatalf("a dead session's claim still blocks: %v", err)
-	}
-}
-
 func TestLaunchRecordsSurviveConcurrentStarts(t *testing.T) {
 	env := newFakeHost(t).env()
 	var wg sync.WaitGroup
@@ -325,29 +139,6 @@ func TestLaunchRecordsSurviveConcurrentStarts(t *testing.T) {
 		if _, ok := env.takeLaunch(context.Background(), Session{ID: fmt.Sprint("s", i), PID: i}); !ok {
 			t.Fatalf("record %d was lost", i)
 		}
-	}
-}
-
-func TestClaimsFollowARenamedSessionAndRefuseSessionsWithoutAProcess(t *testing.T) {
-	h := newFakeHost(t)
-	h.procs[42] = Process{PID: 42}
-	store := h.env().Claims()
-	before := Session{ID: "pi-old", Agent: Pi, PID: 42}
-	if err := store.Add(Index{Sessions: []Session{before}}, []Claim{NewClaim(before, "release notes", "/", "", time.Now())}, false); err != nil {
-		t.Fatal(err)
-	}
-	// After its first message the Pi session has a new ID but the same process.
-	after := Session{ID: "pi-new", Agent: Pi, PID: 42}
-	live, err := store.Live(Index{Sessions: []Session{after}})
-	if err != nil || len(live) != 1 || live[0].Session != "pi-new" {
-		t.Fatalf("live = %+v, %v", live, err)
-	}
-	if released, _ := store.Release(Index{Sessions: []Session{after}}, "pi-new", nil); len(released) != 1 {
-		t.Fatalf("the renamed session could not release: %+v", released)
-	}
-	oc := Session{ID: "oc-1", Agent: OpenCode}
-	if err := store.Add(Index{Sessions: []Session{oc}}, []Claim{NewClaim(oc, "x", "/", "", time.Now())}, false); !errors.Is(err, ErrNoProcess) {
-		t.Fatalf("OpenCode claim: %v", err)
 	}
 }
 
@@ -386,51 +177,5 @@ func TestStopFindsTheRecordOfARenamedPiSession(t *testing.T) {
 	how, err := Stop(context.Background(), h.env(), Session{ID: "pi-file-id", Agent: Pi, PID: 10, TTY: "/dev/ttys010"})
 	if err != nil || how != "closed tmux pane %3" {
 		t.Fatalf("stop = %q, %v", how, err)
-	}
-}
-
-func TestClaimsEndWhenTheirPIDIsReused(t *testing.T) {
-	h := newFakeHost(t)
-	start := time.Now().Add(-time.Hour)
-	h.procs[42] = Process{PID: 42, Start: start}
-	owner := Session{ID: "pi-a", Agent: Pi, PID: 42}
-	if err := h.env().Claims().Add(Index{Sessions: []Session{owner}}, []Claim{NewClaim(owner, "notes", "/", "", time.Now())}, false); err != nil {
-		t.Fatal(err)
-	}
-	// pi-a exits and an unrelated Pi process gets PID 42.
-	h.procs[42] = Process{PID: 42, Start: time.Now()}
-	other := Session{ID: "pi-b", Agent: Pi, PID: 42}
-	store := h.env().Claims()
-	if live, _ := store.Live(Index{Sessions: []Session{other}}); len(live) != 0 {
-		t.Fatalf("claims moved to a reused PID: %+v", live)
-	}
-	if err := store.Add(Index{Sessions: []Session{other}}, []Claim{NewClaim(other, "notes", "/", "", time.Now())}, false); err != nil {
-		t.Fatalf("a dead process's claim still blocks: %v", err)
-	}
-}
-
-func TestSharedProcessClaimsEndWithTheirThread(t *testing.T) {
-	h := newFakeHost(t)
-	h.procs[40] = Process{PID: 40, Command: "codex app-server --listen ws://127.0.0.1:1"}
-	one, two := Session{ID: "cx-1", Agent: Codex, PID: 40}, Session{ID: "cx-2", Agent: Codex, PID: 40}
-	store := h.env().Claims()
-	if err := store.Add(Index{Sessions: []Session{one, two}}, []Claim{NewClaim(one, "api", "/", "", time.Now())}, false); err != nil {
-		t.Fatal(err)
-	}
-	// While codex discovery fails, the thread's claim stands.
-	failed := Index{Sessions: []Session{two}, Warnings: []string{"codex: lsof failed"}}
-	if err := store.Add(failed, []Claim{NewClaim(two, "api", "/", "", time.Now())}, false); err == nil {
-		t.Fatal("a claim was dropped while discovery was failing")
-	}
-	// Once thread 1 is not found, its claim stops blocking and is never handed
-	// to thread 2; it is kept in case the thread was only missed.
-	if live, _ := store.Live(Index{Sessions: []Session{two}}); len(live) != 0 {
-		t.Fatalf("claim moved to the remaining thread: %+v", live)
-	}
-	if err := store.Add(Index{Sessions: []Session{two}}, []Claim{NewClaim(two, "api", "/", "", time.Now())}, false); err != nil {
-		t.Fatalf("an ended thread's claim still blocks: %v", err)
-	}
-	if live, _ := store.Live(Index{Sessions: []Session{one, two}}); len(live) != 2 {
-		t.Fatalf("a missed thread's claim was dropped: %+v", live)
 	}
 }

@@ -63,8 +63,6 @@ type Session struct {
 	App string `json:"app,omitempty"`
 	// Location is the tmux, herdr, or rex pane the agent runs in, when known.
 	Location *Location `json:"location,omitempty"`
-	// Claims lists what the session has claimed with `context-drop claim`.
-	Claims []string `json:"claims,omitempty"`
 
 	// internal routing details, not part of the public JSON.
 	socket string

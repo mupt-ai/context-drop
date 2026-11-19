@@ -117,25 +117,6 @@ Stop the named sessions, or with `--all` every live top-level session matching t
 - A process that serves several sessions, a Codex `app-server` or `opencode serve`, is never signalled; close that session's terminal instead.
 - Sessions that are `working` or `blocked`, and your own session, are refused unless `--force`. Subagents cannot be stopped on their own.
 
-### `context-drop claim TARGET... [--note TEXT] [--as TARGET] [--force]`, `release [TARGET...]`, `claims [--json]`
-
-Advisory claims let agents tell each other what they are working on. Nothing is locked.
-
-- `claim` records that the calling session is working on each `TARGET`: a file or directory (anything that exists, contains a `/`, or starts with `.`, resolved against the current directory) or else a task name. The session is the nearest agent session among the command's parent processes, so an agent runs `context-drop claim src/parser` as is; `--as` names a session explicitly, and a subagent's claims belong to its parent.
-- A claim that overlaps another live session's claim is refused, and nothing is recorded, unless `--force`: a path inside another claimed path (either way round), or the same task name (case-insensitive). Paths in different worktrees of one repository are compared by their path within the repository.
-- `release` drops the caller's claims on the given targets (matched by path in any worktree of the repository, or by the name as given), or all of them. A claim also disappears when its session's process exits; a discovery pass that misses a session hides its claims without dropping them, and a Pi session that changes ID keeps its claims. OpenCode sessions cannot claim, because they have no process of their own to follow. A claim made through a Codex app-server that serves several threads lasts until that process exits, but stops blocking other claims once its thread is no longer found.
-- `claims` lists live claims; `list` adds a `CLAIMS` column (and `claims` in JSON) when there are any. Claims are stored in `~/.context-drop/claims.json` under a file lock.
-
-### `context-drop overlaps [--since D] [--json]`
-
-Report where live top-level sessions may be stepping on each other:
-
-- `worktree`: several sessions work in one git worktree. `list` also prints this as a warning.
-- `file`: several sessions edited the same file within `--since` (default 2h), in one worktree or in different worktrees of one repository (a likely merge conflict).
-- `claim`: a session edited a file inside a path another session claimed.
-
-Edits come from transcripts: Claude Code's `Edit`, `MultiEdit`, `Write`, and `NotebookEdit`, Codex's `apply_patch`, and Pi's `edit` and `write` tools, from the last 2 MiB of each transcript. OpenCode edits, edits made by subagents, and files written by shell commands are not seen.
-
 ### `context-drop summarize [flags]`
 
 Summarize every live top-level session (subagents are folded into their parent) and, when there is more than one, write a short cross-session overview. Summaries persist in `~/.context-drop/summaries.json`; a session whose transcript has not changed since the last run reuses its summary without a model call, and a changed session is re-summarized from its previous summary plus the new messages.
