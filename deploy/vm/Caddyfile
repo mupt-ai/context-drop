@@ -1,0 +1,5 @@
+# Caddy terminates TLS (certificates from Let's Encrypt) and proxies to the
+# server, WebSockets included. deploy.sh replaces @HOSTS@.
+@HOSTS@ {
+	reverse_proxy 127.0.0.1:8080
+}

@@ -27,7 +27,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	cmd := cli.NewRootCommand(cli.BuildInfo{Version: version, Commit: commit, Date: date})
-	cmd.SetArgs(args)
+	cmd.SetArgs(cli.ModCallArgs(cmd, args))
 	cmd.SetOut(stdout)
 	cmd.SetErr(stderr)
 	cmd.SetContext(ctx)

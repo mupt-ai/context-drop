@@ -573,3 +573,18 @@ func TestWaitForReplyFollowsAPiSessionWhoseIDChanges(t *testing.T) {
 		t.Fatalf("final=%+v msgs=%+v", final, msgs)
 	}
 }
+
+func TestSenderLineNamesWhoSentAMessage(t *testing.T) {
+	for _, c := range []struct {
+		opts SendOptions
+		want string
+	}{
+		{SendOptions{}, ""},
+		{SendOptions{From: "laptop"}, "[context-drop] From laptop."},
+		{SendOptions{From: "laptop", ReplyTo: "laptop/cc-1a2b3c4d"}, `[context-drop] Agent laptop/cc-1a2b3c4d, not your user. Reply: context-drop send laptop/cc-1a2b3c4d "..."`},
+	} {
+		if got := senderLine(c.opts); got != c.want {
+			t.Errorf("senderLine(%+v) = %q, want %q", c.opts, got, c.want)
+		}
+	}
+}

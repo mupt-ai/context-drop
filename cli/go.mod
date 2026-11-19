@@ -4,6 +4,7 @@ go 1.26.2
 
 require (
 	cloud.google.com/go/storage v1.62.2
+	github.com/coder/websocket v1.8.14
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/term v0.47.0
 	google.golang.org/api v0.274.0

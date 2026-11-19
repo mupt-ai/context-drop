@@ -243,6 +243,14 @@ type ServerConfig struct {
 	UploadBytesPerHour int64
 	// ProxyHops is the number of trusted proxies appending to X-Forwarded-For.
 	ProxyHops int
+	// AdminToken guards org creation; empty disables it.
+	AdminToken string
+	// OrgState is the file holding orgs and joined machines.
+	OrgState string
+	// Deno is the Deno executable mods run in; empty looks it up on PATH. Without Deno, mods are off.
+	Deno string
+	// ModsDir holds deployed mods, their key-value data, and secrets.
+	ModsDir string
 }
 
 func LoadServerConfig() (ServerConfig, error) {
@@ -254,6 +262,10 @@ func LoadServerConfig() (ServerConfig, error) {
 		GCSBucket:   os.Getenv("CONTEXT_DROP_GCS_BUCKET"),
 		GCSPrefix:   strings.Trim(os.Getenv("CONTEXT_DROP_GCS_PREFIX"), "/"),
 		UploadToken: strings.TrimSpace(os.Getenv("CONTEXT_DROP_UPLOAD_TOKEN")),
+		AdminToken:  strings.TrimSpace(os.Getenv("CONTEXT_DROP_ADMIN_TOKEN")),
+		OrgState:    strings.TrimSpace(os.Getenv("CONTEXT_DROP_ORG_STATE")),
+		Deno:        strings.TrimSpace(os.Getenv("CONTEXT_DROP_DENO")),
+		ModsDir:     strings.TrimSpace(os.Getenv("CONTEXT_DROP_MODS_DIR")),
 		MaxBytes:    envInt64("CONTEXT_DROP_MAX_BYTES", 25*1024*1024),
 
 		UploadsPerHour:     int(envInt64("CONTEXT_DROP_UPLOADS_PER_HOUR", 60)),

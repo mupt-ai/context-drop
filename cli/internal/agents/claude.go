@@ -219,7 +219,7 @@ func (p claudeProvider) Send(ctx context.Context, env *Env, s Session, text stri
 	if err != nil {
 		return err
 	}
-	from := firstNonEmpty(opts.From, "context-drop")
+	from := firstNonEmpty(opts.ReplyTo, opts.From, "context-drop")
 	dialer := net.Dialer{Timeout: 5 * time.Second}
 	conn, err := dialer.DialContext(ctx, "unix", s.socket)
 	if err != nil {

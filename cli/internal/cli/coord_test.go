@@ -126,7 +126,9 @@ func TestSendAllSkipsTheSender(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !h.ran("tmux send-keys -t %2 -l -- rebase on main") || h.ran("tmux send-keys -t %1") {
+	// The message names the sending agent, so the recipient knows where to reply.
+	if !h.ran("tmux send-keys -t %2 -l -- [context-drop] Agent "+h.a+", not your user. Reply: context-drop send "+h.a+` "..."  rebase on main`) ||
+		h.ran("tmux send-keys -t %1") {
 		t.Fatalf("commands = %q", h.commands)
 	}
 	if !strings.Contains(stderr, "sent to "+h.b) || strings.Contains(stderr, h.a) {

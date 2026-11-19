@@ -131,7 +131,7 @@ func TestNewStore(t *testing.T) {
 
 func TestNewHTTPServerConfiguresServer(t *testing.T) {
 	cfg := config.ServerConfig{Addr: "127.0.0.1:0", BaseURL: "http://example.test", UploadToken: "token", DefaultTTL: time.Hour, MaxTTL: 24 * time.Hour, MaxBytes: 1024}
-	server := newHTTPServer(cfg, storage.NewLocal(t.TempDir()))
+	server := newHTTPServer(cfg, storage.NewLocal(t.TempDir()), nil)
 	if server.Addr != cfg.Addr || server.Handler == nil {
 		t.Fatalf("server = %+v", server)
 	}
