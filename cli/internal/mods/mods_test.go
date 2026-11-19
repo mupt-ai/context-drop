@@ -63,3 +63,17 @@ func TestSlackSignaturesExpire(t *testing.T) {
 		t.Fatal("a ten-minute-old slack signature was accepted")
 	}
 }
+
+func TestNetCapabilityRefusesTheServersOwnNetwork(t *testing.T) {
+	for host, want := range map[string]bool{
+		"api.github.com": true, "hooks.slack.com:443": true, "8.8.8.8": true,
+		"169.254.169.254": false, "metadata.google.internal": false, "127.0.0.1": false, "[::1]": false,
+		"::ffff:127.0.0.1": false, "10.0.0.5": false, "192.168.1.1": false, "100.100.1.1": false,
+		"localhost": false, "db.localhost": false, "printer.local": false, "intranet": false, "0.0.0.0": false,
+	} {
+		_, err := check(Meta{Name: "m", Can: []string{"net:" + host}})
+		if got := err == nil; got != want {
+			t.Errorf("net:%s allowed = %v, want %v (%v)", host, got, want, err)
+		}
+	}
+}

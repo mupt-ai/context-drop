@@ -11,7 +11,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"sort"
 	"strconv"
@@ -109,6 +111,9 @@ func check(m Meta) ([]string, error) {
 			host := strings.TrimPrefix(c, "net:")
 			if strings.ContainsAny(host, "/ ,") {
 				return nil, errf("bad_request", "can %q: name a host, like net:api.github.com", c)
+			}
+			if !publicHost(host) {
+				return nil, errf("bad_request", "can %q: a mod may reach only public hosts, not this server's own network", c)
 			}
 			hosts = append(hosts, host)
 		case notYet[c]:
@@ -550,4 +555,33 @@ func AgentEvents(before, after []map[string]any) []Event {
 		out = append(out, Event{"type": "agent.ended", "agent": old[id]})
 	}
 	return out
+}
+
+// publicHost reports whether a net: host is a public name or address. Loopback,
+// private, link-local (the cloud metadata server), and internal names are refused,
+// so a mod cannot reach the server's own network.
+func publicHost(host string) bool {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.ToLower(strings.Trim(host, "[]."))
+	if ip, err := netip.ParseAddr(host); err == nil {
+		ip = ip.Unmap()
+		return !(ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() ||
+			ip.IsUnspecified() || ip.IsMulticast() || ip.IsInterfaceLocalMulticast() || isShared(ip))
+	}
+	if !strings.Contains(host, ".") || host == "localhost" {
+		return false
+	}
+	for _, suffix := range []string{".localhost", ".local", ".internal", ".lan", ".home.arpa"} {
+		if strings.HasSuffix(host, suffix) {
+			return false
+		}
+	}
+	return true
+}
+
+// isShared is the carrier-grade NAT range (100.64.0.0/10), used inside some clouds.
+func isShared(ip netip.Addr) bool {
+	return netip.MustParsePrefix("100.64.0.0/10").Contains(ip)
 }

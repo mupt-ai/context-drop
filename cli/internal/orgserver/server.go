@@ -264,6 +264,9 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request, c caller)
 	}
 	if m.conn != nil {
 		m.conn.Close(websocket.StatusPolicyViolation, "replaced by a newer connection")
+		for id, ch := range m.pending {
+			ch <- pool.Frame{Type: "result", ID: id, Error: pool.Errorf("offline", "%s reconnected", c.machine)}
+		}
 	}
 	m.conn, m.pending, m.reported = conn, map[string]chan pool.Frame{}, false
 	s.mu.Unlock()
@@ -718,6 +721,7 @@ func (s *Server) handleCall(w http.ResponseWriter, r *http.Request, c caller) {
 	if !decode(w, r, &in) {
 		return
 	}
+	s.allowLongWrite(w)
 	who, depth := mods.Caller{Kind: "machine", Machine: c.machine}, 0
 	switch {
 	case c.mod != nil:
@@ -731,6 +735,12 @@ func (s *Server) handleCall(w http.ResponseWriter, r *http.Request, c caller) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]json.RawMessage{"output": out})
+}
+
+// allowLongWrite lets a response wait for a mod to finish: the HTTP server's
+// write timeout is far shorter than a mod's time limit.
+func (s *Server) allowLongWrite(w http.ResponseWriter) {
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(s.Mods.Timeout + time.Minute))
 }
 
 // handleKV is a running mod's own key-value store.
@@ -770,6 +780,7 @@ func (s *Server) handleHook(w http.ResponseWriter, r *http.Request) {
 	if !s.modsOn(w) {
 		return
 	}
+	s.allowLongWrite(w)
 	status, body := s.Mods.Webhook(r.Context(), r.PathValue("org"), r.PathValue("name"), r)
 	w.WriteHeader(status)
 	_, _ = w.Write(body)

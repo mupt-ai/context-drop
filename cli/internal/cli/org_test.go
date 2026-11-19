@@ -153,3 +153,15 @@ func TestOrgIDsAreNeverLocalIDs(t *testing.T) {
 		t.Errorf("entries = %q", buf.String())
 	}
 }
+
+func TestShareDirsExpandsHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.Mkdir(filepath.Join(home, "work"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := shareDirs([]string{"~/work"})
+	if err != nil || len(got) == 0 || got[0] != filepath.Join(home, "work") {
+		t.Fatalf("shareDirs(~/work) = %v, %v; want %s first", got, err, filepath.Join(home, "work"))
+	}
+}
