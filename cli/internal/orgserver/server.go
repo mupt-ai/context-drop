@@ -47,9 +47,6 @@ type machine struct {
 	pending map[string]chan pool.Frame
 	agents  []pool.Agent
 	seen    time.Time
-	// reported is set once this connection has reported; the first report after connecting sets the
-	// baseline for agent events instead of announcing every agent as started.
-	reported bool
 }
 
 // New makes a server. adminToken guards org creation; empty disables it.
@@ -72,19 +69,8 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/{org}/send", s.authed(s.handleSend))
 	mux.HandleFunc("POST /v1/{org}/mods", s.authed(s.handleMods))
 	mux.HandleFunc("POST /v1/{org}/mods/deploy", s.authed(s.handleDeploy))
-	mux.HandleFunc("POST /v1/{org}/mods/{name}/rollback", s.authed(s.handleRollback))
-	mux.HandleFunc("POST /v1/{org}/mods/{name}/logs", s.authed(s.handleModLogs))
-	mux.HandleFunc("POST /v1/{org}/mods/{name}/secret", s.authed(s.handleSecret))
 	mux.HandleFunc("POST /v1/{org}/mods/{name}/call", s.authed(s.handleCall))
 	mux.HandleFunc("POST /v1/{org}/kv", s.authed(s.handleKV))
-	mux.HandleFunc("POST /hooks/{org}/{name}", s.handleHook)
-}
-
-// Start runs the server's background work (mod schedules) until ctx ends.
-func (s *Server) Start(ctx context.Context) {
-	if s.Mods != nil {
-		go s.Mods.RunSchedules(ctx, s.store.Orgs)
-	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -268,7 +254,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request, c caller)
 			ch <- pool.Frame{Type: "result", ID: id, Error: pool.Errorf("offline", "%s reconnected", c.machine)}
 		}
 	}
-	m.conn, m.pending, m.reported = conn, map[string]chan pool.Frame{}, false
+	m.conn, m.pending = conn, map[string]chan pool.Frame{}
 	s.mu.Unlock()
 	s.log.Info("machine connected", "org", c.org, "machine", c.machine)
 
@@ -335,29 +321,10 @@ func (s *Server) report(k key, list []pool.Agent) {
 	}
 	s.mu.Lock()
 	m := s.machines[k]
-	var before []pool.Agent
-	announce := false
 	if m != nil {
-		before, announce = m.agents, m.reported
-		m.agents, m.seen, m.reported = kept, time.Now(), true
+		m.agents, m.seen = kept, time.Now()
 	}
 	s.mu.Unlock()
-	if announce && s.Mods != nil {
-		for _, ev := range mods.AgentEvents(asMaps(before), asMaps(kept)) {
-			s.Mods.Dispatch(k.org, ev)
-		}
-	}
-}
-
-func asMaps(list []pool.Agent) []map[string]any {
-	out := make([]map[string]any, 0, len(list))
-	for _, a := range list {
-		b, _ := json.Marshal(a)
-		var m map[string]any
-		_ = json.Unmarshal(b, &m)
-		out = append(out, m)
-	}
-	return out
 }
 
 // agents returns every agent in the org; a disconnected machine's agents are offline.
@@ -623,7 +590,7 @@ func modError(w http.ResponseWriter, err error) {
 	var e *mods.Error
 	if errors.As(err, &e) {
 		status := map[string]int{"not_found": http.StatusNotFound, "bad_request": http.StatusBadRequest,
-			"unsupported": http.StatusBadRequest, "mod_failed": http.StatusUnprocessableEntity}[e.Code]
+			"mod_failed": http.StatusUnprocessableEntity}[e.Code]
 		if status == 0 {
 			status = http.StatusBadRequest
 		}
@@ -637,7 +604,7 @@ func (s *Server) handleMods(w http.ResponseWriter, r *http.Request, c caller) {
 	if !s.modsOn(w) || !machinesOnly(w, c) {
 		return
 	}
-	list, err := s.Mods.List(c.org, c.machine)
+	list, err := s.Mods.List(c.org)
 	if err != nil {
 		modError(w, err)
 		return
@@ -650,10 +617,8 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request, c caller) 
 		return
 	}
 	var in struct {
-		Source  string `json:"source"`
-		Preview bool   `json:"preview"`
-		DryRun  bool   `json:"dry_run"`
-		Agent   string `json:"agent"`
+		Source string `json:"source"`
+		Agent  string `json:"agent"`
 	}
 	if !decode(w, r, &in) {
 		return
@@ -662,51 +627,12 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request, c caller) 
 	if in.Agent != "" {
 		author = c.machine + "/" + in.Agent
 	}
-	res, err := s.Mods.Deploy(r.Context(), c.org, c.machine, author, in.Source, in.Preview, in.DryRun)
+	res, err := s.Mods.Deploy(r.Context(), c.org, author, in.Source)
 	if err != nil {
 		modError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
-}
-
-func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request, c caller) {
-	if !s.modsOn(w) || !machinesOnly(w, c) {
-		return
-	}
-	v, err := s.Mods.Rollback(c.org, r.PathValue("name"), c.machine)
-	if err != nil {
-		modError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"name": r.PathValue("name"), "version": v})
-}
-
-func (s *Server) handleModLogs(w http.ResponseWriter, r *http.Request, c caller) {
-	if !s.modsOn(w) || !machinesOnly(w, c) {
-		return
-	}
-	logs, err := s.Mods.Logs(c.org, r.PathValue("name"), c.machine)
-	if err != nil {
-		modError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, logs)
-}
-
-func (s *Server) handleSecret(w http.ResponseWriter, r *http.Request, c caller) {
-	if !s.modsOn(w) || !machinesOnly(w, c) {
-		return
-	}
-	var in struct{ Key, Value string }
-	if !decode(w, r, &in) {
-		return
-	}
-	if err := s.Mods.SetSecret(c.org, r.PathValue("name"), c.machine, in.Key, in.Value); err != nil {
-		modError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]bool{"set": true})
 }
 
 // handleCall runs a mod for a machine (the CLI, an agent) or for another mod with "call".
@@ -729,7 +655,7 @@ func (s *Server) handleCall(w http.ResponseWriter, r *http.Request, c caller) {
 	case in.Agent != "":
 		who = mods.Caller{Kind: "agent", Machine: c.machine, Agent: c.machine + "/" + in.Agent}
 	}
-	out, err := s.Mods.Call(r.Context(), c.org, r.PathValue("name"), c.machine, in.Input, who, nil, depth)
+	out, err := s.Mods.Call(r.Context(), c.org, r.PathValue("name"), in.Input, who, depth)
 	if err != nil {
 		modError(w, err)
 		return
@@ -773,15 +699,4 @@ func (s *Server) handleKV(w http.ResponseWriter, r *http.Request, c caller) {
 		value = json.RawMessage("null")
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"value": value, "written": written})
-}
-
-// handleHook is a mod's public webhook URL; the mod's secret verifies every request.
-func (s *Server) handleHook(w http.ResponseWriter, r *http.Request) {
-	if !s.modsOn(w) {
-		return
-	}
-	s.allowLongWrite(w)
-	status, body := s.Mods.Webhook(r.Context(), r.PathValue("org"), r.PathValue("name"), r)
-	w.WriteHeader(status)
-	_, _ = w.Write(body)
 }

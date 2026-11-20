@@ -26,29 +26,17 @@ Once joined, `upload` defaults to the org's server when no endpoint is configure
 
 An org adds its own commands as mods: one TypeScript file each, run on the org's server. The [mods guide](mods.md) covers writing one; these commands manage and call them.
 
-#### `context-drop deploy FILE [--preview] [--yes]`
+#### `context-drop deploy FILE`
 
-Upload a mod and make it live for the whole org at once. Every deploy is a new version. A version that asks for a capability the previous one did not lists the new ones and asks to confirm; `--yes` skips the question. `--preview` deploys it as `NAME@<this machine>`, which only this machine can see or call.
+Upload a mod and make it live for the whole org at once. Deploying a file whose mod has the same name replaces it; its key-value data is kept.
 
 #### `context-drop mods [--json]`
 
-List the org's mods with their version, capabilities, events, and author.
+List the org's mods with their capabilities and author.
 
 #### `context-drop call NAME [--FIELD VALUE]... [--json INPUT] [--print-json]`
 
 Run a mod. Flags fill its input and are converted to the input's types (a repeated flag fills a list); a single positional argument fills the mod's only required field. `--json` passes the whole input as JSON. Text output prints as is, a list of objects as a table, and anything else as JSON; `--print-json` always prints JSON. `context-drop NAME ...` is the same as `context-drop call NAME ...` when `NAME` is not a built-in command, and `context-drop NAME --help` shows the mod's input.
-
-#### `context-drop rollback NAME`
-
-Make the mod's previous version live again. Its key-value data is kept.
-
-#### `context-drop logs NAME [-v] [--json]`
-
-Show the mod's recent calls and errors; `-v` adds what each call printed.
-
-#### `context-drop secret set NAME KEY`
-
-Store a secret for a mod, read from standard input. The mod reads it with `cd.secrets.get(KEY)` if its `can` list names `secret:KEY`. A webhook mod's signing secret is the key `webhook`.
 
 #### `context-drop mcp`
 
@@ -80,10 +68,6 @@ Sessions are found from each agent's own state and processes, so an agent is lis
 
 Finding Rex blocks runs `rex` with `--autostart=false`, so `list` never starts a Rex server.
 
-### `context-drop show TARGET`
-
-Print one session as JSON, including its `location`.
-
 ### `context-drop read TARGET [-n N] [--json] [--screen]`
 
 Print the last `N` transcript messages (default 20, `0` for all). Tool calls appear as `[tool: name]`.
@@ -104,10 +88,6 @@ Delivery per agent:
 - **Pi**: the socket opened by the Context Drop Pi extension (`context-drop setup pi`). Without the extension, the text is typed into the tmux, herdr, or Rex pane the Pi process runs in. A Pi session without the extension is identified by its process until it writes a session file, then by that file, so its ID changes after its first message; `send --wait` and `start --wait` follow it.
 - **OpenCode**: `opencode api POST /api/session/ID/prompt` on the background service. Child sessions (subagents) accept messages directly.
 
-### `context-drop watch [--interval D] [--for D] [--subagents] [--json] [--agent KIND] [--in MUX] [--session S] [--window W] [--pane P]`
-
-Poll live sessions (every 2s by default) and print a line whenever one starts, ends, or changes status (a pass where a provider failed or the process table could not be read is skipped, so it never reports sessions ending that did not), e.g. `14:02:11  cc-6a79295a  claude  working → blocked  ~/code/app  app-ee`. It runs until interrupted, or for `--for`. `--json` prints one object per change: `time`, `event` (`started`, `ended`, `status`), `id`, `agent`, `from`, `to`, and the `session`. Subagents are left out unless `--subagents` is given. A Pi session without the extension changes ID after its first message, which shows as one session ending and another starting.
-
 ### `context-drop stop [TARGET...] [--all [filters]] [--force] [--timeout D]`
 
 Stop the named sessions, or with `--all` every live top-level session matching the filters (never the session running the command). `stop` waits up to `--timeout` (default 10s) for each to leave `list`.
@@ -117,30 +97,6 @@ Stop the named sessions, or with `--all` every live top-level session matching t
 - A process that serves several sessions, a Codex `app-server` or `opencode serve`, is never signalled; close that session's terminal instead.
 - Sessions that are `working` or `blocked`, and your own session, are refused unless `--force`. Subagents cannot be stopped on their own.
 
-### `context-drop summarize [flags]`
-
-Summarize every live top-level session (subagents are folded into their parent) and, when there is more than one, write a short cross-session overview. Summaries persist in `~/.context-drop/summaries.json`; a session whose transcript has not changed since the last run reuses its summary without a model call, and a changed session is re-summarized from its previous summary plus the new messages.
-
-Flags: `--provider anthropic|openai|ollama|command`, `--model`, `--base-url`, `--api-key-env`, `--command`, `--agent KIND`, `--force` (re-summarize everything), `--no-overview`, `--json`.
-
-Settings come from `~/.context-drop/config.toml`, the environment, or flags, in that order of precedence (flags win). Nothing is inferred: `summarize` refuses to run until a provider is named, and it reads only the credential variable you name.
-
-```toml
-summarize_provider = "ollama"
-summarize_model = "gpt-oss:20b"
-# summarize_base_url = "http://localhost:11434"
-# summarize_api_key_env = "MY_KEY"
-# summarize_command = "claude -p"
-```
-
-Environment equivalents are `CONTEXT_DROP_SUMMARIZE_PROVIDER`, `_MODEL`, `_BASE_URL`, `_API_KEY_ENV`, and `_COMMAND`. Requirements per provider:
-
-- `anthropic`: `summarize_model` and `summarize_api_key_env` (the name of the variable holding the key). The key is sent as both `x-api-key` and a bearer token, which Claude Code-style gateways accept. `base_url` defaults to `https://api.anthropic.com`.
-- `openai`: `summarize_model`. `base_url` defaults to `https://api.openai.com/v1`; the key variable is required for that endpoint and optional for other OpenAI-compatible servers.
-- `ollama`: `summarize_model`. `base_url` defaults to `http://localhost:11434`.
-- `command`: `summarize_command`. It runs with `sh -c` and receives the prompt on stdin.
-
-Transcript excerpts are sent to the chosen model. Use a local provider when transcripts must stay on the machine.
 
 ### `context-drop start AGENT [--cwd DIR] [--in tmux|herdr|rex|desktop] [--session S] [--window W] [--pane P] [--name NAME] [--command CMD] [--prompt TEXT] [--wait] [--trust] [-- AGENT_ARGS...]`
 
@@ -163,7 +119,7 @@ Start `claude`, `codex`, `pi`, or `opencode` in a new terminal and print its ID 
 - While it waits, `start` reads the new pane. If the agent stops at a folder-trust prompt (Claude Code, Codex) or a first-run screen such as a login, `start` says so on stderr at once and keeps waiting, so you can answer it in the pane. If it is still there at the timeout, `start` reports it instead of timing out silently, and with `--prompt` it fails without typing the prompt into the dialog.
 - `--trust` answers a folder-trust prompt by choosing the option that trusts the folder (it presses Down until that option is selected, then Enter). It never answers login screens, and it never picks an option that also waives approvals.
 
-`--in desktop` opens a new session in the agent's desktop app instead of a terminal: `claude://code/new` for Claude Code, `codex://threads/new` for Codex, in `--cwd`, with `--prompt` filled into the composer. The apps fill the prompt in but never send it, and they create the session only when its first message is sent, so press Enter in the app. `start` waits for a new desktop session in that directory (`--timeout`, 5 minutes by default here) and prints its ID. `--wait` is refused, since the prompt may be edited before it is sent; follow the session with `read` or `watch`. A Codex desktop thread runs in the app's shared server, so `stop` cannot end it. `--session`, `--window`, `--pane`, `--command`, and agent arguments do not apply. Other agents have no desktop app.
+`--in desktop` opens a new session in the agent's desktop app instead of a terminal: `claude://code/new` for Claude Code, `codex://threads/new` for Codex, in `--cwd`, with `--prompt` filled into the composer. The apps fill the prompt in but never send it, and they create the session only when its first message is sent, so press Enter in the app. `start` waits for a new desktop session in that directory (`--timeout`, 5 minutes by default here) and prints its ID. `--wait` is refused, since the prompt may be edited before it is sent; follow the session with `read`. A Codex desktop thread runs in the app's shared server, so `stop` cannot end it. `--session`, `--window`, `--pane`, `--command`, and agent arguments do not apply. Other agents have no desktop app.
 
 `--json` prints the launch result: `mux`, `pane`, `location`, `command`, `registered`, `session`, and `status`, one of `registered`, `waiting_for_trust`, `waiting_for_setup`, `not_registered`, or `started` (with `--timeout 0`).
 
@@ -171,11 +127,11 @@ Start `claude`, `codex`, `pi`, or `opencode` in a new terminal and print its ID 
 
 Interactive setup in the terminal. It covers:
 
-1. The summary model: provider, model, endpoint, and the name of the environment variable holding its key, with an optional test request.
-2. The launcher: the multiplexer and the launch command.
+1. The launcher: the multiplexer and the launch command.
+2. Uploads: the main server or one you run.
 3. The Pi extension, if Pi is installed.
 
-It writes `~/.context-drop/config.toml` at the end. Cancelling saves nothing. Bare `context-drop` offers it when nothing is configured, and `summarize` offers it when no provider is set. Both only offer it at a terminal.
+It writes `~/.context-drop/config.toml` at the end. Cancelling saves nothing. Bare `context-drop` offers it at a terminal when nothing is configured.
 
 ### `context-drop setup pi [--print]`
 

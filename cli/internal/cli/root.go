@@ -65,9 +65,6 @@ func NewRootCommand(build BuildInfo) *cobra.Command {
 	cmd.AddCommand(newVersionCommand(build))
 	cmd.AddCommand(newDeployCommand())
 	cmd.AddCommand(newModsCommand())
-	cmd.AddCommand(newRollbackCommand())
-	cmd.AddCommand(newLogsCommand())
-	cmd.AddCommand(newSecretCommand())
 	cmd.AddCommand(newCallCommand())
 	cmd.AddCommand(newMCPCommand())
 	return cmd

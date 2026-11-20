@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,14 +29,12 @@ func orgMembership() (pool.Membership, error) {
 }
 
 func newDeployCommand() *cobra.Command {
-	var preview, yes bool
-	cmd := &cobra.Command{
+	return &cobra.Command{
 		Use:   "deploy FILE",
-		Short: "Deploy a mod (a TypeScript file) to the org, or update it",
-		Long: "Upload a mod and make it live for the org at once. A mod is one TypeScript file that exports\n" +
-			"`mod({ name, description, input, can, on, run })` from \"@contextdrop/mod\"; see docs/mods.md.\n\n" +
-			"--preview deploys it as <name>@<this machine>, which only this machine can call. A version that adds\n" +
-			"capabilities to its `can` list asks to confirm (or pass --yes).",
+		Short: "Deploy a mod (a TypeScript file) to the org, or replace it",
+		Long: "Upload a mod and make it live for the whole org at once, replacing any mod of the same name. A mod is\n" +
+			"one TypeScript file that exports `mod({ name, description, input, can, run })` from \"@contextdrop/mod\";\n" +
+			"see docs/mods.md.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			m, err := orgMembership()
@@ -48,47 +45,23 @@ func newDeployCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			c := pool.Client{Membership: m}
-			req := map[string]any{"source": string(source), "preview": preview, "agent": callerAgent(cmd.Context())}
-			var plan mods.DeployResult
-			req["dry_run"] = true
-			if err := c.Post(cmd.Context(), "mods/deploy", req, &plan); err != nil {
+			var res mods.Summary
+			req := map[string]any{"source": string(source), "agent": callerAgent(cmd.Context())}
+			if err := (pool.Client{Membership: m}).Post(cmd.Context(), "mods/deploy", req, &res); err != nil {
 				return err
 			}
-			if len(plan.Added) > 0 && !yes {
-				what := fmt.Sprintf("%s v%d can %s", plan.Name, plan.Version, strings.Join(plan.Added, ", "))
-				if !isTerminal(os.Stdin) {
-					return fmt.Errorf("%s, which the current version cannot; run again with --yes to deploy it", what)
-				}
-				fmt.Fprintf(cmd.ErrOrStderr(), "%s. Deploy? [y/N] ", what)
-				answer, _ := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
-				if a := strings.ToLower(strings.TrimSpace(answer)); a != "y" && a != "yes" {
-					return errors.New("not deployed")
-				}
-			}
-			req["dry_run"] = false
-			var res mods.DeployResult
-			if err := c.Post(cmd.Context(), "mods/deploy", req, &res); err != nil {
-				return err
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Deployed %s v%d (can: %s). Call it: context-drop %s\n", res.Name, res.Version,
+			fmt.Fprintf(cmd.OutOrStdout(), "Deployed %s (can: %s). Call it: context-drop %s\n", res.Name,
 				firstNonEmptyString(strings.Join(res.Can, ", "), "nothing"), res.Name)
-			if res.Webhook != "" {
-				fmt.Fprintf(cmd.OutOrStdout(), "Webhook: %s%s (set its secret: context-drop secret set %s webhook)\n", m.Server, res.Webhook, res.Name)
-			}
 			return nil
 		},
 	}
-	cmd.Flags().BoolVar(&preview, "preview", false, "deploy as <name>@<this machine>, callable only from here")
-	cmd.Flags().BoolVar(&yes, "yes", false, "deploy even if this version adds capabilities")
-	return cmd
 }
 
 func newModsCommand() *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "mods",
-		Short: "List the org's mods with their version, capabilities, and author",
+		Short: "List the org's mods with their capabilities and author",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			m, err := orgMembership()
@@ -107,115 +80,15 @@ func newModsCommand() *cobra.Command {
 				return nil
 			}
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
-			fmt.Fprintln(w, "MOD\tVERSION\tCAN\tON\tAUTHOR\tDEPLOYED\tDESCRIPTION")
+			fmt.Fprintln(w, "MOD\tCAN\tAUTHOR\tDEPLOYED\tDESCRIPTION")
 			for _, s := range list {
-				fmt.Fprintf(w, "%s\tv%d\t%s\t%s\t%s\t%s\t%s\n", s.Name, s.Version, firstNonEmptyString(strings.Join(s.Can, ","), "-"),
-					firstNonEmptyString(strings.Join(s.On, ","), "-"), s.Author, ago(s.Deployed), truncateRunes(s.Description, 60))
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.Name, firstNonEmptyString(strings.Join(s.Can, ","), "-"),
+					s.Author, ago(s.Deployed), truncateRunes(s.Description, 60))
 			}
 			return w.Flush()
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
-	return cmd
-}
-
-func newRollbackCommand() *cobra.Command {
-	return &cobra.Command{
-		Use:   "rollback MOD",
-		Short: "Make a mod's previous version live again",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			m, err := orgMembership()
-			if err != nil {
-				return err
-			}
-			var out struct{ Version int }
-			if err := (pool.Client{Membership: m}).Post(cmd.Context(), "mods/"+args[0]+"/rollback", struct{}{}, &out); err != nil {
-				return err
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "%s is back on v%d.\n", args[0], out.Version)
-			return nil
-		},
-	}
-}
-
-func newLogsCommand() *cobra.Command {
-	var asJSON, verbose bool
-	cmd := &cobra.Command{
-		Use:   "logs MOD",
-		Short: "Show a mod's recent calls, errors, and what it printed",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			m, err := orgMembership()
-			if err != nil {
-				return err
-			}
-			var logs []mods.LogEntry
-			if err := (pool.Client{Membership: m}).Post(cmd.Context(), "mods/"+args[0]+"/logs", struct{}{}, &logs); err != nil {
-				return err
-			}
-			if asJSON {
-				return writeJSON(cmd.OutOrStdout(), logs)
-			}
-			if len(logs) == 0 {
-				fmt.Fprintf(cmd.OutOrStdout(), "No calls to %s since the server started.\n", args[0])
-				return nil
-			}
-			for _, e := range logs {
-				who := firstNonEmptyString(e.Caller.Agent, e.Caller.Machine, e.Caller.Mod, e.Event, e.Caller.Kind)
-				status := "ok"
-				if !e.OK {
-					status = "error: " + e.Error
-				}
-				fmt.Fprintf(cmd.OutOrStdout(), "%s  v%d  %s  %dms  %s\n", e.Time.Local().Format("Jan 2 15:04:05"), e.Version, who, e.Millis, status)
-				if verbose && strings.TrimSpace(e.Output) != "" {
-					fmt.Fprintln(cmd.OutOrStdout(), "    "+strings.ReplaceAll(strings.TrimSpace(e.Output), "\n", "\n    "))
-				}
-			}
-			return nil
-		},
-	}
-	cmd.Flags().BoolVar(&asJSON, "json", false, "print JSON")
-	cmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "also show what each call printed")
-	return cmd
-}
-
-func newSecretCommand() *cobra.Command {
-	cmd := &cobra.Command{Use: "secret", Short: "Manage a mod's secrets"}
-	var value string
-	set := &cobra.Command{
-		Use:   "set MOD NAME",
-		Short: "Set a secret a mod reads with secrets.get(NAME) (needs secret:NAME in its can list)",
-		Long:  "The value is read from --value or standard input, and never printed. A mod's webhook is verified\nwith its secret named webhook.",
-		Args:  cobra.ExactArgs(2),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			m, err := orgMembership()
-			if err != nil {
-				return err
-			}
-			if !cmd.Flags().Changed("value") {
-				if isTerminal(os.Stdin) {
-					fmt.Fprintf(cmd.ErrOrStderr(), "Value for %s (then Enter): ", args[1])
-				}
-				line, err := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
-				if err != nil && !errors.Is(err, io.EOF) {
-					return err
-				}
-				value = strings.TrimRight(line, "\r\n")
-			}
-			if value == "" {
-				return errors.New("the value is empty")
-			}
-			if err := (pool.Client{Membership: m}).Post(cmd.Context(), "mods/"+args[0]+"/secret",
-				map[string]string{"key": args[1], "value": value}, nil); err != nil {
-				return err
-			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Set %s for %s.\n", args[1], args[0])
-			return nil
-		},
-	}
-	set.Flags().StringVar(&value, "value", "", "the secret (default: read from standard input)")
-	cmd.AddCommand(set)
 	return cmd
 }
 
@@ -310,7 +183,7 @@ func modHelp(cmd *cobra.Command, name string) error {
 		for _, f := range fields {
 			fmt.Fprintf(cmd.OutOrStdout(), " [--%s %s]", f, schema.Properties[f].Type)
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "\n\nv%d by %s, can: %s\n", s.Version, s.Author, firstNonEmptyString(strings.Join(s.Can, ", "), "nothing"))
+		fmt.Fprintf(cmd.OutOrStdout(), "\n\nBy %s, can: %s\n", s.Author, firstNonEmptyString(strings.Join(s.Can, ", "), "nothing"))
 		for _, f := range fields {
 			p := schema.Properties[f]
 			line := fmt.Sprintf("  --%s %s", f, p.Type)

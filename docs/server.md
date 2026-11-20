@@ -98,7 +98,7 @@ docker run --rm -p 8080:8080 \
 | `CONTEXT_DROP_ADMIN_TOKEN` | to create orgs | unset | Bearer token for `POST /v1/orgs` and `POST /v1/orgs/{org}/join-token`; unset disables both. |
 | `CONTEXT_DROP_ORG_STATE` | no | `<data dir>/orgs.json` | File holding orgs and joined machines (credentials are stored as hashes). |
 | `CONTEXT_DROP_DENO` | for mods | `deno` on PATH | Deno executable that runs [mods](mods.md); without it, mods are off. |
-| `CONTEXT_DROP_MODS_DIR` | no | `<data dir>/mods` | Deployed mods, their key-value data, and secrets. |
+| `CONTEXT_DROP_MODS_DIR` | no | `<data dir>/mods` | Deployed mods and their key-value data. |
 
 ## Orgs
 

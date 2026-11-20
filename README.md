@@ -22,7 +22,7 @@ Context Drop does three things for the agents on your machine:
 
 - **Talk.** Any agent (or you) can message any other session, or a whole group, as its next prompt, and wait for the reply.
 - **Share files.** Hand another agent a local file with `send --file`, or upload one for an expiring link to give a person.
-- **Oversee.** An orchestrator agent can list every session, read its transcript, watch status changes, summarize the lot, and start or stop agents.
+- **Oversee.** An orchestrator agent can list every session, read its transcript, and start or stop agents.
 
 Join several machines to an **org** and the same commands reach agents on all of them. An org can also add its own commands, called **mods**: one TypeScript file each, run on the org's server, called from the CLI or by agents as tools.
 
@@ -42,7 +42,6 @@ context-drop setup
 
 Running `context-drop` with nothing configured offers the same setup. It's a terminal UI with one page per question, and each answer leaves a checkmark line behind:
 
-- **Summary model:** a picker of cheap cloud models (Claude Haiku 5.5, GPT-6 Luna, Claude Sonnet 5.5) and the Ollama models installed on this machine. Cloud models use the key variable set in your shell, and setup tries each one until a test request works. You can also enter an Ollama model name, an OpenAI-compatible server, or a command. Only the variable's name is saved, never the key.
 - **Uploads:** the public main server (`https://contextdrop.dev`), with no token needed, or a server you run.
 - **The launcher:** tmux, herdr, or Rex, and whether agents start directly or through a wrapper such as `dari {agent}`.
 - **The Pi extension**, if Pi is installed.
@@ -114,7 +113,6 @@ If the new agent stops at a folder-trust prompt or a login screen, `start` says 
 ### Coordinate agents
 
 ```sh
-context-drop watch                                     # a line whenever an agent starts, ends, or changes status
 context-drop send --all --in rex --session calm-prairie 'Rebase on main before you push'
 context-drop stop cc-6a79295a                          # --all with filters to stop a group
 ```
@@ -157,15 +155,7 @@ context-drop stuck --machine devbox
 claude mcp add context-drop -- context-drop mcp   # agents get list, read, send, and every mod as tools
 ```
 
-A mod is one TypeScript file that the server runs in its own Deno process for each call, with only the capabilities its `can` list names: the org's `list`, `read`, and `send`, calling other mods, a key-value store, secrets, and outbound HTTP to named public hosts. Events can call it too (an agent starting, ending, or changing status, a cron schedule, or a signed webhook). Every deploy is a version, `--preview` deploys a copy only your machine can call, and `rollback`, `logs`, and `secret set` manage it. The [mods guide](docs/mods.md) has the full API; [`mods/`](mods) has two reference mods, `stuck` and `lock` (an org-wide lock on a path).
-
-### Summarize everything
-
-```sh
-context-drop summarize
-```
-
-`summarize` reads each live session's transcript and asks your chosen model what it is doing, what changed, and whether it needs you. When more than one session is live, it adds an overview across them. Sessions with no new activity reuse their last summary, so repeated runs only pay for what changed. State lives in `~/.context-drop/summaries.json`. Transcript excerpts go to the configured model, so use a local provider if they must stay on your machine.
+A mod is one TypeScript file that the server runs in its own Deno process for each call, with only the capabilities its `can` list names: the org's `list`, `read`, and `send`, calling other mods, and its own key-value store. It has no other network, file, or environment access. Deploying a file with the same name replaces the mod. The [mods guide](docs/mods.md) has the full API; [`mods/`](mods) has two reference mods, `stuck` and `lock` (an org-wide lock on a path).
 
 ### Upload a file
 
@@ -180,17 +170,11 @@ Uploads go to the public server (`https://contextdrop.dev`) by default, or set `
 `context-drop setup` writes these keys to `~/.context-drop/config.toml`. You can also edit the file directly:
 
 ```toml
-summarize_provider = "ollama"                   # anthropic, openai, ollama, or command
-summarize_model = "qwen3.8:27b-mlx"
-summarize_base_url = "http://localhost:11434"
-# summarize_api_key_env = "ANTHROPIC_API_KEY"   # name of the variable holding the key
-# summarize_command = "claude -p"               # for provider "command"
-
 launch_in = "rex"                               # tmux, herdr, rex, or desktop
 launch_command = "dari {agent}"                 # {agent} becomes claude, codex, pi, or opencode
 ```
 
-`summarize` never picks a provider or key from your environment. Without a provider, it stops and offers setup. Flags such as `--provider` and `--in`, and `CONTEXT_DROP_*` environment variables, override the file. The [CLI reference](docs/cli.md) covers every command, flag, and variable.
+Flags such as `--in`, and `CONTEXT_DROP_*` environment variables, override the file. The [CLI reference](docs/cli.md) covers every command, flag, and variable.
 
 ## Limitations
 
@@ -199,7 +183,7 @@ launch_command = "dari {agent}"                 # {agent} becomes claude, codex,
 - Desktop-app sessions have no pane: `start --in desktop` cannot place them with `--session`, `--window`, or `--pane`, `read --screen` does not apply, and the app waits for you to press Enter on the first prompt. A desktop session appears only once its first message is sent.
 - Codex desktop threads are found and sent to through the same `~/.codex` state as terminal Codex; delivery to them is new and less tested than other channels.
 - `daemon` runs in the foreground; keep it running under your own service manager for now. Across an org, `--file`, `read --screen`, and the `--in`/`--session`/`--window`/`--pane` filters work only for this machine's agents.
-- Mods need Deno on the server (`CONTEXT_DROP_DENO`); without it, mods are off. `ask`, `summarize`, and shared files are not available to mods yet.
+- Mods need Deno on the server (`CONTEXT_DROP_DENO`); without it, mods are off.
 - A newly started agent may stop at first-run prompts, such as trusting a folder or logging in, before it reads messages. `start` detects and reports them; only folder-trust prompts can be answered for you (`--trust`).
 
 ## Development

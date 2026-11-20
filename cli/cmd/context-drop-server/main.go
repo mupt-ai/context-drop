@@ -83,7 +83,6 @@ func runWithConfig(ctx context.Context, cfg config.ServerConfig) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	startCleanup(ctx, store, cfg)
-	orgs.Start(ctx)
 
 	return serve(ctx, httpServer, cfg)
 }

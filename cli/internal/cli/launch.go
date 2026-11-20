@@ -166,7 +166,7 @@ func startDesktop(cmd *cobra.Command, opts agents.LaunchOptions, wait, asJSON bo
 	if wait {
 		// The prompt can be edited in the app before it is sent, so there is no
 		// known message to wait for a reply to.
-		return fmt.Errorf("--wait does not work with --in desktop; use `context-drop read` or `watch` once it starts")
+		return fmt.Errorf("--wait does not work with --in desktop; use `context-drop read` once it starts")
 	}
 	if opts.Kind != agents.Claude && opts.Kind != agents.Codex {
 		return fmt.Errorf("%s has no desktop app; --in desktop supports claude and codex", opts.Kind)

@@ -1,21 +1,14 @@
 // @contextdrop/mod: what a mod imports.
 //
 //   import { mod, z } from "@contextdrop/mod"
-//   export default mod({ name, description, input, can, on, webhook, run(input, cd, event) { ... } })
+//   export default mod({ name, description, input, can, run(input, cd) { ... } })
 
-export type Capability = string // "list" | "read" | "send" | "call" | "kv" | `secret:${string}` | `net:${string}`
+export type Capability = "list" | "read" | "send" | "call" | "kv"
 
 export type Caller =
   | { kind: "machine"; machine: string }
   | { kind: "agent"; machine: string; agent: string }
-  | { kind: "event" }
   | { kind: "mod"; mod: string }
-
-export type Event =
-  | { id: string; type: "agent.started" | "agent.ended"; agent: Record<string, unknown> }
-  | { id: string; type: "agent.status"; agent: Record<string, unknown>; from: string; to: string }
-  | { id: string; type: "schedule"; cron: string; time: string }
-  | { id: string; type: "webhook"; headers: Record<string, string>; body: unknown }
 
 export type ContextDrop = {
   caller: Caller
@@ -29,7 +22,6 @@ export type ContextDrop = {
     // cas writes value only if the key still holds expected (undefined = absent); returns whether it wrote.
     cas(key: string, expected: unknown, value: unknown): Promise<boolean>
   }
-  secrets: { get(name: string): string | undefined }
 }
 
 export type ModDefinition<I> = {
@@ -37,9 +29,7 @@ export type ModDefinition<I> = {
   description: string
   input?: Schema<I>
   can?: Capability[]
-  on?: string[]
-  webhook?: { verify: "github" | "slack" | "hmac" }
-  run(input: I, cd: ContextDrop, event?: Event): unknown | Promise<unknown>
+  run(input: I, cd: ContextDrop): unknown | Promise<unknown>
 }
 
 export function mod<I>(definition: ModDefinition<I>): ModDefinition<I> {

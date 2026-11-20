@@ -2,8 +2,6 @@ package mods
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,35 +14,15 @@ import (
 	"time"
 )
 
-// Version is one deploy of a mod.
-type Version struct {
-	Meta
-	Version int       `json:"version"`
-	Author  string    `json:"author"`
-	Created time.Time `json:"created"`
-	SHA     string    `json:"sha"`
-}
-
-// Mod is a mod's history. Owner is set for a preview (`name@machine`), which only that machine sees.
+// Mod is a deployed mod. Deploying again replaces it.
 type Mod struct {
-	Name     string    `json:"name"`
-	Owner    string    `json:"owner,omitempty"`
-	Active   int       `json:"active"`
-	Versions []Version `json:"versions"`
-}
-
-// Current is the active version.
-func (m *Mod) Current() *Version {
-	for i := range m.Versions {
-		if m.Versions[i].Version == m.Active {
-			return &m.Versions[i]
-		}
-	}
-	return nil
+	Meta
+	Author   string    `json:"author"`
+	Deployed time.Time `json:"deployed"`
 }
 
 var (
-	// ErrNotFound means no such mod is visible to the caller.
+	// ErrNotFound means the org has no such mod.
 	ErrNotFound = errors.New("no such mod")
 	nameRE      = regexp.MustCompile(`^[a-z][a-z0-9-]{0,39}$`)
 )
@@ -52,7 +30,7 @@ var (
 // ValidName reports whether name can name a mod.
 func ValidName(name string) bool { return nameRE.MatchString(name) }
 
-// Store keeps mods on disk: <dir>/<org>/<name>/{meta.json, v<N>.ts, kv.json, secrets.json}.
+// Store keeps mods on disk: <dir>/<org>/<name>/{mod.json, mod.ts, kv.json}.
 type Store struct {
 	dir string
 	mu  sync.Mutex
@@ -68,13 +46,13 @@ func OpenStore(dir string) (*Store, error) {
 
 func (s *Store) modDir(org, name string) string { return filepath.Join(s.dir, org, name) }
 
-func writeJSON(path string, v any, mode os.FileMode) error {
+func writeJSON(path string, v any) error {
 	b, err := json.MarshalIndent(v, "", " ")
 	if err != nil {
 		return err
 	}
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, mode); err != nil {
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return err
 	}
 	return os.Rename(tmp, path)
@@ -90,7 +68,7 @@ func readJSON(path string, v any) error {
 
 func (s *Store) load(org, name string) (*Mod, error) {
 	var m Mod
-	if err := readJSON(filepath.Join(s.modDir(org, name), "meta.json"), &m); err != nil {
+	if err := readJSON(filepath.Join(s.modDir(org, name), "mod.json"), &m); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, ErrNotFound
 		}
@@ -99,7 +77,7 @@ func (s *Store) load(org, name string) (*Mod, error) {
 	return &m, nil
 }
 
-// Get returns a mod and its active source.
+// Get returns a mod and its source.
 func (s *Store) Get(org, name string) (*Mod, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -107,11 +85,11 @@ func (s *Store) Get(org, name string) (*Mod, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-	src, err := os.ReadFile(filepath.Join(s.modDir(org, name), fmt.Sprintf("v%d.ts", m.Active)))
+	src, err := os.ReadFile(filepath.Join(s.modDir(org, name), "mod.ts"))
 	return m, string(src), err
 }
 
-// List returns every mod in the org.
+// List returns every mod in the org, by name.
 func (s *Store) List(org string) ([]*Mod, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -132,76 +110,19 @@ func (s *Store) List(org string) ([]*Mod, error) {
 	return out, nil
 }
 
-// Put stores a new version and makes it active.
-func (s *Store) Put(org, name, owner string, meta Meta, source, author string) (Version, error) {
+// Put stores a mod, replacing any earlier one of the same name. Its key-value data is kept.
+func (s *Store) Put(org string, meta Meta, source, author string) (Mod, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	m, err := s.load(org, name)
-	if errors.Is(err, ErrNotFound) {
-		m, err = &Mod{Name: name, Owner: owner}, nil
-	}
-	if err != nil {
-		return Version{}, err
-	}
-	sum := sha256.Sum256([]byte(source))
-	v := Version{Meta: meta, Version: 1, Author: author, Created: time.Now().UTC(), SHA: hex.EncodeToString(sum[:])}
-	if n := len(m.Versions); n > 0 {
-		v.Version = m.Versions[n-1].Version + 1
-	}
-	dir := s.modDir(org, name)
+	dir := s.modDir(org, meta.Name)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return Version{}, err
+		return Mod{}, err
 	}
-	if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("v%d.ts", v.Version)), []byte(source), 0o600); err != nil {
-		return Version{}, err
+	if err := os.WriteFile(filepath.Join(dir, "mod.ts"), []byte(source), 0o600); err != nil {
+		return Mod{}, err
 	}
-	m.Versions = append(m.Versions, v)
-	m.Active = v.Version
-	return v, writeJSON(filepath.Join(dir, "meta.json"), m, 0o600)
-}
-
-// Rollback makes the version before the active one active.
-func (s *Store) Rollback(org, name string) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	m, err := s.load(org, name)
-	if err != nil {
-		return 0, err
-	}
-	prev := 0
-	for _, v := range m.Versions {
-		if v.Version < m.Active && v.Version > prev {
-			prev = v.Version
-		}
-	}
-	if prev == 0 {
-		return 0, fmt.Errorf("%s has no version before %d", name, m.Active)
-	}
-	m.Active = prev
-	return prev, writeJSON(filepath.Join(s.modDir(org, name), "meta.json"), m, 0o600)
-}
-
-// SetSecret stores a secret for one mod.
-func (s *Store) SetSecret(org, name, key, value string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, err := s.load(org, name); err != nil {
-		return err
-	}
-	path := filepath.Join(s.modDir(org, name), "secrets.json")
-	secrets := map[string]string{}
-	_ = readJSON(path, &secrets)
-	secrets[key] = value
-	return writeJSON(path, secrets, 0o600)
-}
-
-// Secrets returns a mod's secrets.
-func (s *Store) Secrets(org, name string) map[string]string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	secrets := map[string]string{}
-	_ = readJSON(filepath.Join(s.modDir(org, name), "secrets.json"), &secrets)
-	return secrets
+	m := Mod{Meta: meta, Author: author, Deployed: time.Now().UTC()}
+	return m, writeJSON(filepath.Join(dir, "mod.json"), m)
 }
 
 // KV runs one key-value operation on a mod's own store. For cas, expected nil means "absent".
@@ -241,7 +162,7 @@ func (s *Store) KV(org, name, op, key string, value, expected json.RawMessage) (
 	if size > 10<<20 {
 		return nil, false, errors.New("a mod's key-value store is limited to 10 MB")
 	}
-	return value, true, writeJSON(path, kv, 0o600)
+	return value, true, writeJSON(path, kv)
 }
 
 func isNull(v json.RawMessage) bool {

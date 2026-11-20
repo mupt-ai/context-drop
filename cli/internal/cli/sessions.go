@@ -428,9 +428,8 @@ func newSetupCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "setup",
 		Short: "Set up the agent launcher, uploads, and the Pi extension",
-		Long: "Walks through choosing the model `context-drop summarize` uses (and which environment variable holds\n" +
-			"its key; the key itself is never saved), and how `context-drop start` opens agents. Saves the answers to\n" +
-			"~/.context-drop/config.toml. `setup pi` installs only the Pi extension.",
+		Long: "Walks through how `context-drop start` opens agents, which server uploads go to, and the Pi extension.\n" +
+			"Saves the answers to ~/.context-drop/config.toml. `setup pi` installs only the Pi extension.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if !isInteractive(cmd) {

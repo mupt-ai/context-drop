@@ -19,7 +19,7 @@ export default mod({
   async run({ path, note, release, force }, cd) {
     const held = ((await cd.kv.get("locks")) ?? {}) as Record<string, Lock>
     if (!path) return Object.values(held)
-    const me = cd.caller.kind === "agent" ? cd.caller.agent : cd.caller.kind === "machine" ? cd.caller.machine : "event"
+    const me = cd.caller.kind === "agent" ? cd.caller.agent : cd.caller.kind === "machine" ? cd.caller.machine : `mod ${cd.caller.mod}`
     // Locks held by agents that have ended are free.
     const live = new Set((await cd.list({})).map((a) => a.id))
     for (;;) {
