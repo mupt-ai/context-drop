@@ -8,7 +8,6 @@ import (
 	"sync"
 	"syscall"
 	"testing"
-	"time"
 )
 
 func TestSelfFindsTheNearestAgentAncestor(t *testing.T) {
@@ -37,23 +36,6 @@ func TestSelfFindsTheNearestAgentAncestor(t *testing.T) {
 	}
 	if _, err := Self(context.Background(), env, idx, 700); !errors.Is(err, ErrNoSelf) {
 		t.Fatalf("outside any session: err = %v", err)
-	}
-}
-
-func TestChanges(t *testing.T) {
-	now := time.Now()
-	prev := []Session{{ID: "a", Status: StatusIdle}, {ID: "b", Status: StatusWorking}, {ID: "c", Status: StatusIdle}}
-	next := []Session{{ID: "a", Status: StatusWorking}, {ID: "c", Status: StatusIdle}, {ID: "d", Status: StatusIdle}}
-	var got []string
-	for _, c := range Changes(prev, next, now) {
-		got = append(got, c.Event+" "+c.ID+" "+c.From+">"+c.To)
-	}
-	want := "ended b working>|started d >idle|status a idle>working"
-	if strings.Join(got, "|") != want {
-		t.Fatalf("changes = %q, want %q", strings.Join(got, "|"), want)
-	}
-	if len(Changes(next, next, now)) != 0 {
-		t.Fatal("no change reported changes")
 	}
 }
 

@@ -129,27 +129,6 @@ func newListCommand() *cobra.Command {
 	return cmd
 }
 
-func newShowCommand() *cobra.Command {
-	return &cobra.Command{
-		Use:   "show TARGET",
-		Short: "Print everything known about one session as JSON",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			env, _, idx, err := discover(cmd.Context())
-			if err != nil {
-				return err
-			}
-			s, err := idx.Resolve(args[0])
-			if err != nil {
-				return err
-			}
-			located := []agents.Session{s}
-			agents.Locate(cmd.Context(), env, located)
-			return writeJSON(cmd.OutOrStdout(), located[0])
-		},
-	}
-}
-
 func newReadCommand() *cobra.Command {
 	var count int
 	var asJSON, screen, allRuns bool
@@ -448,7 +427,7 @@ func priorMatches(ctx context.Context, env *agents.Env, providers []agents.Provi
 func newSetupCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "setup",
-		Short: "Set up the summary model, the agent launcher, and the Pi extension",
+		Short: "Set up the agent launcher, uploads, and the Pi extension",
 		Long: "Walks through choosing the model `context-drop summarize` uses (and which environment variable holds\n" +
 			"its key; the key itself is never saved), and how `context-drop start` opens agents. Saves the answers to\n" +
 			"~/.context-drop/config.toml. `setup pi` installs only the Pi extension.",

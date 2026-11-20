@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -162,28 +161,6 @@ func TestStopRefusesSelfAndStopsOthers(t *testing.T) {
 	}
 }
 
-func TestWatchReportsChanges(t *testing.T) {
-	h := newCoordHost(t)
-	h.onPoll = func(n int, procs map[int]agents.Process) error {
-		switch {
-		case n == 2: // ps fails once; that pass must not read as everyone ending
-			return fmt.Errorf("ps: interrupted")
-		case n == 3: // then b really exits
-			delete(procs, 43)
-		}
-		return nil
-	}
-	stdout, _, err := executeRoot(t, "watch", "--for", "150ms", "--interval", "10ms", "--json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	lines := strings.Split(strings.TrimSpace(stdout), "\n")
-	var c agents.Change
-	if len(lines) != 1 || json.Unmarshal([]byte(lines[0]), &c) != nil || c.Event != agents.ChangeEnded || c.ID != h.b {
-		t.Fatalf("watch = %q", stdout)
-	}
-}
-
 func TestGroupsSkipEverySessionTheCallerMayBe(t *testing.T) {
 	old := selfPID
 	t.Cleanup(func() { selfPID = old })
@@ -196,17 +173,5 @@ func TestGroupsSkipEverySessionTheCallerMayBe(t *testing.T) {
 	got := withoutSelf(context.Background(), env, idx, idx.Sessions)
 	if len(got) != 1 || got[0].ID != "cc-3" {
 		t.Fatalf("group = %+v", got)
-	}
-}
-
-func TestWatchWithAPlaceKeepsSessionsWhosePaneWasMissed(t *testing.T) {
-	prev := []agents.Session{{ID: "a", Location: &agents.Location{Mux: agents.MuxTmux, Pane: "%1"}}}
-	idx := agents.Index{Sessions: []agents.Session{{ID: "a"}, {ID: "b"}}}
-	got := keepUnlocated(nil, prev, idx, true)
-	if len(got) != 1 || got[0].ID != "a" || got[0].Location == nil {
-		t.Fatalf("kept = %+v", got)
-	}
-	if got := keepUnlocated(nil, prev, agents.Index{}, true); len(got) != 0 {
-		t.Fatalf("an ended session was kept: %+v", got)
 	}
 }
