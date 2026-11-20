@@ -6,10 +6,8 @@ import type { ContextDrop, ModDefinition } from "./mod.ts"
 type Invocation = {
   mode: "describe" | "run"
   input?: Record<string, unknown>
-  event?: Record<string, unknown>
   caller?: ContextDrop["caller"]
   api?: { base: string; org: string; token: string }
-  secrets?: Record<string, string>
 }
 
 const out = (v: unknown) => Deno.stdout.writeSync(new TextEncoder().encode("\n" + JSON.stringify(v) + "\n"))
@@ -41,7 +39,6 @@ function client(inv: Invocation): ContextDrop {
       set: async (key, value) => void (await post("kv", { op: "set", key, value })),
       cas: async (key, expected, value) => (await post("kv", { op: "cas", key, expected, value })).written,
     },
-    secrets: { get: (name) => inv.secrets?.[name] },
   }
 }
 
@@ -59,14 +56,12 @@ export async function main(def: ModDefinition<unknown>) {
           description: def.description ?? "",
           input: def.input ? def.input.toJSON() : { type: "object", properties: {}, required: [] },
           can: def.can ?? [],
-          on: def.on ?? [],
-          webhook: def.webhook ?? null,
         },
       })
       return
     }
     const input = def.input ? def.input.parse(inv.input ?? {}) : inv.input ?? {}
-    const result = await def.run(input, client(inv), inv.event as never)
+    const result = await def.run(input, client(inv))
     out({ ok: true, output: result === undefined ? null : result })
   } catch (e) {
     out({ ok: false, error: e instanceof Error ? e.message : String(e) })

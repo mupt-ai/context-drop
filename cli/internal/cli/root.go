@@ -36,9 +36,9 @@ type options struct {
 func NewRootCommand(build BuildInfo) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "context-drop",
-		Short: "Index, read, message, and summarize live coding-agent sessions; share files with expiring links",
+		Short: "Index, read, and message live coding-agent sessions; share files with expiring links",
 		Long: "Context Drop finds every live Claude Code, Codex, Pi, and OpenCode session on this machine,\n" +
-			"gives each (and each subagent) a deterministic ID, and lets you read, message, and summarize them.",
+			"gives each (and each subagent) a deterministic ID, and lets you read and message them.",
 		SilenceUsage:      true,
 		SilenceErrors:     true,
 		CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
@@ -55,26 +55,16 @@ func NewRootCommand(build BuildInfo) *cobra.Command {
 	cmd.AddCommand(newLeaveCommand())
 	cmd.AddCommand(newDaemonCommand())
 	cmd.AddCommand(newListCommand())
-	cmd.AddCommand(newShowCommand())
 	cmd.AddCommand(newReadCommand())
 	cmd.AddCommand(newSendCommand())
 	cmd.AddCommand(newStartCommand())
 	cmd.AddCommand(newStopCommand())
-	cmd.AddCommand(newWatchCommand())
-	cmd.AddCommand(newClaimCommand())
-	cmd.AddCommand(newReleaseCommand())
-	cmd.AddCommand(newClaimsCommand())
-	cmd.AddCommand(newOverlapsCommand())
 	cmd.AddCommand(newUpdateCommand(build))
-	cmd.AddCommand(newSummarizeCommand())
 	cmd.AddCommand(newSetupCommand())
 	cmd.AddCommand(newUploadCommand())
 	cmd.AddCommand(newVersionCommand(build))
 	cmd.AddCommand(newDeployCommand())
 	cmd.AddCommand(newModsCommand())
-	cmd.AddCommand(newRollbackCommand())
-	cmd.AddCommand(newLogsCommand())
-	cmd.AddCommand(newSecretCommand())
 	cmd.AddCommand(newCallCommand())
 	cmd.AddCommand(newMCPCommand())
 	return cmd

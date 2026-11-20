@@ -61,7 +61,7 @@ func TestDeployThenCallAModLikeACommand(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "greet.ts")
 	os.WriteFile(file, []byte(greetMod), 0o600)
 	out, _, err := executeRoot(t, "deploy", file)
-	if err != nil || !strings.Contains(out, "Deployed greet v1 (can: nothing)") {
+	if err != nil || !strings.Contains(out, "Deployed greet (can: nothing)") {
 		t.Fatalf("deploy: %q, %v", out, err)
 	}
 	out, _, err = executeRoot(t, "mods")

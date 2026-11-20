@@ -19,7 +19,6 @@ type CLIConfig struct {
 	UploadToken string
 	DefaultTTL  time.Duration
 	Clipboard   bool
-	Summarize   SummarizeConfig
 	// LaunchIn is the default multiplexer for `context-drop start` (tmux, herdr, rex, or desktop).
 	LaunchIn string
 	// LaunchCommand starts agents instead of their bare executable; "{agent}"
@@ -28,18 +27,6 @@ type CLIConfig struct {
 	// SetupDone records that `context-drop setup` finished, even if every
 	// answer kept a default, so it is not offered again.
 	SetupDone bool
-}
-
-// SummarizeConfig selects the model `context-drop summarize` uses.
-type SummarizeConfig struct {
-	// Provider is anthropic, openai, ollama, or command; empty picks one from the environment.
-	Provider string
-	Model    string
-	BaseURL  string
-	// APIKeyEnv names the environment variable holding the API key.
-	APIKeyEnv string
-	// Command is a shell command that reads the prompt on stdin (provider "command").
-	Command string
 }
 
 func DefaultCLIConfig() CLIConfig {
@@ -77,13 +64,8 @@ func LoadCLIConfig() (CLIConfig, error) {
 		cfg.UploadToken = v
 	}
 	for key, dst := range map[string]*string{
-		"CONTEXT_DROP_SUMMARIZE_PROVIDER":    &cfg.Summarize.Provider,
-		"CONTEXT_DROP_SUMMARIZE_MODEL":       &cfg.Summarize.Model,
-		"CONTEXT_DROP_SUMMARIZE_BASE_URL":    &cfg.Summarize.BaseURL,
-		"CONTEXT_DROP_SUMMARIZE_API_KEY_ENV": &cfg.Summarize.APIKeyEnv,
-		"CONTEXT_DROP_SUMMARIZE_COMMAND":     &cfg.Summarize.Command,
-		"CONTEXT_DROP_LAUNCH_IN":             &cfg.LaunchIn,
-		"CONTEXT_DROP_LAUNCH_COMMAND":        &cfg.LaunchCommand,
+		"CONTEXT_DROP_LAUNCH_IN":      &cfg.LaunchIn,
+		"CONTEXT_DROP_LAUNCH_COMMAND": &cfg.LaunchCommand,
 	} {
 		if v := os.Getenv(key); v != "" {
 			*dst = v
@@ -138,16 +120,6 @@ func loadCLIConfigFile(path string, cfg *CLIConfig) error {
 				return fmt.Errorf("parse clipboard: %w", err)
 			}
 			cfg.Clipboard = b
-		case "summarize_provider":
-			cfg.Summarize.Provider = value
-		case "summarize_model":
-			cfg.Summarize.Model = value
-		case "summarize_base_url":
-			cfg.Summarize.BaseURL = value
-		case "summarize_api_key_env":
-			cfg.Summarize.APIKeyEnv = value
-		case "summarize_command":
-			cfg.Summarize.Command = value
 		case "launch_in":
 			cfg.LaunchIn = value
 		case "launch_command":
@@ -179,11 +151,6 @@ func SaveCLIConfig(cfg CLIConfig) error {
 		cfg.Clipboard,
 	)
 	for _, kv := range [][2]string{
-		{"summarize_provider", cfg.Summarize.Provider},
-		{"summarize_model", cfg.Summarize.Model},
-		{"summarize_base_url", cfg.Summarize.BaseURL},
-		{"summarize_api_key_env", cfg.Summarize.APIKeyEnv},
-		{"summarize_command", cfg.Summarize.Command},
 		{"launch_in", cfg.LaunchIn},
 		{"launch_command", cfg.LaunchCommand},
 	} {
@@ -336,7 +303,7 @@ func LoadCLIConfigFile() (CLIConfig, error) {
 	return cfg, loadCLIConfigFile(path, &cfg)
 }
 
-// Configured reports whether the summarize model or launcher has been set up.
+// Configured reports whether setup has run or the launcher has been set up.
 func (c CLIConfig) Configured() bool {
-	return c.SetupDone || c.Summarize.Provider != "" || c.LaunchIn != "" || c.LaunchCommand != ""
+	return c.SetupDone || c.LaunchIn != "" || c.LaunchCommand != ""
 }

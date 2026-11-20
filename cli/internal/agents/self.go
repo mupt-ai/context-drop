@@ -4,9 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
-	"time"
 )
 
 // ErrNoSelf means the calling process does not run under any live session.
@@ -79,48 +77,3 @@ const (
 	ChangeEnded   = "ended"
 	ChangeStatus  = "status"
 )
-
-// Change is one difference between two discovery passes.
-type Change struct {
-	Time    time.Time `json:"time"`
-	Event   string    `json:"event"`
-	ID      string    `json:"id"`
-	Agent   string    `json:"agent"`
-	From    string    `json:"from,omitempty"`
-	To      string    `json:"to,omitempty"`
-	Session Session   `json:"session"`
-}
-
-// Changes lists sessions that started, ended, or changed status between two
-// discovery passes, ordered by session ID within each kind of event.
-func Changes(prev, next []Session, now time.Time) []Change {
-	before := map[string]Session{}
-	for _, s := range prev {
-		before[s.ID] = s
-	}
-	var out []Change
-	seen := map[string]bool{}
-	for _, s := range next {
-		seen[s.ID] = true
-		old, ok := before[s.ID]
-		switch {
-		case !ok:
-			out = append(out, Change{Time: now, Event: ChangeStarted, ID: s.ID, Agent: s.Agent, To: s.Status, Session: s})
-		case old.Status != s.Status:
-			out = append(out, Change{Time: now, Event: ChangeStatus, ID: s.ID, Agent: s.Agent, From: old.Status, To: s.Status, Session: s})
-		}
-	}
-	for _, s := range prev {
-		if !seen[s.ID] {
-			out = append(out, Change{Time: now, Event: ChangeEnded, ID: s.ID, Agent: s.Agent, From: s.Status, Session: s})
-		}
-	}
-	rank := map[string]int{ChangeEnded: 0, ChangeStarted: 1, ChangeStatus: 2}
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Event != out[j].Event {
-			return rank[out[i].Event] < rank[out[j].Event]
-		}
-		return out[i].ID < out[j].ID
-	})
-	return out
-}

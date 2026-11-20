@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -162,75 +161,6 @@ func TestStopRefusesSelfAndStopsOthers(t *testing.T) {
 	}
 }
 
-func TestClaimListAndRelease(t *testing.T) {
-	h := newCoordHost(t)
-	src := filepath.Join(h.repo, "src")
-	stdout, _, err := executeRoot(t, "claim", src, "--note", "splitting the parser")
-	if err != nil || !strings.Contains(stdout, h.a+" claimed") {
-		t.Fatalf("claim = %q, %v", stdout, err)
-	}
-	_, _, err = executeRoot(t, "claim", filepath.Join(src, "parse.go"), "--as", h.b)
-	if err == nil || !strings.Contains(err.Error(), "claimed by "+h.a) || !strings.Contains(err.Error(), "--force") {
-		t.Fatalf("overlapping claim: %v", err)
-	}
-
-	stdout, _, err = executeRoot(t, "claims", "--json")
-	var claims []agents.Claim
-	if err != nil || json.Unmarshal([]byte(stdout), &claims) != nil || len(claims) != 1 || claims[0].Note != "splitting the parser" {
-		t.Fatalf("claims = %s, %v", stdout, err)
-	}
-	stdout, stderr, err := executeRoot(t, "list")
-	if err != nil || !strings.Contains(stdout, "CLAIMS") || !strings.Contains(stdout, src) {
-		t.Fatalf("list = %q, %v", stdout, err)
-	}
-	if !strings.Contains(stderr, "warning: "+h.a+", "+h.b+" share") && !strings.Contains(stderr, "warning: "+h.b+", "+h.a+" share") {
-		t.Fatalf("list stderr = %q", stderr)
-	}
-
-	stdout, _, err = executeRoot(t, "overlaps")
-	if err != nil || !strings.Contains(stdout, "worktree") {
-		t.Fatalf("overlaps = %q, %v", stdout, err)
-	}
-
-	stdout, _, err = executeRoot(t, "release")
-	if err != nil || !strings.Contains(stdout, h.a+" released") {
-		t.Fatalf("release = %q, %v", stdout, err)
-	}
-	if stdout, _, _ = executeRoot(t, "claims"); !strings.Contains(stdout, "No claims") {
-		t.Fatalf("after release = %q", stdout)
-	}
-}
-
-func TestClaimOutsideAnAgentNeedsAs(t *testing.T) {
-	newCoordHost(t)
-	selfPID = func() int { return 999 }
-	if _, _, err := executeRoot(t, "claim", "docs"); err == nil || !strings.Contains(err.Error(), "--as") {
-		t.Fatalf("err = %v", err)
-	}
-}
-
-func TestWatchReportsChanges(t *testing.T) {
-	h := newCoordHost(t)
-	h.onPoll = func(n int, procs map[int]agents.Process) error {
-		switch {
-		case n == 2: // ps fails once; that pass must not read as everyone ending
-			return fmt.Errorf("ps: interrupted")
-		case n == 3: // then b really exits
-			delete(procs, 43)
-		}
-		return nil
-	}
-	stdout, _, err := executeRoot(t, "watch", "--for", "150ms", "--interval", "10ms", "--json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	lines := strings.Split(strings.TrimSpace(stdout), "\n")
-	var c agents.Change
-	if len(lines) != 1 || json.Unmarshal([]byte(lines[0]), &c) != nil || c.Event != agents.ChangeEnded || c.ID != h.b {
-		t.Fatalf("watch = %q", stdout)
-	}
-}
-
 func TestGroupsSkipEverySessionTheCallerMayBe(t *testing.T) {
 	old := selfPID
 	t.Cleanup(func() { selfPID = old })
@@ -243,17 +173,5 @@ func TestGroupsSkipEverySessionTheCallerMayBe(t *testing.T) {
 	got := withoutSelf(context.Background(), env, idx, idx.Sessions)
 	if len(got) != 1 || got[0].ID != "cc-3" {
 		t.Fatalf("group = %+v", got)
-	}
-}
-
-func TestWatchWithAPlaceKeepsSessionsWhosePaneWasMissed(t *testing.T) {
-	prev := []agents.Session{{ID: "a", Location: &agents.Location{Mux: agents.MuxTmux, Pane: "%1"}}}
-	idx := agents.Index{Sessions: []agents.Session{{ID: "a"}, {ID: "b"}}}
-	got := keepUnlocated(nil, prev, idx, true)
-	if len(got) != 1 || got[0].ID != "a" || got[0].Location == nil {
-		t.Fatalf("kept = %+v", got)
-	}
-	if got := keepUnlocated(nil, prev, agents.Index{}, true); len(got) != 0 {
-		t.Fatalf("an ended session was kept: %+v", got)
 	}
 }

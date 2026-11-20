@@ -50,8 +50,7 @@ func newListCommand() *cobra.Command {
 			"IDs are deterministic: the same session always gets the same ID.\n\n" +
 			"Sessions are found from their processes, wherever they run. WHERE shows the tmux, herdr, or rex pane a\n" +
 			"session runs in, or the desktop app (claude desktop, codex desktop) hosting it; --in, --session, --window,\n" +
-			"and --pane keep only the sessions in that place. CLAIMS shows what each session has claimed with `context-drop claim`. A warning names worktrees that several sessions\n" +
-			"share; `context-drop overlaps` also checks the files they edit.\n\n" +
+			"and --pane keep only the sessions in that place.\n\n" +
 			"Once this machine has joined an org (`context-drop join`), list shows every agent in the org, with IDs\n" +
 			"like <machine>/<session>; --machine and --cwd narrow it, and --local shows only this machine as before.",
 		Args: cobra.NoArgs,
@@ -78,7 +77,6 @@ func newListCommand() *cobra.Command {
 			}
 			printWarnings(cmd.ErrOrStderr(), idx)
 			agents.Locate(cmd.Context(), env, idx.Sessions)
-			attachClaims(cmd, env, idx)
 			sessions := filter.apply(cmd.Context(), env, idx.Sessions)
 			if org.cwd != "" {
 				dir, err := filepath.Abs(org.cwd)
@@ -96,9 +94,6 @@ func newListCommand() *cobra.Command {
 			if topLevelOnly {
 				sessions = topLevel(sessions)
 			}
-			for _, o := range agents.WorktreeOverlaps(sessions) {
-				fmt.Fprintf(cmd.ErrOrStderr(), "warning: %s share %s; see `context-drop overlaps`\n", strings.Join(o.Sessions, ", "), shortPath(o.Path))
-			}
 			if asJSON {
 				if sessions == nil {
 					sessions = []agents.Session{}
@@ -109,16 +104,8 @@ func newListCommand() *cobra.Command {
 				fmt.Fprintln(cmd.OutOrStdout(), "No live agent sessions.")
 				return nil
 			}
-			claimed := false
-			for _, s := range sessions {
-				claimed = claimed || len(s.Claims) > 0
-			}
 			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 4, 2, ' ', 0)
-			header := "ID\tAGENT\tSTATUS\tACTIVE\tCWD\tNAME\tWHERE"
-			if claimed {
-				header += "\tCLAIMS"
-			}
-			fmt.Fprintln(w, header)
+			fmt.Fprintln(w, "ID\tAGENT\tSTATUS\tACTIVE\tCWD\tNAME\tWHERE")
 			for _, s := range sessions {
 				id := s.ID
 				if s.Subagent {
@@ -130,11 +117,7 @@ func newListCommand() *cobra.Command {
 				} else if s.App != "" {
 					where = agents.AppLabel(s.App)
 				}
-				row := fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%s\t%s", id, s.Agent, s.Status, ago(s.UpdatedAt), shortPath(s.Cwd), label(s), where)
-				if claimed {
-					row += "\t" + truncateRunes(strings.Join(s.Claims, ", "), 60)
-				}
-				fmt.Fprintln(w, row)
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", id, s.Agent, s.Status, ago(s.UpdatedAt), shortPath(s.Cwd), label(s), where)
 			}
 			return w.Flush()
 		},
@@ -144,44 +127,6 @@ func newListCommand() *cobra.Command {
 	filter.register(cmd, "only show")
 	org.register(cmd, "only show")
 	return cmd
-}
-
-// attachClaims fills in each session's live claims. A claims file that
-// cannot be read is reported and otherwise ignored.
-func attachClaims(cmd *cobra.Command, env *agents.Env, idx agents.Index) {
-	claims, err := env.Claims().Live(idx)
-	if err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "warning: claims: %v\n", err)
-		return
-	}
-	for _, c := range claims {
-		for i := range idx.Sessions {
-			if idx.Sessions[i].ID == c.Session {
-				idx.Sessions[i].Claims = append(idx.Sessions[i].Claims, c.Target)
-			}
-		}
-	}
-}
-
-func newShowCommand() *cobra.Command {
-	return &cobra.Command{
-		Use:   "show TARGET",
-		Short: "Print everything known about one session as JSON",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			env, _, idx, err := discover(cmd.Context())
-			if err != nil {
-				return err
-			}
-			s, err := idx.Resolve(args[0])
-			if err != nil {
-				return err
-			}
-			located := []agents.Session{s}
-			agents.Locate(cmd.Context(), env, located)
-			return writeJSON(cmd.OutOrStdout(), located[0])
-		},
-	}
 }
 
 func newReadCommand() *cobra.Command {
@@ -482,10 +427,9 @@ func priorMatches(ctx context.Context, env *agents.Env, providers []agents.Provi
 func newSetupCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "setup",
-		Short: "Set up the summary model, the agent launcher, and the Pi extension",
-		Long: "Walks through choosing the model `context-drop summarize` uses (and which environment variable holds\n" +
-			"its key; the key itself is never saved), and how `context-drop start` opens agents. Saves the answers to\n" +
-			"~/.context-drop/config.toml. `setup pi` installs only the Pi extension.",
+		Short: "Set up the agent launcher, uploads, and the Pi extension",
+		Long: "Walks through how `context-drop start` opens agents, which server uploads go to, and the Pi extension.\n" +
+			"Saves the answers to ~/.context-drop/config.toml. `setup pi` installs only the Pi extension.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if !isInteractive(cmd) {

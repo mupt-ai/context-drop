@@ -69,12 +69,10 @@ type API struct {
 }
 
 type invocation struct {
-	Mode    string            `json:"mode"`
-	Input   json.RawMessage   `json:"input,omitempty"`
-	Event   any               `json:"event,omitempty"`
-	Caller  any               `json:"caller,omitempty"`
-	API     *API              `json:"api,omitempty"`
-	Secrets map[string]string `json:"secrets,omitempty"`
+	Mode   string          `json:"mode"`
+	Input  json.RawMessage `json:"input,omitempty"`
+	Caller any             `json:"caller,omitempty"`
+	API    *API            `json:"api,omitempty"`
 }
 
 type outcome struct {
@@ -88,25 +86,26 @@ type ErrMod struct{ Message string }
 
 func (e *ErrMod) Error() string { return e.Message }
 
-// exec runs one call and returns the mod's output and what it printed.
-func (r *Runtime) exec(ctx context.Context, source string, inv invocation, allowNet []string, timeout time.Duration) (json.RawMessage, string, error) {
+// exec runs one call and returns the mod's output. allowNet is the one host the mod may reach (the
+// server, for its own endpoints); empty means no network at all.
+func (r *Runtime) exec(ctx context.Context, source string, inv invocation, allowNet string, timeout time.Duration) (json.RawMessage, error) {
 	call, err := os.MkdirTemp(r.dir, "call-")
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	defer os.RemoveAll(call)
 	importMap := fmt.Sprintf(`{"imports":{"@contextdrop/mod":%q}}`, "file://"+filepath.Join(r.dir, "mod.ts"))
 	entry := fmt.Sprintf("import def from \"./mod.ts\"\nimport { main } from %q\nawait main(def)\n", "file://"+filepath.Join(r.dir, "runner.ts"))
 	for name, body := range map[string]string{"mod.ts": source, "entry.ts": entry, "import_map.json": importMap} {
 		if err := os.WriteFile(filepath.Join(call, name), []byte(body), 0o600); err != nil {
-			return nil, "", err
+			return nil, err
 		}
 	}
 	args := []string{"run", "--quiet", "--no-prompt", "--no-config", "--no-remote", "--no-npm",
 		"--import-map=" + filepath.Join(call, "import_map.json"),
 		"--v8-flags=--max-old-space-size=" + strconv.Itoa(r.MemoryMB)}
-	if len(allowNet) > 0 {
-		args = append(args, "--allow-net="+strings.Join(allowNet, ","))
+	if allowNet != "" {
+		args = append(args, "--allow-net="+allowNet)
 	}
 	args = append(args, filepath.Join(call, "entry.ts"))
 	ctx, cancel := context.WithTimeout(ctx, timeout)
@@ -122,7 +121,7 @@ func (r *Runtime) exec(ctx context.Context, source string, inv invocation, allow
 	runErr := cmd.Run()
 	logs := tail(stderr.String(), 8<<10)
 	if ctx.Err() == context.DeadlineExceeded {
-		return nil, logs, &ErrMod{Message: fmt.Sprintf("the mod ran longer than %s and was stopped", timeout)}
+		return nil, &ErrMod{Message: fmt.Sprintf("the mod ran longer than %s and was stopped", timeout)}
 	}
 	var res outcome
 	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
@@ -131,12 +130,12 @@ func (r *Runtime) exec(ctx context.Context, source string, inv invocation, allow
 		if msg == "" && runErr != nil {
 			msg = runErr.Error()
 		}
-		return nil, logs, &ErrMod{Message: "the mod did not run: " + tail(msg, 2000)}
+		return nil, &ErrMod{Message: "the mod did not run: " + tail(msg, 2000)}
 	}
 	if !res.OK {
-		return nil, logs, &ErrMod{Message: res.Error}
+		return nil, &ErrMod{Message: res.Error}
 	}
-	return res.Output, logs, nil
+	return res.Output, nil
 }
 
 func tail(s string, n int) string {
@@ -152,18 +151,11 @@ type Meta struct {
 	Description string          `json:"description"`
 	Input       json.RawMessage `json:"input"`
 	Can         []string        `json:"can"`
-	On          []string        `json:"on"`
-	Webhook     *Webhook        `json:"webhook,omitempty"`
-}
-
-// Webhook is a mod's public URL and how its requests are verified.
-type Webhook struct {
-	Verify string `json:"verify"` // "github", "slack", or "hmac"
 }
 
 // Describe loads source without running it and returns its metadata.
 func (r *Runtime) Describe(ctx context.Context, source string) (Meta, error) {
-	out, _, err := r.exec(ctx, source, invocation{Mode: "describe"}, nil, 30*time.Second)
+	out, err := r.exec(ctx, source, invocation{Mode: "describe"}, "", 30*time.Second)
 	if err != nil {
 		return Meta{}, err
 	}
