@@ -15,7 +15,8 @@ import (
 const AskTimeout = 5 * time.Minute
 
 // Ask answers a question from a copy of a Claude Code session: the session is forked, the copy answers
-// with read-only tools, and nothing is saved, so the session itself is never interrupted or changed.
+// with read-only tools and no hooks or MCP servers, and nothing is saved, so the session itself is never
+// interrupted or changed.
 // It suits questions about what the agent knows or has done; anything the agent must agree to or act
 // on is a message (Send).
 func Ask(ctx context.Context, env *Env, s Session, question string, opts SendOptions) (string, error) {
@@ -35,7 +36,11 @@ func Ask(ctx context.Context, env *Env, s Session, question string, opts SendOpt
 	defer cancel()
 	cmd := exec.CommandContext(ctx, env.Bin("claude"), "-p",
 		"--resume", s.NativeID, "--fork-session", "--no-session-persistence",
+		// Read-only, and nothing of the project's runs: no hooks (they could change the workspace) and no
+		// MCP servers (one could message the very session this copy must not interrupt).
 		"--tools", "Read,Grep,Glob",
+		"--settings", `{"disableAllHooks":true}`,
+		"--strict-mcp-config",
 		"--output-format", "text",
 		askPrompt(question, opts))
 	cmd.Dir = s.Cwd
@@ -49,6 +54,10 @@ func Ask(ctx context.Context, env *Env, s Session, question string, opts SendOpt
 		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {
 			msg = err.Error()
+		}
+		if strings.Contains(msg, "tool_removal") {
+			return "", fmt.Errorf("asking %s: the model endpoint (ANTHROPIC_BASE_URL) rejected the copy, because it does not support "+
+				"changing a conversation's tools; ask through an endpoint that supports Claude Code's mid-conversation tool changes", s.ID)
 		}
 		return "", fmt.Errorf("asking %s: %s", s.ID, oneLine(msg, 300))
 	}

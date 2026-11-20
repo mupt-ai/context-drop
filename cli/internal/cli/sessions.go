@@ -608,9 +608,6 @@ func sendAsk(cmd *cobra.Command, target, question, from string) error {
 	}
 	opts := agents.SendOptions{From: from}
 	if me, err := agents.Self(cmd.Context(), env, idx, selfPID()); err == nil {
-		if me.ID == s.ID {
-			return fmt.Errorf("%s is this session; ask another one", s.ID)
-		}
 		opts.ReplyTo = me.ID
 	}
 	answer, err := agents.Ask(cmd.Context(), env, s, question, opts)

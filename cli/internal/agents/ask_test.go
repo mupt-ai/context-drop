@@ -32,7 +32,7 @@ func TestAskAnswersFromAReadOnlyCopyOfTheSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{dir, "--resume\n6a79295a-0000", "--fork-session", "--no-session-persistence",
-		"--tools\nRead,Grep,Glob", "Agent laptop/cc-99999999 (not your user) asks", "temporary copy", "does parse() set stmt.sql_text?"} {
+		"--tools\nRead,Grep,Glob", `{"disableAllHooks":true}`, "--strict-mcp-config", "Agent laptop/cc-99999999 (not your user) asks", "temporary copy", "does parse() set stmt.sql_text?"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("answer lacks %q:\n%s", want, got)
 		}
