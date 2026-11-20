@@ -40,7 +40,7 @@ Run a mod. Flags fill its input and are converted to the input's types (a repeat
 
 #### `context-drop mcp`
 
-Run an MCP server on standard input and output that gives an agent `list`, `read`, `send`, and every mod as tools, and tells it when the list changes, so a newly deployed mod reaches running agents without a restart. Add it to Claude Code with `claude mcp add context-drop -- context-drop mcp`.
+Run an MCP server on standard input and output that gives an agent `list`, `read`, `send`, `ask`, and every mod as tools, and tells it when the list changes, so a newly deployed mod reaches running agents without a restart. Add it to Claude Code with `claude mcp add context-drop -- context-drop mcp`.
 
 ### `context-drop leave [--force]`
 
@@ -73,6 +73,10 @@ Finding Rex blocks runs `rex` with `--autostart=false`, so `list` never starts a
 Print the last `N` transcript messages (default 20, `0` for all). Tool calls appear as `[tool: name]`.
 
 `--screen` prints the last `N` lines (default 40) of the tmux, herdr, or Rex pane the session runs in instead. Use it to see prompts and dialogs that never reach the transcript.
+
+### `context-drop send --ask TARGET QUESTION...`
+
+Answer QUESTION from the agent's transcript, without interrupting it. The end of the transcript (its user's prompts and its replies, up to about 100k tokens) goes to `claude -p --model haiku --no-session-persistence --tools Read,Grep,Glob --strict-mcp-config` with hooks off, run in the agent's directory on the machine that runs it, so the answerer can also read files there but not change them. Nothing is saved and the agent never sees the question. The answerer is told who asked and to say so when the transcript doesn't tell. Use it for what the agent knows or has done; anything it must agree to or act on is a message. It works for every kind of agent, including Claude Code subagents. Across an org, the owning machine's daemon answers; machines shared `--read-only` answer too, since nothing changes.
 
 ### `context-drop send TARGET MESSAGE... [--file PATH]... [--wait] [--timeout D] [--from NAME]`
 ### `context-drop send --all [--agent KIND] [--in MUX] [--session S] [--window W] [--pane P] MESSAGE...`

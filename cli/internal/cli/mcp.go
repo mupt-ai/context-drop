@@ -18,7 +18,7 @@ func newMCPCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "mcp",
 		Short: "Serve the org's commands and mods to an agent as MCP tools (stdio)",
-		Long: "Run an MCP server on standard input and output. Agents get list, read, and send, plus every mod the\n" +
+		Long: "Run an MCP server on standard input and output. Agents get list, read, send, and ask, plus every mod the\n" +
 			"org has deployed, as tools; when a mod is deployed or removed, the agent is told the list changed.\n\n" +
 			"Add it to Claude Code with: claude mcp add context-drop -- context-drop mcp",
 		Args: cobra.NoArgs,
@@ -78,6 +78,10 @@ var builtinTools = []map[string]any{
 		"inputSchema": map[string]any{"type": "object", "required": []string{"id", "text"}, "properties": map[string]any{
 			"id":   map[string]any{"type": "string", "description": "agent ID, like laptop/cc-1a2b3c4d"},
 			"text": map[string]any{"type": "string", "description": "the whole message"}}}},
+	{"name": "ask", "description": "Ask an agent a question and get the answer from its transcript; the agent itself is not interrupted. Use it for what the agent knows or has done; use send for anything it must agree to or act on.",
+		"inputSchema": map[string]any{"type": "object", "required": []string{"id", "question"}, "properties": map[string]any{
+			"id":       map[string]any{"type": "string", "description": "agent ID, like laptop/cc-1a2b3c4d"},
+			"question": map[string]any{"type": "string", "description": "the whole question"}}}},
 }
 
 func (s *mcpServer) modList(ctx context.Context) ([]mods.Summary, error) {
@@ -90,7 +94,7 @@ func (s *mcpServer) tools(ctx context.Context) []map[string]any {
 	tools := append([]map[string]any{}, builtinTools...)
 	list, _ := s.modList(ctx)
 	for _, m := range list {
-		if m.Name == "list" || m.Name == "read" || m.Name == "send" {
+		if m.Name == "list" || m.Name == "read" || m.Name == "send" || m.Name == "ask" {
 			continue // a built-in name always wins
 		}
 		schema := map[string]any{}
@@ -133,6 +137,14 @@ func (s *mcpServer) call(ctx context.Context, name string, args json.RawMessage)
 			return "", err
 		}
 		out = res
+	case "ask":
+		var in struct{ ID, Question string }
+		_ = json.Unmarshal(args, &in)
+		res, err := s.client.Ask(ctx, pool.AskRequest{ID: in.ID, Question: in.Question, Agent: s.agent})
+		if err != nil {
+			return "", err
+		}
+		return res.Answer, nil
 	default:
 		var res struct {
 			Output json.RawMessage `json:"output"`

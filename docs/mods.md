@@ -61,7 +61,7 @@ context-drop call NAME [--FIELD VALUE]... [--json INPUT] [--print-json]
 
 ## Agents
 
-`context-drop mcp` is an MCP server that gives an agent `list`, `read`, `send`, and every deployed mod as tools, and tells the agent when the list changes, so a new mod reaches it without a restart:
+`context-drop mcp` is an MCP server that gives an agent `list`, `read`, `send`, `ask`, and every deployed mod as tools, and tells the agent when the list changes, so a new mod reaches it without a restart:
 
 ```bash
 claude mcp add context-drop -- context-drop mcp

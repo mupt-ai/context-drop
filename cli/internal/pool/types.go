@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // Agent is one agent in the org: a main session, a subagent, or a workflow agent.
@@ -175,6 +176,33 @@ type LocalSend struct {
 	Text    string `json:"text"`
 	From    string `json:"from,omitempty"`
 	ReplyTo string `json:"reply_to,omitempty"` // the sending agent's org ID
+}
+
+// AskWait is how long the server waits for a machine to answer an ask; the answer itself is given five
+// minutes there.
+const AskWait = 6 * time.Minute
+
+// AskRequest is the input of `ask`: one question for one agent.
+type AskRequest struct {
+	ID       string `json:"id"`
+	Question string `json:"question"`
+	From     string `json:"from,omitempty"`
+	// Agent is the asking agent's session on the calling machine, if an agent asks.
+	Agent string `json:"agent,omitempty"`
+}
+
+// AskResult is the answer to an ask.
+type AskResult struct {
+	ID     string `json:"id"`
+	Answer string `json:"answer"`
+}
+
+// LocalAsk is the input of an "ask" call to a daemon.
+type LocalAsk struct {
+	ID       string `json:"id"`
+	Question string `json:"question"`
+	From     string `json:"from,omitempty"`
+	ReplyTo  string `json:"reply_to,omitempty"` // the asking agent's org ID
 }
 
 var machineName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)

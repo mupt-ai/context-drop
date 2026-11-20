@@ -67,6 +67,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/{org}/list", s.authed(s.handleList))
 	mux.HandleFunc("POST /v1/{org}/read", s.authed(s.handleRead))
 	mux.HandleFunc("POST /v1/{org}/send", s.authed(s.handleSend))
+	mux.HandleFunc("POST /v1/{org}/ask", s.authed(s.handleAsk))
 	mux.HandleFunc("POST /v1/{org}/mods", s.authed(s.handleMods))
 	mux.HandleFunc("POST /v1/{org}/mods/deploy", s.authed(s.handleDeploy))
 	mux.HandleFunc("POST /v1/{org}/mods/{name}/call", s.authed(s.handleCall))
@@ -411,6 +412,11 @@ func (s *Server) call(ctx context.Context, org, name, method string, input any) 
 	if timeout <= 0 {
 		timeout = 60 * time.Second
 	}
+	return s.callFor(ctx, timeout, org, name, method, input)
+}
+
+// callFor is call with its own time limit.
+func (s *Server) callFor(ctx context.Context, timeout time.Duration, org, name, method string, input any) (json.RawMessage, *pool.Error) {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	raw, err := json.Marshal(input)
@@ -482,6 +488,45 @@ func (s *Server) handleRead(w http.ResponseWriter, r *http.Request, c caller) {
 		return
 	}
 	out, perr := s.call(r.Context(), c.org, machine, "read", pool.LocalRead{ID: session, ReadOptions: in.ReadOptions})
+	if perr != nil {
+		writeError(w, statusFor(perr), perr.Code, perr.Message)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(out)
+}
+
+// handleAsk answers a question about one agent from its transcript, on the machine that runs it. It reads the
+// agent's context and changes nothing, so it needs the same capability as read.
+func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request, c caller) {
+	if !allowed(w, c, "read") {
+		return
+	}
+	var in pool.AskRequest
+	if !decode(w, r, &in) {
+		return
+	}
+	if strings.TrimSpace(in.Question) == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "question is empty")
+		return
+	}
+	machine, session, ok := pool.SplitID(in.ID)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "bad_request", fmt.Sprintf("%q is not an agent ID like machine/cc-1234abcd", in.ID))
+		return
+	}
+	from := sender(in.From, c.machine)
+	if c.mod != nil {
+		from, in.Agent = "mod "+c.mod.Mod, ""
+	}
+	replyTo := ""
+	if in.Agent != "" {
+		if _, _, ok := pool.SplitID(c.machine + "/" + in.Agent); ok {
+			replyTo = c.machine + "/" + in.Agent
+		}
+	}
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(pool.AskWait + time.Minute))
+	out, perr := s.callFor(r.Context(), pool.AskWait, c.org, machine, "ask", pool.LocalAsk{ID: session, Question: in.Question, From: from, ReplyTo: replyTo})
 	if perr != nil {
 		writeError(w, statusFor(perr), perr.Code, perr.Message)
 		return

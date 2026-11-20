@@ -50,6 +50,10 @@ func (r *remoteMachine) Read(_ context.Context, in pool.LocalRead) (pool.ReadRes
 }
 
 // Send records the message, and the agent answers it.
+func (r *remoteMachine) Ask(_ context.Context, in pool.LocalAsk) (pool.AskResult, error) {
+	return pool.AskResult{ID: "devbox/" + in.ID, Answer: "yes, from a copy of " + in.ID}, nil
+}
+
 func (r *remoteMachine) Send(_ context.Context, in pool.LocalSend) (pool.SendResult, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -124,6 +128,15 @@ func TestJoinThenListReadAndSendAcrossTheOrg(t *testing.T) {
 	out, _, err = executeRoot(t, "send", "--wait", "--timeout", "5s", "devbox/cx-00000003", "run the plan")
 	if err != nil || !strings.Contains(out, "done: run the plan") {
 		t.Fatalf("send --wait: %q, %v", out, err)
+	}
+
+	// --ask is answered by a copy on the machine that runs the agent.
+	out, _, err = executeRoot(t, "send", "--ask", "devbox/cx-00000003", "is", "the", "plan", "ready?")
+	if err != nil || strings.TrimSpace(out) != "yes, from a copy of cx-00000003" {
+		t.Fatalf("send --ask: %q, %v", out, err)
+	}
+	if _, _, err := executeRoot(t, "send", "--ask", "--wait", "devbox/cx-00000003", "q"); err == nil {
+		t.Fatal("--ask with --wait was accepted")
 	}
 
 	out, _, err = executeRoot(t, "leave")

@@ -69,6 +69,14 @@ func (s Shared) Read(ctx context.Context, in LocalRead) (ReadResult, error) {
 	return s.Local.Read(ctx, in)
 }
 
+// Ask answers a question about a shared agent from its transcript. It changes nothing, so read-only sharing allows it.
+func (s Shared) Ask(ctx context.Context, in LocalAsk) (AskResult, error) {
+	if err := s.admit(ctx, in.ID); err != nil {
+		return AskResult{}, err
+	}
+	return s.Local.Ask(ctx, in)
+}
+
 // Send delivers to a shared agent, unless the machine is read-only.
 func (s Shared) Send(ctx context.Context, in LocalSend) (SendResult, error) {
 	if s.ReadOnly {

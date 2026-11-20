@@ -153,6 +153,12 @@ func (d Daemon) dispatch(ctx context.Context, call Frame) (any, error) {
 			return nil, err
 		}
 		return d.Local.Send(ctx, in)
+	case "ask":
+		var in LocalAsk
+		if err := json.Unmarshal(call.Input, &in); err != nil {
+			return nil, err
+		}
+		return d.Local.Ask(ctx, in)
 	}
 	return nil, Errorf("unsupported", "this machine's Context Drop does not support %q; update it", call.Name)
 }

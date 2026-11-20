@@ -13,6 +13,7 @@ type Local interface {
 	Agents(ctx context.Context) ([]Agent, error)
 	Read(ctx context.Context, in LocalRead) (ReadResult, error)
 	Send(ctx context.Context, in LocalSend) (SendResult, error)
+	Ask(ctx context.Context, in LocalAsk) (AskResult, error)
 }
 
 // Machine is the Local for the sessions on this computer.
@@ -91,6 +92,23 @@ func (m Machine) Send(ctx context.Context, in LocalSend) (SendResult, error) {
 		return SendResult{}, err
 	}
 	return SendResult{ID: m.Name + "/" + s.ID, Delivered: true, Via: got.Delivery}, nil
+}
+
+// Ask answers a question about a local session from its transcript, without interrupting it.
+func (m Machine) Ask(ctx context.Context, in LocalAsk) (AskResult, error) {
+	env, providers, idx, err := m.discover(ctx)
+	if err != nil {
+		return AskResult{}, err
+	}
+	s, err := resolve(idx, in.ID)
+	if err != nil {
+		return AskResult{}, err
+	}
+	answer, err := agents.Ask(ctx, env, providers, s, in.Question, agents.SendOptions{From: in.From, ReplyTo: in.ReplyTo})
+	if err != nil {
+		return AskResult{}, Errorf("ask_failed", "%v", err)
+	}
+	return AskResult{ID: m.Name + "/" + s.ID, Answer: answer}, nil
 }
 
 // resolve finds a session by its exact local ID; org IDs are never prefixes.
