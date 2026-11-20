@@ -73,9 +73,10 @@ oc-079ea5e4    opencode  idle     12m     ~/code/cli   Quick acknowledgment requ
 context-drop read cc-6a79295a                          # recent transcript
 context-drop read cc-6a79295a --screen                 # its terminal pane, dialogs included
 context-drop send cc-6a79295a 'Also update the docs' --wait
+context-drop send --ask cc-6a79295a 'Which file has the retry logic?'
 ```
 
-`send` delivers the message as the session's next prompt. A busy agent gets it as a queued follow-up. `--wait` prints the reply. `--file PATH` (repeatable) lists a local file's absolute path under the message so the other agent reads it in place; nothing is uploaded.
+`send` delivers the message as the session's next prompt. A busy agent gets it as a queued follow-up. `--wait` prints the reply. `--file PATH` (repeatable) lists a local file's absolute path under the message so the other agent reads it in place; nothing is uploaded. `--ask` answers a question from a read-only copy of a Claude Code session instead, so the agent itself is never interrupted and never sees it; use it for what the agent knows, and a message for anything it must act on.
 
 An ID is a short hash of the agent and its native session ID, so a session always keeps the same ID. Commands also accept the native ID, a unique prefix of either, or the session name. Only live sessions appear: an agent process must be running.
 
@@ -152,7 +153,7 @@ export default mod({
 ```sh
 context-drop deploy stuck.ts       # live for the whole org at once
 context-drop stuck --machine devbox
-claude mcp add context-drop -- context-drop mcp   # agents get list, read, send, and every mod as tools
+claude mcp add context-drop -- context-drop mcp   # agents get list, read, send, ask, and every mod as tools
 ```
 
 A mod is one TypeScript file that the server runs in its own Deno process for each call, with only the capabilities its `can` list names: the org's `list`, `read`, and `send`, calling other mods, and its own key-value store. It has no other network, file, or environment access. Deploying a file with the same name replaces the mod. The [mods guide](docs/mods.md) has the full API; [`mods/`](mods) has two reference mods, `stuck` and `lock` (an org-wide lock on a path).

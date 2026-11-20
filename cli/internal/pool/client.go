@@ -116,6 +116,13 @@ func (c Client) Send(ctx context.Context, req SendRequest) (SendResponse, error)
 	return out, c.call(ctx, "send", req, &out)
 }
 
+// Ask answers a question from a copy of one agent's session, without interrupting it. A copy can take
+// minutes to answer, so it waits as long as Post.
+func (c Client) Ask(ctx context.Context, req AskRequest) (AskResult, error) {
+	var out AskResult
+	return out, c.Post(ctx, "ask", req, &out)
+}
+
 // Post calls any org endpoint by path, such as "mods/deploy" or "call/standup". Mods can run for up
 // to 15 minutes, so it waits longer than the other calls.
 func (c Client) Post(ctx context.Context, path string, in, out any) error {

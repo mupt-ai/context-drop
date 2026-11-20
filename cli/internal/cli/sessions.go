@@ -217,12 +217,12 @@ func newReadCommand() *cobra.Command {
 func newSendCommand() *cobra.Command {
 	var from string
 	var files []string
-	var wait, all bool
+	var wait, all, ask bool
 	var timeout time.Duration
 	var filter sessionFilter
 	var org orgFlags
 	cmd := &cobra.Command{
-		Use:   "send TARGET MESSAGE... | send --all [filters] MESSAGE...",
+		Use:   "send TARGET MESSAGE... | send --all [filters] MESSAGE... | send --ask TARGET QUESTION...",
 		Short: "Send a message to a live session or subagent, or to a group of sessions",
 		Long: "Deliver MESSAGE into a live session as if it were the next prompt. Use - as MESSAGE to read it from stdin.\n\n" +
 			"--all sends it to every live top-level session that matches --agent, --in, --session, --window, and --pane,\n" +
@@ -231,7 +231,10 @@ func newSendCommand() *cobra.Command {
 			"the Context Drop Pi extension (see `context-drop setup pi`), or for Pi sessions without it, the tmux, herdr,\n" +
 			"or rex pane they run in. Claude Code subagents receive messages through their parent session.\n\n" +
 			"--file hands the recipient a file on this machine: its absolute path is listed under the message, so the\n" +
-			"agent reads it in place and nothing is uploaded. Use `context-drop upload` for a link to share elsewhere.",
+			"agent reads it in place and nothing is uploaded. Use `context-drop upload` for a link to share elsewhere.\n\n" +
+			"--ask answers QUESTION from a copy of a Claude Code session instead: the copy can only read, nothing it does\n" +
+			"is kept, and the session itself never sees the question, so it keeps working. Use it for what the agent knows\n" +
+			"or has done; anything it must agree to or act on is a message.",
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if filter.set() && !all {
@@ -253,6 +256,12 @@ func newSendCommand() *cobra.Command {
 				text = string(data)
 			}
 			text = strings.TrimSpace(text)
+			if ask {
+				if all || wait || len(files) > 0 || filter.set() || org.set() {
+					return fmt.Errorf("--ask takes one TARGET and a question, without --all, --wait, --file, or filters")
+				}
+				return sendAsk(cmd, args[0], text, from)
+			}
 			if !all || !org.local {
 				// An org target, or --all across a joined org, goes through the server.
 				var target pool.Selector
@@ -399,6 +408,7 @@ func newSendCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&wait, "wait", false, "wait for the reply and print it")
 	cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Minute, "how long --wait waits")
 	cmd.Flags().BoolVar(&all, "all", false, "send to every live top-level session that matches the filters, except your own")
+	cmd.Flags().BoolVar(&ask, "ask", false, "answer the question from a copy of a Claude Code session, without interrupting it")
 	filter.register(cmd, "with --all, only send to")
 	org.register(cmd, "with --all, only send to")
 	return cmd
@@ -568,4 +578,45 @@ func withFiles(text string, files []string) (string, error) {
 		}
 	}
 	return b.String(), nil
+}
+
+// sendAsk prints what a copy of the target session answers. An agent on another machine in the org is
+// copied on that machine.
+func sendAsk(cmd *cobra.Command, target, question, from string) error {
+	m, machine, session, isOrg, err := orgID(target)
+	if err != nil {
+		return err
+	}
+	if isOrg && machine != m.Machine {
+		res, err := (pool.Client{Membership: m}).Ask(cmd.Context(), pool.AskRequest{ID: target, Question: question, From: from, Agent: callerAgent(cmd.Context())})
+		if err != nil {
+			return err
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), res.Answer)
+		return nil
+	}
+	if isOrg {
+		target = session
+	}
+	env, _, idx, err := discover(cmd.Context())
+	if err != nil {
+		return err
+	}
+	s, err := idx.Resolve(target)
+	if err != nil {
+		return err
+	}
+	opts := agents.SendOptions{From: from}
+	if me, err := agents.Self(cmd.Context(), env, idx, selfPID()); err == nil {
+		if me.ID == s.ID {
+			return fmt.Errorf("%s is this session; ask another one", s.ID)
+		}
+		opts.ReplyTo = me.ID
+	}
+	answer, err := agents.Ask(cmd.Context(), env, s, question, opts)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), answer)
+	return nil
 }

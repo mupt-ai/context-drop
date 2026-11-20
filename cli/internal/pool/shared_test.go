@@ -21,6 +21,10 @@ func (m *machineStub) Read(_ context.Context, in LocalRead) (ReadResult, error) 
 	return ReadResult{Agent: Agent{ID: "laptop/" + in.ID}}, nil
 }
 
+func (m *machineStub) Ask(_ context.Context, in LocalAsk) (AskResult, error) {
+	return AskResult{ID: in.ID, Answer: "answer"}, nil
+}
+
 func (m *machineStub) Send(_ context.Context, in LocalSend) (SendResult, error) {
 	m.sent = append(m.sent, in)
 	return SendResult{ID: "laptop/" + in.ID, Delivered: true}, nil

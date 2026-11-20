@@ -40,7 +40,7 @@ Run a mod. Flags fill its input and are converted to the input's types (a repeat
 
 #### `context-drop mcp`
 
-Run an MCP server on standard input and output that gives an agent `list`, `read`, `send`, and every mod as tools, and tells it when the list changes, so a newly deployed mod reaches running agents without a restart. Add it to Claude Code with `claude mcp add context-drop -- context-drop mcp`.
+Run an MCP server on standard input and output that gives an agent `list`, `read`, `send`, `ask`, and every mod as tools, and tells it when the list changes, so a newly deployed mod reaches running agents without a restart. Add it to Claude Code with `claude mcp add context-drop -- context-drop mcp`.
 
 ### `context-drop leave [--force]`
 
@@ -73,6 +73,10 @@ Finding Rex blocks runs `rex` with `--autostart=false`, so `list` never starts a
 Print the last `N` transcript messages (default 20, `0` for all). Tool calls appear as `[tool: name]`.
 
 `--screen` prints the last `N` lines (default 40) of the tmux, herdr, or Rex pane the session runs in instead. Use it to see prompts and dialogs that never reach the transcript.
+
+### `context-drop send --ask TARGET QUESTION...`
+
+Answer QUESTION from a copy of a Claude Code session, without interrupting it: `claude -p --resume ID --fork-session --no-session-persistence --tools Read,Grep,Glob`, run in the session's directory on the machine that runs it. The copy knows everything the session knows, can read files but not change them, and is thrown away, so the session never sees the question. It is told who asked. Use it for what the agent knows or has done; anything it must agree to or act on is a message. Other agents and Claude Code subagents cannot be copied yet. Across an org, the owning machine's daemon runs the copy; machines shared `--read-only` answer too, since nothing changes.
 
 ### `context-drop send TARGET MESSAGE... [--file PATH]... [--wait] [--timeout D] [--from NAME]`
 ### `context-drop send --all [--agent KIND] [--in MUX] [--session S] [--window W] [--pane P] MESSAGE...`

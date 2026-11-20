@@ -21,6 +21,14 @@ type fakeMachine struct {
 	mu     sync.Mutex
 	agents []pool.Agent
 	sent   []pool.LocalSend
+	asked  []pool.LocalAsk
+}
+
+func (f *fakeMachine) Ask(_ context.Context, in pool.LocalAsk) (pool.AskResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.asked = append(f.asked, in)
+	return pool.AskResult{ID: f.name + "/" + in.ID, Answer: "a copy of " + in.ID + " says: " + in.Question}, nil
 }
 
 func (f *fakeMachine) Agents(context.Context) ([]pool.Agent, error) {
@@ -258,4 +266,24 @@ func code(err error) string {
 		return e.Code
 	}
 	return ""
+}
+
+func TestAskIsAnsweredOnTheMachineThatRunsTheAgent(t *testing.T) {
+	o := newOrg(t)
+	laptop := &fakeMachine{name: "laptop", agents: []pool.Agent{agent("laptop", "cc-00000001", "/w", "main", "", "")}}
+	o.join(laptop)
+	dc := o.join(&fakeMachine{name: "devbox"})
+	ctx := context.Background()
+	waitFor(t, "laptop to report", func() bool { l, _ := dc.List(ctx, pool.Selector{}); return len(l) == 1 })
+
+	res, err := dc.Ask(ctx, pool.AskRequest{ID: "laptop/cc-00000001", Question: "which parser?", Agent: "cc-00000009"})
+	if err != nil || res.Answer != "a copy of cc-00000001 says: which parser?" {
+		t.Fatalf("ask = %+v, %v", res, err)
+	}
+	if len(laptop.asked) != 1 || laptop.asked[0].From != "devbox" || laptop.asked[0].ReplyTo != "devbox/cc-00000009" {
+		t.Fatalf("laptop was asked %+v", laptop.asked)
+	}
+	if _, err := dc.Ask(ctx, pool.AskRequest{ID: "laptop/cc-00000001"}); code(err) != "bad_request" {
+		t.Fatalf("empty question: %v", err)
+	}
 }
