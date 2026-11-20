@@ -496,7 +496,7 @@ func (s *Server) handleRead(w http.ResponseWriter, r *http.Request, c caller) {
 	_, _ = w.Write(out)
 }
 
-// handleAsk answers a question from a copy of one agent, on the machine that runs it. It reads the
+// handleAsk answers a question about one agent from its transcript, on the machine that runs it. It reads the
 // agent's context and changes nothing, so it needs the same capability as read.
 func (s *Server) handleAsk(w http.ResponseWriter, r *http.Request, c caller) {
 	if !allowed(w, c, "read") {

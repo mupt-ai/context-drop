@@ -78,7 +78,7 @@ var builtinTools = []map[string]any{
 		"inputSchema": map[string]any{"type": "object", "required": []string{"id", "text"}, "properties": map[string]any{
 			"id":   map[string]any{"type": "string", "description": "agent ID, like laptop/cc-1a2b3c4d"},
 			"text": map[string]any{"type": "string", "description": "the whole message"}}}},
-	{"name": "ask", "description": "Ask a Claude Code agent a question and get the answer from a read-only copy of its session; the agent itself is not interrupted. Use it for what the agent knows or has done; use send for anything it must agree to or act on.",
+	{"name": "ask", "description": "Ask an agent a question and get the answer from its transcript; the agent itself is not interrupted. Use it for what the agent knows or has done; use send for anything it must agree to or act on.",
 		"inputSchema": map[string]any{"type": "object", "required": []string{"id", "question"}, "properties": map[string]any{
 			"id":       map[string]any{"type": "string", "description": "agent ID, like laptop/cc-1a2b3c4d"},
 			"question": map[string]any{"type": "string", "description": "the whole question"}}}},

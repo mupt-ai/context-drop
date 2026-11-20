@@ -178,7 +178,7 @@ type LocalSend struct {
 	ReplyTo string `json:"reply_to,omitempty"` // the sending agent's org ID
 }
 
-// AskWait is how long the server waits for a machine to answer an ask; the copy itself is given five
+// AskWait is how long the server waits for a machine to answer an ask; the answer itself is given five
 // minutes there.
 const AskWait = 6 * time.Minute
 
@@ -191,7 +191,7 @@ type AskRequest struct {
 	Agent string `json:"agent,omitempty"`
 }
 
-// AskResult is what a copy of the agent answered.
+// AskResult is the answer to an ask.
 type AskResult struct {
 	ID     string `json:"id"`
 	Answer string `json:"answer"`

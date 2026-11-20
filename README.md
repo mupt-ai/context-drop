@@ -76,7 +76,7 @@ context-drop send cc-6a79295a 'Also update the docs' --wait
 context-drop send --ask cc-6a79295a 'Which file has the retry logic?'
 ```
 
-`send` delivers the message as the session's next prompt. A busy agent gets it as a queued follow-up. `--wait` prints the reply. `--file PATH` (repeatable) lists a local file's absolute path under the message so the other agent reads it in place; nothing is uploaded. `--ask` answers a question from a read-only copy of a Claude Code session instead, so the agent itself is never interrupted and never sees it; use it for what the agent knows, and a message for anything it must act on.
+`send` delivers the message as the session's next prompt. A busy agent gets it as a queued follow-up. `--wait` prints the reply. `--file PATH` (repeatable) lists a local file's absolute path under the message so the other agent reads it in place; nothing is uploaded. `--ask` answers a question from the agent's transcript instead, so the agent itself is never interrupted and never sees it; use it for what the agent knows, and a message for anything it must act on.
 
 An ID is a short hash of the agent and its native session ID, so a session always keeps the same ID. Commands also accept the native ID, a unique prefix of either, or the session name. Only live sessions appear: an agent process must be running.
 

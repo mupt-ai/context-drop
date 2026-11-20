@@ -232,9 +232,9 @@ func newSendCommand() *cobra.Command {
 			"or rex pane they run in. Claude Code subagents receive messages through their parent session.\n\n" +
 			"--file hands the recipient a file on this machine: its absolute path is listed under the message, so the\n" +
 			"agent reads it in place and nothing is uploaded. Use `context-drop upload` for a link to share elsewhere.\n\n" +
-			"--ask answers QUESTION from a copy of a Claude Code session instead: the copy can only read, nothing it does\n" +
-			"is kept, and the session itself never sees the question, so it keeps working. Use it for what the agent knows\n" +
-			"or has done; anything it must agree to or act on is a message.",
+			"--ask answers QUESTION from the agent's transcript instead: a small model reads it (and may read files in the\n" +
+			"agent's directory, never change them), so the agent never sees the question and keeps working. Use it for\n" +
+			"what the agent knows or has done; anything it must agree to or act on is a message.",
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if filter.set() && !all {
@@ -408,7 +408,7 @@ func newSendCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&wait, "wait", false, "wait for the reply and print it")
 	cmd.Flags().DurationVar(&timeout, "timeout", 30*time.Minute, "how long --wait waits")
 	cmd.Flags().BoolVar(&all, "all", false, "send to every live top-level session that matches the filters, except your own")
-	cmd.Flags().BoolVar(&ask, "ask", false, "answer the question from a copy of a Claude Code session, without interrupting it")
+	cmd.Flags().BoolVar(&ask, "ask", false, "answer the question from the agent's transcript, without interrupting it")
 	filter.register(cmd, "with --all, only send to")
 	org.register(cmd, "with --all, only send to")
 	return cmd
@@ -580,8 +580,8 @@ func withFiles(text string, files []string) (string, error) {
 	return b.String(), nil
 }
 
-// sendAsk prints what a copy of the target session answers. An agent on another machine in the org is
-// copied on that machine.
+// sendAsk prints the answer to a question about the target session, from its transcript. An agent on
+// another machine in the org is asked about on that machine.
 func sendAsk(cmd *cobra.Command, target, question, from string) error {
 	m, machine, session, isOrg, err := orgID(target)
 	if err != nil {
@@ -598,7 +598,7 @@ func sendAsk(cmd *cobra.Command, target, question, from string) error {
 	if isOrg {
 		target = session
 	}
-	env, _, idx, err := discover(cmd.Context())
+	env, providers, idx, err := discover(cmd.Context())
 	if err != nil {
 		return err
 	}
@@ -610,7 +610,7 @@ func sendAsk(cmd *cobra.Command, target, question, from string) error {
 	if me, err := agents.Self(cmd.Context(), env, idx, selfPID()); err == nil {
 		opts.ReplyTo = me.ID
 	}
-	answer, err := agents.Ask(cmd.Context(), env, s, question, opts)
+	answer, err := agents.Ask(cmd.Context(), env, providers, s, question, opts)
 	if err != nil {
 		return err
 	}

@@ -116,7 +116,7 @@ func (c Client) Send(ctx context.Context, req SendRequest) (SendResponse, error)
 	return out, c.call(ctx, "send", req, &out)
 }
 
-// Ask answers a question from a copy of one agent's session, without interrupting it. A copy can take
+// Ask answers a question about one agent from its transcript, without interrupting it. An answer can take
 // minutes to answer, so it waits as long as Post.
 func (c Client) Ask(ctx context.Context, req AskRequest) (AskResult, error) {
 	var out AskResult

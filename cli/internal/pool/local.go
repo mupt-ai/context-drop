@@ -94,9 +94,9 @@ func (m Machine) Send(ctx context.Context, in LocalSend) (SendResult, error) {
 	return SendResult{ID: m.Name + "/" + s.ID, Delivered: true, Via: got.Delivery}, nil
 }
 
-// Ask answers a question from a copy of a local session, without interrupting it.
+// Ask answers a question about a local session from its transcript, without interrupting it.
 func (m Machine) Ask(ctx context.Context, in LocalAsk) (AskResult, error) {
-	env, _, idx, err := m.discover(ctx)
+	env, providers, idx, err := m.discover(ctx)
 	if err != nil {
 		return AskResult{}, err
 	}
@@ -104,7 +104,7 @@ func (m Machine) Ask(ctx context.Context, in LocalAsk) (AskResult, error) {
 	if err != nil {
 		return AskResult{}, err
 	}
-	answer, err := agents.Ask(ctx, env, s, in.Question, agents.SendOptions{From: in.From, ReplyTo: in.ReplyTo})
+	answer, err := agents.Ask(ctx, env, providers, s, in.Question, agents.SendOptions{From: in.From, ReplyTo: in.ReplyTo})
 	if err != nil {
 		return AskResult{}, Errorf("ask_failed", "%v", err)
 	}
