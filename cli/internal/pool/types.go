@@ -122,6 +122,43 @@ type SendRequest struct {
 	From   string   `json:"from,omitempty"`
 	// Agent is the sending agent's session on the calling machine, if an agent sends.
 	Agent string `json:"agent,omitempty"`
+	// Slack sends to people on the org's Slack instead of to agents: "#channel", "@person" (a
+	// handle, email, or user ID), or "slack:CHANNEL/TS" to reply in a thread. Replies in the
+	// thread it starts, and in a DM, come back to the sending agent as prompts.
+	Slack string `json:"slack,omitempty"`
+}
+
+// IsSlackTarget reports whether a send target names people on Slack rather than an agent.
+func IsSlackTarget(t string) bool {
+	return strings.HasPrefix(t, "#") || strings.HasPrefix(t, "@") || strings.HasPrefix(t, "slack:")
+}
+
+// SlackReadRequest pulls messages from a Slack conversation.
+type SlackReadRequest struct {
+	// Target is "#channel", "@person" (their DM with the app), a channel ID, or "slack:CHANNEL/TS" for a thread.
+	Target string `json:"target"`
+	Limit  int    `json:"limit,omitempty"`
+	// Oldest keeps messages after this Slack timestamp.
+	Oldest string `json:"oldest,omitempty"`
+}
+
+// SlackMessage is one message read from Slack.
+type SlackMessage struct {
+	TS       string `json:"ts"`
+	User     string `json:"user,omitempty"`
+	Name     string `json:"name,omitempty"`
+	Bot      bool   `json:"bot,omitempty"`
+	Text     string `json:"text"`
+	ThreadTS string `json:"thread_ts,omitempty"`
+	Replies  int    `json:"replies,omitempty"`
+	// Ref is the message's thread as a send target, "slack:CHANNEL/TS".
+	Ref string `json:"ref"`
+}
+
+// SlackReadResult is what a Slack read returns, oldest message first.
+type SlackReadResult struct {
+	Channel  string         `json:"channel"`
+	Messages []SlackMessage `json:"messages"`
 }
 
 // SendResult is one target's outcome.

@@ -40,7 +40,11 @@ Run a mod. Flags fill its input and are converted to the input's types (a repeat
 
 #### `context-drop mcp`
 
-Run an MCP server on standard input and output that gives an agent `list`, `read`, `send`, `ask`, and every mod as tools, and tells it when the list changes, so a newly deployed mod reaches running agents without a restart. Add it to Claude Code with `claude mcp add context-drop -- context-drop mcp`.
+Run an MCP server on standard input and output that gives an agent `list`, `read`, `send`, `ask`, `slack_read`, and every mod as tools, and tells it when the list changes, so a newly deployed mod reaches running agents without a restart. `send` also takes `#channel`, `@person`, or `slack:CHANNEL/TS` to message people on the org's Slack. Add it to Claude Code with `claude mcp add context-drop -- context-drop mcp`.
+
+### Slack
+
+`context-drop slack install | connect | status | allow @PERSON... | disallow @PERSON... | read TARGET | uninstall | manifest` connects the org to a Slack workspace and manages who may answer agents. `install` and `connect` open the browser: `install` connects the workspace once per org, and `connect` links your own Slack account by signing in with Slack. `send '#channel' MESSAGE`, `send @person MESSAGE`, and `send slack:CHANNEL/TS MESSAGE` post to people; `--wait` prints their first replies. See the [Slack guide](slack.md).
 
 ### `context-drop leave [--force]`
 

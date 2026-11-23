@@ -15,7 +15,7 @@ import (
 )
 
 // Capabilities a mod may list in `can`.
-var capabilities = []string{"list", "read", "send", "call", "kv"}
+var capabilities = []string{"list", "read", "send", "call", "kv", "slack"}
 
 // Caller is who a mod call is for.
 type Caller struct {

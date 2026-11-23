@@ -99,6 +99,10 @@ docker run --rm -p 8080:8080 \
 | `CONTEXT_DROP_ORG_STATE` | no | `<data dir>/orgs.json` | File holding orgs and joined machines (credentials are stored as hashes). |
 | `CONTEXT_DROP_DENO` | for mods | `deno` on PATH | Deno executable that runs [mods](mods.md); without it, mods are off. |
 | `CONTEXT_DROP_MODS_DIR` | no | `<data dir>/mods` | Deployed mods and their key-value data. |
+| `CONTEXT_DROP_SLACK_CLIENT_ID` | for Slack | unset | The Slack app's client ID; unset turns [Slack](slack.md) off. |
+| `CONTEXT_DROP_SLACK_CLIENT_SECRET` | for Slack | — | The Slack app's client secret. |
+| `CONTEXT_DROP_SLACK_SIGNING_SECRET` | for Slack | — | Verifies events Slack sends to `/v1/slack/events`. |
+| `CONTEXT_DROP_SLACK_KEY` | for Slack | — | Seals each org's bot token at rest; changing it disconnects every org. |
 
 ## Orgs
 

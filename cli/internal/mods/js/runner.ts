@@ -32,7 +32,17 @@ function client(inv: Invocation): ContextDrop {
     caller: inv.caller!,
     list: (selector = {}) => post("list", selector),
     read: (id, options = {}) => post("read", { id, ...options }),
-    send: (target, text) => post("send", { target: typeof target === "string" ? { id: target } : target, text }),
+    send: (target, text) =>
+      post(
+        "send",
+        typeof target === "string" && /^(#|@|slack:)/.test(target)
+          ? { slack: target, text }
+          : { target: typeof target === "string" ? { id: target } : target, text },
+      ),
+    slack: {
+      api: (method, args = {}) => post("slack/api", { method, args }),
+      read: (target, options = {}) => post("slack/read", { target, ...options }),
+    },
     call: async (name, input = {}) => (await post(`mods/${name}/call`, { input })).output,
     kv: {
       get: async (key) => (await post("kv", { op: "get", key })).value,

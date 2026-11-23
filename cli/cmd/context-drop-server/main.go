@@ -110,6 +110,15 @@ func newOrgServer(cfg config.ServerConfig) (*orgserver.Server, error) {
 		}
 		s.Mods = mods.NewService(ms, rt, loopback(cfg.Addr), nil)
 	}
+	switch {
+	case cfg.SlackClientID == "":
+		slog.Info("slack is off (set CONTEXT_DROP_SLACK_CLIENT_ID to turn it on)")
+	case cfg.SlackClientSecret == "" || cfg.SlackSigningSecret == "" || cfg.SlackKey == "":
+		return nil, fmt.Errorf("slack needs CONTEXT_DROP_SLACK_CLIENT_SECRET, CONTEXT_DROP_SLACK_SIGNING_SECRET, and CONTEXT_DROP_SLACK_KEY with CONTEXT_DROP_SLACK_CLIENT_ID")
+	default:
+		st.SetSlackKey(cfg.SlackKey)
+		s.Slack = &orgserver.SlackApp{ClientID: cfg.SlackClientID, ClientSecret: cfg.SlackClientSecret, SigningSecret: cfg.SlackSigningSecret, PublicURL: cfg.BaseURL}
+	}
 	return s, nil
 }
 
