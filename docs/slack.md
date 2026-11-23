@@ -87,7 +87,7 @@ The server operator creates the Slack app once; each org then installs it into i
 
 ### Linking yourself
 
-`slack connect` asks the server for a link tied to your machine, opens it, and waits until you have signed in (up to 10 minutes). The page first says which org and machine started it, so a forwarded link is easy to spot. Slack's "Sign in" asks only for your identity (`identity.basic`, `identity.team`); the server reads who you are, checks you're in the org's workspace, links you, and keeps no user token. A link expires after 10 minutes. Use `--no-open` to print it without opening a browser.
+`slack connect` asks the server for a link tied to your machine, opens it, and waits until you have signed in (up to 10 minutes). The page first says which org and machine started it, so a forwarded link is easy to spot. It uses Sign in with Slack (OpenID Connect, scopes `openid profile`), which asks only for your identity; the server reads who you are, checks you're in the org's workspace, links you, and keeps no token. A link expires after 10 minutes. Use `--no-open` to print it without opening a browser.
 5. Add the MCP server to agents (`claude mcp add context-drop -- context-drop mcp`) so they can message people and read Slack.
 
 ## Limits

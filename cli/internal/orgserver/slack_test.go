@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"contextdrop.dev/context-drop/internal/mods"
 	"contextdrop.dev/context-drop/internal/pool"
 	"contextdrop.dev/context-drop/internal/slack"
 )
@@ -67,13 +69,16 @@ func (f *fakeSlack) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		out = map[string]any{"members": []any{user, map[string]any{"id": "U0000BOB", "name": "bob"}}}
 	case "users.info":
 		out = map[string]any{"user": user}
-	case "oauth.v2.access":
-		// A person signing in: "good" is someone in the org's workspace, anything else is not.
+	case "openid.connect.token":
+		// A person signing in: the access token carries the code, so userInfo can tell whose it is.
+		out = map[string]any{"access_token": "user-" + fmt.Sprint(args["code"])}
+	case "openid.connect.userInfo":
+		// "good" is someone in the org's workspace; anyone else is from another workspace.
 		team := "T1"
-		if args["code"] != "good" {
+		if r.Header.Get("Authorization") != "Bearer user-good" {
 			team = "T-OTHER"
 		}
-		out = map[string]any{"authed_user": map[string]any{"id": "U0000AVY"}, "team": map[string]any{"id": team}}
+		out = map[string]any{"sub": "U0000AVY", "name": "Avyay", "https://slack.com/team_id": team}
 	case "conversations.list":
 		out = map[string]any{"channels": []any{map[string]any{"id": "C0000DEP", "name": "deploys"}}}
 	case "conversations.open":
@@ -231,7 +236,7 @@ func TestAPersonLinksThemselvesBySigningInWithSlack(t *testing.T) {
 
 	// The link first says which org and machine asked, before anything goes to Slack.
 	code, page := get(t, o.srv.URL+"/v1/slack/link?state="+url.QueryEscape(state))
-	if code != http.StatusOK || !strings.Contains(page, "acme") || !strings.Contains(page, "laptop") || !strings.Contains(page, "slack.com/oauth/v2/authorize") {
+	if code != http.StatusOK || !strings.Contains(page, "acme") || !strings.Contains(page, "laptop") || !strings.Contains(page, "slack.com/openid/connect/authorize") {
 		t.Fatalf("link page %d: %s", code, page)
 	}
 
@@ -269,6 +274,41 @@ func TestATamperedLinkIsRefused(t *testing.T) {
 	}
 	if _, ok := o.server.store.SlackMember("acme", "U0000AVY"); ok {
 		t.Fatal("a tampered link linked someone")
+	}
+}
+
+// modSend sends as a mod whose can list holds only the given capabilities.
+func modSend(o *org, can []string, body string) *httptest.ResponseRecorder {
+	grant := mods.Grant{Org: "acme", Mod: "standup", Can: map[string]bool{}}
+	for _, c := range can {
+		grant.Can[c] = true
+	}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/v1/acme/send", strings.NewReader(body))
+	o.server.handleSend(w, r, caller{org: "acme", mod: &grant})
+	return w
+}
+
+func TestAModWithOnlySlackCanPostToPeople(t *testing.T) {
+	o, fs, _, _ := slackOrg(t)
+	w := modSend(o, []string{"slack"}, `{"slack":"#deploys","text":"standup"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("a slack-only mod posting to Slack: %d %s", w.Code, w.Body)
+	}
+	var out pool.SendResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || len(out.Results) != 1 || out.Results[0].TS == "" {
+		t.Fatalf("result %s, want the posted message's timestamp", w.Body)
+	}
+	if len(fs.called("chat.postMessage")) != 1 {
+		t.Fatal("nothing was posted")
+	}
+	// Slack does not open agents to it: messaging an agent still needs send.
+	if w := modSend(o, []string{"slack"}, `{"target":{"id":"laptop/cc-00000001"},"text":"hi"}`); w.Code != http.StatusForbidden {
+		t.Fatalf("a slack-only mod messaging an agent: %d, want 403", w.Code)
+	}
+	// And send alone does not open Slack.
+	if w := modSend(o, []string{"send"}, `{"slack":"#deploys","text":"hi"}`); w.Code != http.StatusForbidden {
+		t.Fatalf("a send-only mod posting to Slack: %d, want 403", w.Code)
 	}
 }
 

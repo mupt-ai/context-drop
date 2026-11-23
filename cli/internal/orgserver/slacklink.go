@@ -79,7 +79,10 @@ func (s *Server) finishConnect(w http.ResponseWriter, r *http.Request, org, mach
 		slackPage(w, http.StatusBadGateway, "Not linked", "<p>"+html.EscapeString(perr.Message)+"</p>")
 		return
 	}
-	name := s.userName(r.Context(), cl, org, person.ID)
+	name := person.Name
+	if name == "" {
+		name = s.userName(r.Context(), cl, org, person.ID)
+	}
 	if err := s.store.AddSlackMember(SlackMember{Org: org, UserID: person.ID, Name: name, AddedBy: machine}); err != nil {
 		slackPage(w, http.StatusInternalServerError, "Not linked", "<p>"+html.EscapeString(err.Error())+"</p>")
 		return

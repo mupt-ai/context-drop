@@ -170,51 +170,62 @@ func AuthorizeURL(clientID, redirect, state string) string {
 	return "https://slack.com/oauth/v2/authorize?" + q.Encode()
 }
 
-// UserAuthorizeURL is where a person signs in with Slack, so the server learns who they are. It asks
-// for identity only; the bot is not involved.
+// UserAuthorizeURL is where a person signs in with Slack (OpenID Connect), so the server learns who they
+// are. It asks for identity only; the bot is not involved.
 func UserAuthorizeURL(clientID, redirect, state string) string {
-	q := url.Values{"client_id": {clientID}, "user_scope": {"identity.basic,identity.team"}, "redirect_uri": {redirect}, "state": {state}}
-	return "https://slack.com/oauth/v2/authorize?" + q.Encode()
+	q := url.Values{"response_type": {"code"}, "scope": {"openid profile"}, "client_id": {clientID}, "redirect_uri": {redirect}, "state": {state}}
+	return "https://slack.com/openid/connect/authorize?" + q.Encode()
 }
 
 // Person is a Slack user who signed in.
 type Person struct {
 	ID     string
 	TeamID string
+	Name   string
 }
 
-// ExchangeUser trades a sign-in code for the signed-in person's user ID and workspace. The user token
-// is not kept: the person's identity is all the server needs.
+// ExchangeUser trades a sign-in code for the signed-in person's identity: their user ID, workspace, and
+// name, from Slack's OpenID Connect token and userInfo endpoints. The access token is used once and not kept.
 func ExchangeUser(ctx context.Context, base, clientID, clientSecret, code, redirect string) (Person, error) {
 	if base == "" {
 		base = DefaultAPI
 	}
-	form := url.Values{"code": {code}, "redirect_uri": {redirect}}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(base, "/")+"/oauth.v2.access", strings.NewReader(form.Encode()))
+	base = strings.TrimRight(base, "/")
+	form := url.Values{"grant_type": {"authorization_code"}, "code": {code}, "redirect_uri": {redirect}, "client_id": {clientID}, "client_secret": {clientSecret}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/openid.connect.token", strings.NewReader(form.Encode()))
 	if err != nil {
 		return Person{}, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.SetBasicAuth(clientID, clientSecret)
-	raw, err := (Client{}).do(req, "oauth.v2.access")
+	raw, err := (Client{}).do(req, "openid.connect.token")
 	if err != nil {
 		return Person{}, err
 	}
-	var out struct {
-		AuthedUser struct {
-			ID string `json:"id"`
-		} `json:"authed_user"`
-		Team struct {
-			ID string `json:"id"`
-		} `json:"team"`
+	var tok struct {
+		AccessToken string `json:"access_token"`
 	}
-	if err := json.Unmarshal(raw, &out); err != nil {
+	if err := json.Unmarshal(raw, &tok); err != nil {
 		return Person{}, err
 	}
-	if out.AuthedUser.ID == "" || out.Team.ID == "" {
+	if tok.AccessToken == "" {
+		return Person{}, errors.New("slack returned no sign-in token")
+	}
+	info, err := Client{Token: tok.AccessToken, Base: base}.Get(ctx, "openid.connect.userInfo", url.Values{})
+	if err != nil {
+		return Person{}, err
+	}
+	var who struct {
+		Sub    string `json:"sub"`
+		Name   string `json:"name"`
+		TeamID string `json:"https://slack.com/team_id"`
+	}
+	if err := json.Unmarshal(info, &who); err != nil {
+		return Person{}, err
+	}
+	if who.Sub == "" || who.TeamID == "" {
 		return Person{}, errors.New("slack did not say who signed in")
 	}
-	return Person{ID: out.AuthedUser.ID, TeamID: out.Team.ID}, nil
+	return Person{ID: who.Sub, TeamID: who.TeamID, Name: who.Name}, nil
 }
 
 // MaxSkew is how old a signed request may be.
@@ -276,10 +287,7 @@ oauth_config:
     - %s/v1/slack/oauth
   scopes:
     bot:
-%s    user:
-      - identity.basic
-      - identity.team
-settings:
+%ssettings:
   event_subscriptions:
     request_url: %s/v1/slack/events
     bot_events:

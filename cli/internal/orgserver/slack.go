@@ -577,7 +577,7 @@ func (s *Server) slackSend(w http.ResponseWriter, r *http.Request, c caller, in 
 			}
 		}
 	}
-	writeJSON(w, http.StatusOK, pool.SendResponse{Results: []pool.SendResult{{ID: ref(posted.Channel, root), Delivered: true, Via: "slack"}}})
+	writeJSON(w, http.StatusOK, pool.SendResponse{Results: []pool.SendResult{{ID: ref(posted.Channel, root), Delivered: true, Via: "slack", TS: posted.TS}}})
 }
 
 type slackMsg struct {

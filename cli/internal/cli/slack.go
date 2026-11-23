@@ -22,7 +22,6 @@ func slackSend(cmd *cobra.Command, target, text, from string, wait bool, timeout
 		return err
 	}
 	c := pool.Client{Membership: m}
-	since := slackNow()
 	out, err := c.Send(cmd.Context(), pool.SendRequest{Slack: target, Text: text, From: from, Agent: callerAgent(cmd.Context())})
 	if err != nil {
 		return err
@@ -36,11 +35,13 @@ func slackSend(cmd *cobra.Command, target, text, from string, wait bool, timeout
 	if !wait {
 		return nil
 	}
+	// Replies are the messages after ours, by Slack's own clock rather than this machine's.
+	since := out.Results[0].TS
+	if since == "" {
+		_, since, _ = strings.Cut(strings.TrimPrefix(ref, "slack:"), "/")
+	}
 	return slackWait(cmd, c, ref, since, timeout)
 }
-
-// slackNow is the current time as a Slack timestamp.
-func slackNow() string { return strconv.FormatFloat(float64(time.Now().UnixMicro())/1e6, 'f', 6, 64) }
 
 // slackWaitEvery is how often slackWait reads Slack.
 var slackWaitEvery = 3 * time.Second
@@ -62,7 +63,7 @@ func slackWait(cmd *cobra.Command, c pool.Client, ref, since string, timeout tim
 				continue
 			}
 			for _, msg := range res.Messages {
-				if !msg.Bot && !seen[msg.TS] && msg.TS > since {
+				if !msg.Bot && !seen[msg.TS] && slackAfter(msg.TS, since) {
 					seen[msg.TS] = true
 					replies = append(replies, msg)
 				}
@@ -78,6 +79,19 @@ func slackWait(cmd *cobra.Command, c pool.Client, ref, since string, timeout tim
 		case <-time.After(slackWaitEvery):
 		}
 	}
+}
+
+// slackAfter reports whether Slack timestamp ts is later than since; an empty since accepts everything.
+func slackAfter(ts, since string) bool {
+	if since == "" {
+		return true
+	}
+	a, errA := strconv.ParseFloat(ts, 64)
+	b, errB := strconv.ParseFloat(since, 64)
+	if errA != nil || errB != nil {
+		return ts > since
+	}
+	return a > b
 }
 
 func printSlack(cmd *cobra.Command, msgs []pool.SlackMessage) {

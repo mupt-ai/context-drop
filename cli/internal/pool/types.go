@@ -166,7 +166,9 @@ type SendResult struct {
 	ID        string `json:"id"`
 	Delivered bool   `json:"delivered"`
 	Via       string `json:"via,omitempty"`
-	Error     *Error `json:"error,omitempty"`
+	// TS is the Slack timestamp of the posted message, for a send to Slack.
+	TS    string `json:"ts,omitempty"`
+	Error *Error `json:"error,omitempty"`
 }
 
 // SendResponse is what `send` returns.

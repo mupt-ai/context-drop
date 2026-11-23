@@ -26,7 +26,7 @@ func TestVerifyAcceptsOnlyFreshSignedBodies(t *testing.T) {
 
 func TestManifestPointsSlackAtTheServer(t *testing.T) {
 	m := Manifest("Context Drop", "https://ctx.example.com/")
-	for _, want := range []string{"https://ctx.example.com/v1/slack/events", "https://ctx.example.com/v1/slack/oauth", "message.im", "chat:write", "identity.basic"} {
+	for _, want := range []string{"https://ctx.example.com/v1/slack/events", "https://ctx.example.com/v1/slack/oauth", "message.im", "chat:write"} {
 		if !strings.Contains(m, want) {
 			t.Errorf("manifest lacks %q", want)
 		}

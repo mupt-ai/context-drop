@@ -554,11 +554,16 @@ func sender(label, machine string) string {
 }
 
 func (s *Server) handleSend(w http.ResponseWriter, r *http.Request, c caller) {
-	if !allowed(w, c, "send") {
-		return
-	}
 	var in pool.SendRequest
 	if !decode(w, r, &in) {
+		return
+	}
+	// Posting to people needs only the slack capability; messaging agents needs send.
+	if in.Slack != "" {
+		if !allowed(w, c, "slack") {
+			return
+		}
+	} else if !allowed(w, c, "send") {
 		return
 	}
 	if c.mod != nil { // a mod speaks as itself, and no agent replies to it
@@ -571,9 +576,6 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request, c caller) {
 	if in.Slack != "" {
 		if !in.Target.IsZero() {
 			writeError(w, http.StatusBadRequest, "bad_request", "send to agents or to Slack, not both at once")
-			return
-		}
-		if !allowed(w, c, "slack") {
 			return
 		}
 		from := sender(in.From, c.machine)
