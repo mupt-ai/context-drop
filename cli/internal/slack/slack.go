@@ -287,7 +287,10 @@ oauth_config:
     - %s/v1/slack/oauth
   scopes:
     bot:
-%ssettings:
+%s    user:
+      - openid
+      - profile
+settings:
   event_subscriptions:
     request_url: %s/v1/slack/events
     bot_events:
