@@ -25,6 +25,13 @@ sed "s|@HOSTS@|$HOSTS|" "$here/Caddyfile" >"$work/Caddyfile"
 	cat "$here/env"
 	printf 'CONTEXT_DROP_ADMIN_TOKEN=%s\n' \
 		"$(gcloud secrets versions access latest --secret context-drop-admin-token --project "$PROJECT")"
+	# Slack is on only when its client ID secret exists; then all four are required.
+	if gcloud secrets describe context-drop-slack-client-id --project "$PROJECT" >/dev/null 2>&1; then
+		for s in client-id:CLIENT_ID client-secret:CLIENT_SECRET signing-secret:SIGNING_SECRET key:KEY; do
+			printf 'CONTEXT_DROP_SLACK_%s=%s\n' "${s#*:}" \
+				"$(gcloud secrets versions access latest --secret "context-drop-slack-${s%%:*}" --project "$PROJECT")"
+		done
+	fi
 } >"$work/env"
 chmod 600 "$work/env"
 
