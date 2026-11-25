@@ -32,7 +32,10 @@ type Server struct {
 	CallTimeout time.Duration
 	// Mods runs the org's mods; nil turns mods off.
 	Mods *mods.Service
+	// Slack is the server's Slack app; nil turns Slack off.
+	Slack *SlackApp
 
+	slack    slackState
 	mu       sync.Mutex
 	machines map[key]*machine
 	seq      atomic.Uint64
@@ -72,6 +75,7 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/{org}/mods/deploy", s.authed(s.handleDeploy))
 	mux.HandleFunc("POST /v1/{org}/mods/{name}/call", s.authed(s.handleCall))
 	mux.HandleFunc("POST /v1/{org}/kv", s.authed(s.handleKV))
+	s.registerSlack(mux)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -550,11 +554,16 @@ func sender(label, machine string) string {
 }
 
 func (s *Server) handleSend(w http.ResponseWriter, r *http.Request, c caller) {
-	if !allowed(w, c, "send") {
-		return
-	}
 	var in pool.SendRequest
 	if !decode(w, r, &in) {
+		return
+	}
+	// Posting to people needs only the slack capability; messaging agents needs send.
+	if in.Slack != "" {
+		if !allowed(w, c, "slack") {
+			return
+		}
+	} else if !allowed(w, c, "send") {
 		return
 	}
 	if c.mod != nil { // a mod speaks as itself, and no agent replies to it
@@ -562,6 +571,24 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request, c caller) {
 	}
 	if strings.TrimSpace(in.Text) == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "message is empty")
+		return
+	}
+	if in.Slack != "" {
+		if !in.Target.IsZero() {
+			writeError(w, http.StatusBadRequest, "bad_request", "send to agents or to Slack, not both at once")
+			return
+		}
+		from := sender(in.From, c.machine)
+		if c.mod != nil {
+			from = "mod " + c.mod.Mod
+		}
+		replyTo := ""
+		if in.Agent != "" {
+			if _, _, ok := pool.SplitID(c.machine + "/" + in.Agent); ok {
+				replyTo = c.machine + "/" + in.Agent
+			}
+		}
+		s.slackSend(w, r, c, in, from, replyTo)
 		return
 	}
 	if in.Target.IsZero() {

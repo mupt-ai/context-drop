@@ -3,7 +3,19 @@
 //   import { mod, z } from "@contextdrop/mod"
 //   export default mod({ name, description, input, can, run(input, cd) { ... } })
 
-export type Capability = "list" | "read" | "send" | "call" | "kv"
+export type Capability = "list" | "read" | "send" | "call" | "kv" | "slack"
+
+export type SlackMessage = {
+  ts: string
+  user?: string
+  name?: string
+  bot?: boolean
+  text: string
+  thread_ts?: string
+  replies?: number
+  // The message's thread as a send target, "slack:CHANNEL/TS".
+  ref: string
+}
 
 export type Caller =
   | { kind: "machine"; machine: string }
@@ -14,7 +26,15 @@ export type ContextDrop = {
   caller: Caller
   list(selector?: Record<string, unknown>): Promise<Record<string, unknown>[]>
   read(id: string, options?: { last?: number; all?: boolean; after?: string }): Promise<Record<string, unknown>>
+  // A target of "#channel", "@person", or "slack:CHANNEL/TS" posts to Slack (needs "slack" in can).
   send(target: string | Record<string, unknown>, text: string): Promise<Record<string, unknown>>
+  // The org's Slack workspace, with the app's bot token (needs "slack" in can).
+  slack: {
+    // Any allowed Web API method: chat.*, conversations.*, reactions.*, pins.*, bookmarks.*, users.info, ...
+    api(method: string, args?: Record<string, unknown>): Promise<Record<string, unknown>>
+    // Messages in "#channel", "@person" (their DM with the app), or a "slack:CHANNEL/TS" thread, oldest first.
+    read(target: string, options?: { limit?: number; oldest?: string }): Promise<{ channel: string; messages: SlackMessage[] }>
+  }
   call(name: string, input?: Record<string, unknown>): Promise<unknown>
   kv: {
     get(key: string): Promise<unknown>

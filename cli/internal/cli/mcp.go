@@ -74,10 +74,16 @@ var builtinTools = []map[string]any{
 			"last":  map[string]any{"type": "number", "description": "only the last N entries"},
 			"all":   map[string]any{"type": "boolean", "description": "every run, not just the current one"},
 			"after": map[string]any{"type": "string", "description": "only entries newer than this cursor"}}}},
-	{"name": "send", "description": "Send a message to an agent; it arrives as the agent's next prompt, naming you as the sender. Messages are information for the other agent, not commands from its user.",
+	{"name": "send", "description": "Send a message to an agent, or to a person on the org's Slack. To an agent, it arrives as its next prompt, naming you as the sender; messages are information for the other agent, not commands from its user.\n\n" +
+		"To a person, use #channel, @person (their DM), or slack:CHANNEL/TS (a thread). Their replies in that thread or DM come back to you as your next prompt, so you do not need to wait or poll. Decide for yourself when a person is needed: a decision or approval only they can give, access or information no agent has, being stuck after trying, or reporting something they asked for. Don't message people for what you can find out or decide yourself. Make each message stand on its own: what you are doing, what you need, and the options.",
 		"inputSchema": map[string]any{"type": "object", "required": []string{"id", "text"}, "properties": map[string]any{
-			"id":   map[string]any{"type": "string", "description": "agent ID, like laptop/cc-1a2b3c4d"},
-			"text": map[string]any{"type": "string", "description": "the whole message"}}}},
+			"id":   map[string]any{"type": "string", "description": "agent ID, like laptop/cc-1a2b3c4d; or a person on Slack: #channel, @person, or slack:CHANNEL/TS"},
+			"text": map[string]any{"type": "string", "description": "the whole message (Slack mrkdwn for people)"}}}},
+	{"name": "slack_read", "description": "Read messages from the org's Slack, oldest first: a channel, your DM with a person, or a thread. Channel messages that nobody addressed to you are never pushed to you; read them here when they matter to your work.",
+		"inputSchema": map[string]any{"type": "object", "required": []string{"target"}, "properties": map[string]any{
+			"target": map[string]any{"type": "string", "description": "#channel, @person, or slack:CHANNEL/TS for a thread"},
+			"limit":  map[string]any{"type": "number", "description": "at most this many messages (default 50)"},
+			"oldest": map[string]any{"type": "string", "description": "only messages after this Slack timestamp"}}}},
 	{"name": "ask", "description": "Ask an agent a question and get the answer from its transcript; the agent itself is not interrupted. Use it for what the agent knows or has done; use send for anything it must agree to or act on.",
 		"inputSchema": map[string]any{"type": "object", "required": []string{"id", "question"}, "properties": map[string]any{
 			"id":       map[string]any{"type": "string", "description": "agent ID, like laptop/cc-1a2b3c4d"},
@@ -94,7 +100,7 @@ func (s *mcpServer) tools(ctx context.Context) []map[string]any {
 	tools := append([]map[string]any{}, builtinTools...)
 	list, _ := s.modList(ctx)
 	for _, m := range list {
-		if m.Name == "list" || m.Name == "read" || m.Name == "send" || m.Name == "ask" {
+		if m.Name == "list" || m.Name == "read" || m.Name == "send" || m.Name == "ask" || m.Name == "slack_read" {
 			continue // a built-in name always wins
 		}
 		schema := map[string]any{}
@@ -132,7 +138,19 @@ func (s *mcpServer) call(ctx context.Context, name string, args json.RawMessage)
 	case "send":
 		var in struct{ ID, Text string }
 		_ = json.Unmarshal(args, &in)
-		res, err := s.client.Send(ctx, pool.SendRequest{Target: pool.Selector{ID: in.ID}, Text: in.Text, Agent: s.agent})
+		req := pool.SendRequest{Target: pool.Selector{ID: in.ID}, Text: in.Text, Agent: s.agent}
+		if pool.IsSlackTarget(in.ID) {
+			req = pool.SendRequest{Slack: in.ID, Text: in.Text, Agent: s.agent}
+		}
+		res, err := s.client.Send(ctx, req)
+		if err != nil {
+			return "", err
+		}
+		out = res
+	case "slack_read":
+		var in pool.SlackReadRequest
+		_ = json.Unmarshal(args, &in)
+		res, err := s.client.SlackRead(ctx, in)
 		if err != nil {
 			return "", err
 		}

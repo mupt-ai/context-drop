@@ -116,6 +116,12 @@ func (c Client) Send(ctx context.Context, req SendRequest) (SendResponse, error)
 	return out, c.call(ctx, "send", req, &out)
 }
 
+// SlackRead pulls messages from a conversation on the org's Slack.
+func (c Client) SlackRead(ctx context.Context, req SlackReadRequest) (SlackReadResult, error) {
+	var out SlackReadResult
+	return out, c.call(ctx, "slack/read", req, &out)
+}
+
 // Ask answers a question about one agent from its transcript, without interrupting it. An answer can take
 // minutes to answer, so it waits as long as Post.
 func (c Client) Ask(ctx context.Context, req AskRequest) (AskResult, error) {

@@ -47,6 +47,7 @@ Two reference mods are in [`mods/`](../mods): `stuck` and `lock` (an org-wide lo
 | `list(selector)`, `read(id, options)`, `send(target, text)` | The built-in endpoints, with the same inputs and outputs. A message a mod sends names the mod as its sender. | The same name |
 | `call(name, input)` | Call another mod (up to 4 deep) | `call` |
 | `kv.get(key)`, `kv.set(key, value)`, `kv.cas(key, expected, value)` | The mod's own key-value store (10 MB). `cas` writes only if the key still holds `expected` (`undefined` = absent), for locks and counters. Setting `null` deletes. | `kv` |
+| `send("#channel" \| "@person" \| "slack:C/TS", text)`, `slack.read(target, options)`, `slack.api(method, args)` | The org's [Slack](slack.md) workspace: post, read, and call allowed Web API methods with its bot token | `slack` |
 | `caller` | Who called: `{kind: "agent", agent}`, `{kind: "machine", machine}`, or `{kind: "mod", mod}` | Always |
 
 ## Managing mods

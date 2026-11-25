@@ -218,6 +218,12 @@ type ServerConfig struct {
 	Deno string
 	// ModsDir holds deployed mods, their key-value data, and secrets.
 	ModsDir string
+	// Slack app credentials; without a client ID, signing secret, and token key, Slack is off.
+	SlackClientID      string
+	SlackClientSecret  string
+	SlackSigningSecret string
+	// SlackKey seals each org's bot token at rest.
+	SlackKey string
 }
 
 func LoadServerConfig() (ServerConfig, error) {
@@ -234,6 +240,11 @@ func LoadServerConfig() (ServerConfig, error) {
 		Deno:        strings.TrimSpace(os.Getenv("CONTEXT_DROP_DENO")),
 		ModsDir:     strings.TrimSpace(os.Getenv("CONTEXT_DROP_MODS_DIR")),
 		MaxBytes:    envInt64("CONTEXT_DROP_MAX_BYTES", 25*1024*1024),
+
+		SlackClientID:      strings.TrimSpace(os.Getenv("CONTEXT_DROP_SLACK_CLIENT_ID")),
+		SlackClientSecret:  strings.TrimSpace(os.Getenv("CONTEXT_DROP_SLACK_CLIENT_SECRET")),
+		SlackSigningSecret: strings.TrimSpace(os.Getenv("CONTEXT_DROP_SLACK_SIGNING_SECRET")),
+		SlackKey:           strings.TrimSpace(os.Getenv("CONTEXT_DROP_SLACK_KEY")),
 
 		UploadsPerHour:     int(envInt64("CONTEXT_DROP_UPLOADS_PER_HOUR", 60)),
 		UploadBytesPerHour: envInt64("CONTEXT_DROP_UPLOAD_BYTES_PER_HOUR", 250*1024*1024),

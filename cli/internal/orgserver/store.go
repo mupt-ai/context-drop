@@ -38,16 +38,20 @@ type Machine struct {
 }
 
 type state struct {
-	Orgs     []Org     `json:"orgs"`
-	Machines []Machine `json:"machines"`
+	Orgs          []Org          `json:"orgs"`
+	Machines      []Machine      `json:"machines"`
+	SlackInstalls []SlackInstall `json:"slack_installs,omitempty"`
+	SlackMembers  []SlackMember  `json:"slack_members,omitempty"`
+	SlackRoutes   []SlackRoute   `json:"slack_routes,omitempty"`
 }
 
 // Store keeps orgs and machines in one JSON file. It is enough for a single
 // server; a multi-instance relay moves this to Postgres.
 type Store struct {
-	path string
-	mu   sync.Mutex
-	st   state
+	path     string
+	mu       sync.Mutex
+	st       state
+	slackKey []byte // seals Slack bot tokens; nil turns Slack off
 }
 
 // OpenStore loads the store at path, creating it on first write.
