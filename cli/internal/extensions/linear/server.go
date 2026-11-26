@@ -69,6 +69,9 @@ type state struct {
 // routeTTL is how long a route lives after its last use.
 const routeTTL = 30 * 24 * time.Hour
 
+// errTaken means another org connected the same Linear workspace first.
+var errTaken = errors.New("workspace taken")
+
 // ErrNotInstalled means the org has not connected Linear.
 var ErrNotInstalled = errors.New("this org has not connected Linear; run `context-drop linear install`")
 
@@ -186,13 +189,22 @@ func (e *Ext) handleInstall(w http.ResponseWriter, r *http.Request, c extensions
 			inst := Install{Org: c.Org, LinearOrg: who.OrgID, Name: who.OrgName, UserID: who.UserID, UserName: who.UserName,
 				KeySealed: keySealed, WebhookID: hook, SecretSealed: secretSealed, InstalledBy: c.Machine, InstalledAt: time.Now().UTC()}
 			e.mu.Lock()
-			e.st.Installs = append(slices.DeleteFunc(e.st.Installs, func(i Install) bool { return i.Org == c.Org }), inst)
-			err = e.save()
+			// Check again: another org may have connected this workspace while the webhook was made.
+			if slices.ContainsFunc(e.st.Installs, func(i Install) bool { return i.LinearOrg == who.OrgID && i.Org != c.Org }) {
+				err = errTaken
+			} else {
+				e.st.Installs = append(slices.DeleteFunc(e.st.Installs, func(i Install) bool { return i.Org == c.Org }), inst)
+				err = e.save()
+			}
 			e.mu.Unlock()
 		}
 	}
 	if err != nil {
 		_ = cl.DeleteWebhook(r.Context(), hook)
+		if errors.Is(err, errTaken) {
+			extensions.WriteError(w, http.StatusConflict, "exists", "Linear workspace "+who.OrgName+" is already connected to another org")
+			return
+		}
 		extensions.WriteError(w, http.StatusInternalServerError, "failed", err.Error())
 		return
 	}
