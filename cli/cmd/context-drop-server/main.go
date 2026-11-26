@@ -196,6 +196,8 @@ func backUpState(ctx context.Context, b stateBackup, st *orgserver.Store) {
 			}
 			if err == nil {
 				last = time.Now()
+			} else {
+				st.Unsnapshotted() // try again next tick
 			}
 		}
 		if err != nil {

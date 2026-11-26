@@ -389,3 +389,7 @@ func (s *Store) Snapshot(path string, force bool) (bool, error) {
 	}
 	return true, nil
 }
+
+// Unsnapshotted marks the database as changed again, so the next Snapshot writes a copy; for when
+// the last copy never reached its backup.
+func (s *Store) Unsnapshotted() { s.changed.Store(true) }
