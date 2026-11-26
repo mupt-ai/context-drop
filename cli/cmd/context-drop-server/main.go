@@ -14,6 +14,8 @@ import (
 
 	"contextdrop.dev/context-drop/internal/api"
 	"contextdrop.dev/context-drop/internal/config"
+	"contextdrop.dev/context-drop/internal/extensions/linear"
+	"contextdrop.dev/context-drop/internal/extensions/slack"
 	"contextdrop.dev/context-drop/internal/mods"
 	"contextdrop.dev/context-drop/internal/orgserver"
 	"contextdrop.dev/context-drop/internal/storage"
@@ -110,14 +112,20 @@ func newOrgServer(cfg config.ServerConfig) (*orgserver.Server, error) {
 		}
 		s.Mods = mods.NewService(ms, rt, loopback(cfg.Addr), nil)
 	}
+	s.PublicURL = cfg.BaseURL
+	if cfg.TokenKey == "" {
+		slog.Info("slack and linear are off (set CONTEXT_DROP_TOKEN_KEY to turn them on)")
+		return s, nil
+	}
+	st.SetSealKey(cfg.TokenKey)
+	s.Extensions = append(s.Extensions, &linear.Ext{})
 	switch {
 	case cfg.SlackClientID == "":
 		slog.Info("slack is off (set CONTEXT_DROP_SLACK_CLIENT_ID to turn it on)")
-	case cfg.SlackClientSecret == "" || cfg.SlackSigningSecret == "" || cfg.SlackKey == "":
-		return nil, fmt.Errorf("slack needs CONTEXT_DROP_SLACK_CLIENT_SECRET, CONTEXT_DROP_SLACK_SIGNING_SECRET, and CONTEXT_DROP_SLACK_KEY with CONTEXT_DROP_SLACK_CLIENT_ID")
+	case cfg.SlackClientSecret == "" || cfg.SlackSigningSecret == "":
+		return nil, fmt.Errorf("slack needs CONTEXT_DROP_SLACK_CLIENT_SECRET and CONTEXT_DROP_SLACK_SIGNING_SECRET with CONTEXT_DROP_SLACK_CLIENT_ID")
 	default:
-		st.SetSlackKey(cfg.SlackKey)
-		s.Slack = &orgserver.SlackApp{ClientID: cfg.SlackClientID, ClientSecret: cfg.SlackClientSecret, SigningSecret: cfg.SlackSigningSecret, PublicURL: cfg.BaseURL}
+		s.Extensions = append(s.Extensions, &slack.Ext{ClientID: cfg.SlackClientID, ClientSecret: cfg.SlackClientSecret, SigningSecret: cfg.SlackSigningSecret})
 	}
 	return s, nil
 }

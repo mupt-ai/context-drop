@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"contextdrop.dev/context-drop/internal/extensions/slack"
 	"contextdrop.dev/context-drop/internal/mods"
 	"contextdrop.dev/context-drop/internal/pool"
-	"contextdrop.dev/context-drop/internal/slack"
 )
 
 // fakeSlack is the slice of the Web API the server uses, recording every call.
@@ -99,20 +99,24 @@ func (f *fakeSlack) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // slackOrg is an org connected to a fake Slack workspace, with one laptop agent.
 func slackOrg(t *testing.T) (*org, *fakeSlack, *fakeMachine, pool.Client) {
+	o, fs, laptop, c, _ := slackOrgExt(t)
+	return o, fs, laptop, c
+}
+
+func slackOrgExt(t *testing.T) (*org, *fakeSlack, *fakeMachine, pool.Client, *slack.Ext) {
 	t.Helper()
-	o := newOrg(t)
 	fs := &fakeSlack{}
 	api := httptest.NewServer(fs)
 	t.Cleanup(api.Close)
-	o.server.Slack = &SlackApp{ClientID: "cid", ClientSecret: "csecret", SigningSecret: "signing", PublicURL: o.srv.URL, API: api.URL}
-	o.server.store.SetSlackKey("token-key")
-	if err := o.server.store.InstallSlack(SlackInstall{Org: "acme", TeamID: "T1", TeamName: "Acme", BotUserID: "U0000BOT"}, "xoxb-secret"); err != nil {
+	ext := &slack.Ext{ClientID: "cid", ClientSecret: "csecret", SigningSecret: "signing", API: api.URL}
+	o := newOrg(t, ext)
+	if err := ext.Connect(slack.Workspace{Org: "acme", TeamID: "T1", TeamName: "Acme", BotUserID: "U0000BOT"}, "xoxb-secret"); err != nil {
 		t.Fatal(err)
 	}
 	laptop := &fakeMachine{name: "laptop", agents: []pool.Agent{agent("laptop", "cc-00000001", "/work/app", "main", "", "2026-11-17T10:00:00Z")}}
 	c := o.join(laptop)
 	waitFor(t, "the laptop's agents", func() bool { return len(o.server.agents("acme")) == 1 })
-	return o, fs, laptop, c
+	return o, fs, laptop, c, ext
 }
 
 func (o *org) slackEvent(t *testing.T, id string, ev map[string]any) int {
@@ -231,7 +235,7 @@ func get(t *testing.T, link string) (int, string) {
 }
 
 func TestAPersonLinksThemselvesBySigningInWithSlack(t *testing.T) {
-	o, _, _, c := slackOrg(t)
+	o, _, _, c, ext := slackOrgExt(t)
 	state := connectLink(t, c)
 
 	// The link first says which org and machine asked, before anything goes to Slack.
@@ -244,26 +248,26 @@ func TestAPersonLinksThemselvesBySigningInWithSlack(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("callback %d: %s", code, page)
 	}
-	m, ok := o.server.store.SlackMember("acme", "U0000AVY")
+	m, ok := ext.Member("acme", "U0000AVY")
 	if !ok || m.Name != "Avyay" || m.AddedBy != "laptop" {
 		t.Fatalf("member %+v %v, want Avyay linked by laptop", m, ok)
 	}
 }
 
 func TestSigningInFromAnotherWorkspaceDoesNotLink(t *testing.T) {
-	o, _, _, c := slackOrg(t)
+	o, _, _, c, ext := slackOrgExt(t)
 	state := connectLink(t, c)
 	code, _ := get(t, o.srv.URL+"/v1/slack/oauth?code=elsewhere&state="+url.QueryEscape(state))
 	if code != http.StatusForbidden {
 		t.Fatalf("another workspace's sign-in: status %d, want 403", code)
 	}
-	if _, ok := o.server.store.SlackMember("acme", "U0000AVY"); ok {
+	if _, ok := ext.Member("acme", "U0000AVY"); ok {
 		t.Fatal("a person from another workspace was linked")
 	}
 }
 
 func TestATamperedLinkIsRefused(t *testing.T) {
-	o, _, _, c := slackOrg(t)
+	o, _, _, c, ext := slackOrgExt(t)
 	state := connectLink(t, c)
 	bad := "x" + state
 	if code, _ := get(t, o.srv.URL+"/v1/slack/link?state="+url.QueryEscape(bad)); code != http.StatusBadRequest {
@@ -272,7 +276,7 @@ func TestATamperedLinkIsRefused(t *testing.T) {
 	if code, _ := get(t, o.srv.URL+"/v1/slack/oauth?code=good&state="+url.QueryEscape(bad)); code != http.StatusBadRequest {
 		t.Fatalf("tampered callback: status %d, want 400", code)
 	}
-	if _, ok := o.server.store.SlackMember("acme", "U0000AVY"); ok {
+	if _, ok := ext.Member("acme", "U0000AVY"); ok {
 		t.Fatal("a tampered link linked someone")
 	}
 }
@@ -337,12 +341,12 @@ func TestSlackReadIsOldestFirstAndMarksTheApp(t *testing.T) {
 
 func TestSlackAPIRefusesAdminMethods(t *testing.T) {
 	for _, m := range []string{"admin.users.remove", "auth.revoke", "chat.delete", "apps.uninstall"} {
-		if slackMethodAllowed(m) {
+		if slack.MethodAllowed(m) {
 			t.Errorf("%s is allowed", m)
 		}
 	}
 	for _, m := range []string{"chat.postMessage", "reactions.add", "conversations.history", "users.info"} {
-		if !slackMethodAllowed(m) {
+		if !slack.MethodAllowed(m) {
 			t.Errorf("%s is refused", m)
 		}
 	}

@@ -80,7 +80,7 @@ The server operator creates the Slack app once; each org then installs it into i
    | `CONTEXT_DROP_SLACK_CLIENT_ID` | the app's client ID |
    | `CONTEXT_DROP_SLACK_CLIENT_SECRET` | the app's client secret |
    | `CONTEXT_DROP_SLACK_SIGNING_SECRET` | the app's signing secret |
-   | `CONTEXT_DROP_SLACK_KEY` | a long random secret that seals each org's bot token at rest; changing it disconnects every org |
+   | `CONTEXT_DROP_TOKEN_KEY` | a long random secret that seals each org's bot token at rest; changing it disconnects every org (`CONTEXT_DROP_SLACK_KEY` also works) |
 
    `CONTEXT_DROP_BASE_URL` must be the server's public HTTPS origin: Slack sends events to `<base>/v1/slack/events` and installs return to `<base>/v1/slack/oauth`.
 4. Restart the server. Then, in an org, run `context-drop slack install` and approve in the browser. Each person then runs `context-drop slack connect` and signs in.

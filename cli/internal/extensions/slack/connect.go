@@ -1,33 +1,23 @@
-package cli
+package slack
 
 import (
 	"context"
 	"fmt"
-	"os/exec"
-	"runtime"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"contextdrop.dev/context-drop/internal/extensions"
 	"contextdrop.dev/context-drop/internal/pool"
 )
 
-// openBrowser opens a link in the person's default browser. The caller prints the link as well.
-func openBrowser(link string) error {
-	name := "xdg-open"
-	if runtime.GOOS == "darwin" {
-		name = "open"
-	}
-	return exec.Command(name, link).Start()
-}
+// connectTimeout is how long `slack connect` waits for the sign-in to finish.
+var connectTimeout = 10 * time.Minute
 
-// slackConnectTimeout is how long `slack connect` waits for the sign-in to finish.
-var slackConnectTimeout = 10 * time.Minute
+// connectEvery is how often `slack connect` checks whether the sign-in finished.
+var connectEvery = 2 * time.Second
 
-// slackConnectEvery is how often `slack connect` checks whether the sign-in finished.
-var slackConnectEvery = 2 * time.Second
-
-func newSlackConnectCommand() *cobra.Command {
+func connectCommand(env extensions.CLI) *cobra.Command {
 	var noOpen bool
 	cmd := &cobra.Command{
 		Use:   "connect",
@@ -36,11 +26,10 @@ func newSlackConnectCommand() *cobra.Command {
 			"and your DMs and thread replies reach them. Only you can link yourself this way; `slack allow` links someone else.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			m, err := orgMembership()
+			c, m, err := env.Client()
 			if err != nil {
 				return err
 			}
-			c := pool.Client{Membership: m}
 			var start struct{ URL string }
 			if err := c.Post(cmd.Context(), "slack/connect", struct{}{}, &start); err != nil {
 				return err
@@ -48,18 +37,18 @@ func newSlackConnectCommand() *cobra.Command {
 			fmt.Fprintf(cmd.ErrOrStderr(), "Sign in with Slack to link your account to org %s:\n", m.Org)
 			fmt.Fprintln(cmd.OutOrStdout(), start.URL)
 			if !noOpen {
-				if err := openBrowser(start.URL); err != nil {
+				if err := extensions.OpenBrowser(start.URL); err != nil {
 					fmt.Fprintf(cmd.ErrOrStderr(), "Open the link above yourself: %v\n", err)
 				}
 			}
-			before, err := slackMemberAddedAt(cmd, c)
+			before, err := memberAddedAt(cmd, c)
 			if err != nil {
 				return err
 			}
-			ctx, cancel := context.WithTimeout(cmd.Context(), slackConnectTimeout)
+			ctx, cancel := context.WithTimeout(cmd.Context(), connectTimeout)
 			defer cancel()
 			for {
-				list, err := slackMemberList(ctx, c)
+				list, err := memberList(ctx, c)
 				if err == nil {
 					for _, p := range list {
 						// Linked from this machine, and new or re-linked since we started.
@@ -71,8 +60,8 @@ func newSlackConnectCommand() *cobra.Command {
 				}
 				select {
 				case <-ctx.Done():
-					return fmt.Errorf("timed out after %s waiting for the Slack sign-in", slackConnectTimeout)
-				case <-time.After(slackConnectEvery):
+					return fmt.Errorf("timed out after %s waiting for the Slack sign-in", connectTimeout)
+				case <-time.After(connectEvery):
 				}
 			}
 		},
@@ -81,15 +70,15 @@ func newSlackConnectCommand() *cobra.Command {
 	return cmd
 }
 
-func slackMemberList(ctx context.Context, c pool.Client) ([]slackMember, error) {
-	var list []slackMember
+func memberList(ctx context.Context, c pool.Client) ([]memberRow, error) {
+	var list []memberRow
 	err := c.Post(ctx, "slack/members", map[string]string{"op": "list"}, &list)
 	return list, err
 }
 
-// slackMemberAddedAt maps each linked user to when they were last linked.
-func slackMemberAddedAt(cmd *cobra.Command, c pool.Client) (map[string]time.Time, error) {
-	list, err := slackMemberList(cmd.Context(), c)
+// memberAddedAt maps each linked user to when they were last linked.
+func memberAddedAt(cmd *cobra.Command, c pool.Client) (map[string]time.Time, error) {
+	list, err := memberList(cmd.Context(), c)
 	if err != nil {
 		return nil, err
 	}
