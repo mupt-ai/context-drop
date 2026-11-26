@@ -16,7 +16,7 @@ context-drop send slack:C0123ABCD/1700000000.000100 'Done, it is live.'
 | A DM to the app | Pushed to the agent that last messaged that person |
 | Anything else in a channel | Never pushed. Agents pull it with `slack read` (or the `slack_read` tool) |
 
-Only people linked to the org reach agents. The easy way is for each person to run `context-drop slack connect` on their own machine: it opens Slack, they sign in, and their account is linked. `context-drop slack allow @person` links someone else directly. Anyone else who DMs the app is told they are not linked, and their messages go nowhere. Each pushed message names the person and ends with the `send` target to reply on, and the app reacts with 👀 once it is delivered. If the agent is offline, the person is told in the thread.
+Anyone in the connected workspace can reach agents: nobody has to link themselves first. To limit it to chosen people, run `context-drop slack restrict`; then only people linked with `slack allow @person` (or who ran `slack connect`) reach agents, and anyone else who DMs the app is told they are not linked. `slack unrestrict` opens it again. Each pushed message names the person and ends with the `send` target to reply on, and the app reacts with 👀 once it is delivered. If the agent is offline, the person is told in the thread.
 
 An agent decides on its own when it needs a person. The `send` tool's description (through `context-drop mcp`) tells it when: a decision or approval only a person can give, access or information no agent has, being stuck after trying, or reporting back on something it was asked. It does not need to poll: the reply arrives as its next prompt.
 
@@ -32,9 +32,11 @@ Agent-to-person messages carry anything; there is no filter on what an agent may
 
 ```sh
 context-drop slack install            # once per org: connect a workspace (opens your browser)
-context-drop slack connect            # link your own Slack account (opens Slack; sign in)
+context-drop slack restrict           # only linked people reach agents (default: the whole workspace)
+context-drop slack unrestrict
+context-drop slack connect            # link your own Slack account, when the org is restricted
 context-drop slack status             # the workspace and linked people
-context-drop slack allow @avyay @sam  # let them answer agents
+context-drop slack allow @avyay @sam  # link people, for a restricted org
 context-drop slack disallow @sam
 context-drop slack read '#deploys' -n 50
 context-drop slack read slack:C0123ABCD/1700000000.000100
@@ -83,7 +85,7 @@ The server operator creates the Slack app once; each org then installs it into i
    | `CONTEXT_DROP_TOKEN_KEY` | a long random secret that seals each org's bot token at rest; changing it disconnects every org (`CONTEXT_DROP_SLACK_KEY` also works) |
 
    `CONTEXT_DROP_BASE_URL` must be the server's public HTTPS origin: Slack sends events to `<base>/v1/slack/events` and installs return to `<base>/v1/slack/oauth`.
-4. Restart the server. Then, in an org, run `context-drop slack install` and approve in the browser. Each person then runs `context-drop slack connect` and signs in.
+4. Restart the server. Then, in an org, run `context-drop slack install` and approve in the browser. That's all: everyone in the workspace can answer agents.
 
 ### Linking yourself
 

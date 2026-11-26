@@ -221,6 +221,10 @@ type ServerConfig struct {
 	// TokenKey seals the tokens extensions store, such as Slack bot tokens and Linear API keys.
 	// Without it, Slack and Linear are off.
 	TokenKey string
+	// Linear OAuth app credentials; without a client ID, orgs connect Linear with an API key instead.
+	LinearClientID      string
+	LinearClientSecret  string
+	LinearWebhookSecret string
 	// Slack app credentials; without a client ID, Slack is off.
 	SlackClientID      string
 	SlackClientSecret  string
@@ -242,9 +246,12 @@ func LoadServerConfig() (ServerConfig, error) {
 		ModsDir:     strings.TrimSpace(os.Getenv("CONTEXT_DROP_MODS_DIR")),
 		MaxBytes:    envInt64("CONTEXT_DROP_MAX_BYTES", 25*1024*1024),
 
-		SlackClientID:      strings.TrimSpace(os.Getenv("CONTEXT_DROP_SLACK_CLIENT_ID")),
-		SlackClientSecret:  strings.TrimSpace(os.Getenv("CONTEXT_DROP_SLACK_CLIENT_SECRET")),
-		SlackSigningSecret: strings.TrimSpace(os.Getenv("CONTEXT_DROP_SLACK_SIGNING_SECRET")),
+		LinearClientID:      strings.TrimSpace(os.Getenv("CONTEXT_DROP_LINEAR_CLIENT_ID")),
+		LinearClientSecret:  strings.TrimSpace(os.Getenv("CONTEXT_DROP_LINEAR_CLIENT_SECRET")),
+		LinearWebhookSecret: strings.TrimSpace(os.Getenv("CONTEXT_DROP_LINEAR_WEBHOOK_SECRET")),
+		SlackClientID:       strings.TrimSpace(os.Getenv("CONTEXT_DROP_SLACK_CLIENT_ID")),
+		SlackClientSecret:   strings.TrimSpace(os.Getenv("CONTEXT_DROP_SLACK_CLIENT_SECRET")),
+		SlackSigningSecret:  strings.TrimSpace(os.Getenv("CONTEXT_DROP_SLACK_SIGNING_SECRET")),
 		// CONTEXT_DROP_SLACK_KEY is the token key's older name.
 		TokenKey: strings.TrimSpace(firstEnv("CONTEXT_DROP_TOKEN_KEY", "CONTEXT_DROP_SLACK_KEY")),
 

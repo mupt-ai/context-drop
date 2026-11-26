@@ -73,6 +73,7 @@ func (e *Ext) Register(mux *http.ServeMux, h extensions.Host) error {
 	mux.HandleFunc("POST /v1/{org}/slack/uninstall", h.Authed(e.handleUninstall))
 	mux.HandleFunc("POST /v1/{org}/slack/status", h.Authed(e.handleStatus))
 	mux.HandleFunc("POST /v1/{org}/slack/members", h.Authed(e.handleMembers))
+	mux.HandleFunc("POST /v1/{org}/slack/restrict", h.Authed(e.handleRestrict))
 	mux.HandleFunc("POST /v1/{org}/slack/read", h.Authed(e.handleRead))
 	mux.HandleFunc("POST /v1/{org}/slack/api", h.Authed(e.handleAPI))
 	return nil
@@ -249,6 +250,7 @@ type Status struct {
 	Team       string   `json:"team,omitempty"`
 	TeamID     string   `json:"team_id,omitempty"`
 	BotUserID  string   `json:"bot_user_id,omitempty"`
+	Restricted bool     `json:"restricted"`
 	Members    []Member `json:"members"`
 }
 
@@ -259,8 +261,27 @@ func (e *Ext) handleStatus(w http.ResponseWriter, r *http.Request, c extensions.
 	out := Status{Configured: true, Members: e.members(c.Org)}
 	if in, _, err := e.workspace(c.Org); err == nil {
 		out.Installed, out.Team, out.TeamID, out.BotUserID = true, in.TeamName, in.TeamID, in.BotUserID
+		out.Restricted = in.Restricted
 	}
 	extensions.WriteJSON(w, http.StatusOK, out)
+}
+
+// handleRestrict turns the linked-members-only rule on or off. Only machines may change who reaches agents.
+func (e *Ext) handleRestrict(w http.ResponseWriter, r *http.Request, c extensions.Caller) {
+	if !extensions.MachinesOnly(w, c) {
+		return
+	}
+	var in struct {
+		Restricted bool `json:"restricted"`
+	}
+	if !extensions.Decode(w, r, &in) {
+		return
+	}
+	if err := e.setRestricted(c.Org, in.Restricted); err != nil {
+		extensions.WriteError(w, http.StatusNotFound, "not_found", err.Error())
+		return
+	}
+	extensions.WriteJSON(w, http.StatusOK, map[string]bool{"restricted": in.Restricted})
 }
 
 // handleMembers links and unlinks the Slack users whose DMs and thread replies reach agents. Only
@@ -790,11 +811,15 @@ func (e *Ext) deliver(ctx context.Context, team string, ev event) {
 		_, _ = cl.Call(ctx, "chat.postMessage", args)
 	}
 	member, ok := e.Member(org, ev.User)
-	if !ok {
+	if !ok && inst.Restricted {
 		if dm {
-			notice("You aren't linked to this Context Drop org, so agents won't see your messages. Run `context-drop slack connect` to link yourself, or ask someone in the org to run `context-drop slack allow @you`.")
+			notice("You aren't linked to this Context Drop org, so agents won't see your messages. Ask someone in the org to run `context-drop slack allow @you`.")
 		}
 		return
+	}
+	if !ok {
+		// Open to the workspace: anyone here may reach agents, so use their Slack name.
+		member = Member{Org: org, UserID: ev.User, Name: e.userName(ctx, cl, org, ev.User)}
 	}
 	if len(agents) == 0 {
 		notice("No agent is waiting on you here. Agents reach you first; reply in the thread or DM they open.")

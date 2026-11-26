@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -27,29 +28,43 @@ const Prefix = "linear:"
 // footer ends every comment an agent posts, so its own comments are never pushed back to it.
 const footer = "reply in a comment to answer"
 
-// Ext connects orgs to Linear. Each org gives it one API key; there is no app to create.
+// Ext connects orgs to Linear. With a Linear OAuth app (ClientID set), an admin approves the app in a
+// browser and its comments appear as the app; without one, an org gives it an admin's API key.
 type Ext struct {
-	// API is the GraphQL endpoint; empty means Linear's.
-	API string
+	// The Linear OAuth app, if the server has one. WebhookSecret signs the app's webhooks.
+	ClientID      string
+	ClientSecret  string
+	WebhookSecret string
+	// API is the GraphQL endpoint and TokenURL the OAuth token endpoint; empty means Linear's.
+	API      string
+	TokenURL string
 
-	host extensions.Host
-	mu   sync.Mutex
-	st   state
-	seen map[string]time.Time // comment IDs already delivered, since Linear retries
+	host      extensions.Host
+	mu        sync.Mutex
+	st        state
+	seen      map[string]time.Time // comment IDs already delivered, since Linear retries
+	refreshMu sync.Mutex           // one token refresh at a time
 }
+
+func (e *Ext) oauth() bool { return e.ClientID != "" }
 
 // Install is an org's connection to a Linear workspace. Its key and webhook secret are sealed.
 type Install struct {
-	Org          string    `json:"org"`
-	LinearOrg    string    `json:"linear_org"`
-	Name         string    `json:"name"`
-	UserID       string    `json:"user_id"`
-	UserName     string    `json:"user_name"`
-	KeySealed    string    `json:"key_sealed"`
-	WebhookID    string    `json:"webhook_id"`
-	SecretSealed string    `json:"secret_sealed"`
-	InstalledBy  string    `json:"installed_by"`
-	InstalledAt  time.Time `json:"installed_at"`
+	Org       string `json:"org"`
+	LinearOrg string `json:"linear_org"`
+	Name      string `json:"name"`
+	UserID    string `json:"user_id"`
+	UserName  string `json:"user_name"`
+	// An API key install: the key, and the webhook it made with its own secret.
+	KeySealed    string `json:"key_sealed,omitempty"`
+	WebhookID    string `json:"webhook_id,omitempty"`
+	SecretSealed string `json:"secret_sealed,omitempty"`
+	// An OAuth install: the app's tokens. Its webhooks are the app's, signed with Ext.WebhookSecret.
+	TokenSealed   string    `json:"token_sealed,omitempty"`
+	RefreshSealed string    `json:"refresh_sealed,omitempty"`
+	Expires       time.Time `json:"expires,omitempty"`
+	InstalledBy   string    `json:"installed_by"`
+	InstalledAt   time.Time `json:"installed_at"`
 }
 
 // Route sends new comments on an issue to the agents that commented on it.
@@ -88,6 +103,7 @@ func (e *Ext) Register(mux *http.ServeMux, h extensions.Host) error {
 		return err
 	}
 	mux.HandleFunc("POST /v1/linear/events", e.handleEvents)
+	mux.HandleFunc("GET /v1/linear/oauth", e.handleOAuth)
 	mux.HandleFunc("POST /v1/{org}/linear/install", h.Authed(e.handleInstall))
 	mux.HandleFunc("POST /v1/{org}/linear/uninstall", h.Authed(e.handleUninstall))
 	mux.HandleFunc("POST /v1/{org}/linear/status", h.Authed(e.handleStatus))
@@ -108,17 +124,82 @@ func (e *Ext) install(org string) (Install, bool) {
 	return Install{}, false
 }
 
-// client is the org's Linear client.
-func (e *Ext) client(org string) (Client, Install, *pool.Error) {
+// client is the org's Linear client, refreshing an OAuth token that is about to expire.
+func (e *Ext) client(ctx context.Context, org string) (Client, Install, *pool.Error) {
 	in, ok := e.install(org)
 	if !ok {
 		return Client{}, in, pool.Errorf("not_found", "%v", ErrNotInstalled)
 	}
-	key, err := e.host.Unseal(in.KeySealed)
-	if err != nil {
-		return Client{}, in, pool.Errorf("internal", "%v", err)
+	if in.KeySealed != "" {
+		key, err := e.host.Unseal(in.KeySealed)
+		if err != nil {
+			return Client{}, in, pool.Errorf("internal", "%v", err)
+		}
+		return Client{Auth: key, URL: e.API}, in, nil
 	}
-	return Client{Key: key, URL: e.API}, in, nil
+	tok, err := e.token(ctx, org)
+	if err != nil {
+		return Client{}, in, pool.Errorf("forbidden", "Linear sign-in expired; run `context-drop linear install` again: %v", err)
+	}
+	return Client{Auth: "Bearer " + tok, URL: e.API}, in, nil
+}
+
+// token is an OAuth install's access token, refreshed when it has under five minutes left.
+func (e *Ext) token(ctx context.Context, org string) (string, error) {
+	e.refreshMu.Lock()
+	defer e.refreshMu.Unlock()
+	in, ok := e.install(org)
+	if !ok {
+		return "", ErrNotInstalled
+	}
+	if time.Until(in.Expires) > 5*time.Minute {
+		return e.host.Unseal(in.TokenSealed)
+	}
+	refresh, err := e.host.Unseal(in.RefreshSealed)
+	if err != nil {
+		return "", err
+	}
+	tok, err := Exchange(ctx, e.TokenURL, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refresh},
+		"client_id": {e.ClientID}, "client_secret": {e.ClientSecret}})
+	if err != nil {
+		return "", err
+	}
+	if err := e.storeToken(&in, tok); err != nil {
+		return "", err
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for i := range e.st.Installs {
+		if e.st.Installs[i].Org == org {
+			e.st.Installs[i].TokenSealed, e.st.Installs[i].RefreshSealed, e.st.Installs[i].Expires = in.TokenSealed, in.RefreshSealed, in.Expires
+		}
+	}
+	return tok.Access, e.save()
+}
+
+// storeToken seals a token into an install.
+func (e *Ext) storeToken(in *Install, tok Token) error {
+	a, err := e.host.Seal(tok.Access)
+	if err != nil {
+		return err
+	}
+	r, err := e.host.Seal(tok.Refresh)
+	if err != nil {
+		return err
+	}
+	in.TokenSealed, in.RefreshSealed, in.Expires = a, r, tok.Expires
+	return nil
+}
+
+// saveInstall records an install unless another org already has that Linear workspace.
+func (e *Ext) saveInstall(inst Install) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if slices.ContainsFunc(e.st.Installs, func(i Install) bool { return i.LinearOrg == inst.LinearOrg && i.Org != inst.Org }) {
+		return errTaken
+	}
+	e.st.Installs = append(slices.DeleteFunc(e.st.Installs, func(i Install) bool { return i.Org == inst.Org }), inst)
+	return e.save()
 }
 
 func asPoolError(err error) *pool.Error {
@@ -145,11 +226,16 @@ func (e *Ext) handleInstall(w http.ResponseWriter, r *http.Request, c extensions
 		return
 	}
 	in.Key = strings.TrimSpace(in.Key)
-	if in.Key == "" {
-		extensions.WriteError(w, http.StatusBadRequest, "bad_request", "give a Linear API key")
+	if in.Key == "" && e.oauth() {
+		state := e.state(c.Org, c.Machine, time.Now().Add(30*time.Minute))
+		extensions.WriteJSON(w, http.StatusOK, map[string]string{"url": AuthorizeURL(e.ClientID, e.redirect(), state)})
 		return
 	}
-	cl := Client{Key: in.Key, URL: e.API}
+	if in.Key == "" {
+		extensions.WriteError(w, http.StatusBadRequest, "bad_request", "give a Linear API key (this server has no Linear app)")
+		return
+	}
+	cl := Client{Auth: in.Key, URL: e.API}
 	who, err := cl.Whoami(r.Context())
 	if err != nil {
 		extensions.WriteError(w, http.StatusBadRequest, "bad_request", "Linear refused the key: "+err.Error())
@@ -186,17 +272,9 @@ func (e *Ext) handleInstall(w http.ResponseWriter, r *http.Request, c extensions
 	if err == nil {
 		var secretSealed string
 		if secretSealed, err = e.host.Seal(secret); err == nil {
-			inst := Install{Org: c.Org, LinearOrg: who.OrgID, Name: who.OrgName, UserID: who.UserID, UserName: who.UserName,
-				KeySealed: keySealed, WebhookID: hook, SecretSealed: secretSealed, InstalledBy: c.Machine, InstalledAt: time.Now().UTC()}
-			e.mu.Lock()
-			// Check again: another org may have connected this workspace while the webhook was made.
-			if slices.ContainsFunc(e.st.Installs, func(i Install) bool { return i.LinearOrg == who.OrgID && i.Org != c.Org }) {
-				err = errTaken
-			} else {
-				e.st.Installs = append(slices.DeleteFunc(e.st.Installs, func(i Install) bool { return i.Org == c.Org }), inst)
-				err = e.save()
-			}
-			e.mu.Unlock()
+			// saveInstall checks again: another org may have connected this workspace meanwhile.
+			err = e.saveInstall(Install{Org: c.Org, LinearOrg: who.OrgID, Name: who.OrgName, UserID: who.UserID, UserName: who.UserName,
+				KeySealed: keySealed, WebhookID: hook, SecretSealed: secretSealed, InstalledBy: c.Machine, InstalledAt: time.Now().UTC()})
 		}
 	}
 	if err != nil {
@@ -215,13 +293,17 @@ func (e *Ext) handleInstall(w http.ResponseWriter, r *http.Request, c extensions
 	extensions.WriteJSON(w, http.StatusOK, map[string]string{"workspace": who.OrgName, "user": who.UserName})
 }
 
-// deleteWebhook removes an install's webhook with its own key; it is best effort.
+// deleteWebhook removes an API key install's webhook with its own key; it is best effort. An OAuth
+// install has no webhook of its own.
 func (e *Ext) deleteWebhook(ctx context.Context, in Install) {
+	if in.KeySealed == "" || in.WebhookID == "" {
+		return
+	}
 	key, err := e.host.Unseal(in.KeySealed)
 	if err != nil {
 		return
 	}
-	if err := (Client{Key: key, URL: e.API}).DeleteWebhook(ctx, in.WebhookID); err != nil {
+	if err := (Client{Auth: key, URL: e.API}).DeleteWebhook(ctx, in.WebhookID); err != nil {
 		e.host.Log().Warn("linear webhook not deleted", "org", in.Org, "err", err)
 	}
 }
@@ -248,9 +330,10 @@ func (e *Ext) handleUninstall(w http.ResponseWriter, r *http.Request, c extensio
 
 // Status is what `linear status` returns.
 type Status struct {
-	Installed bool   `json:"installed"`
-	Workspace string `json:"workspace,omitempty"`
-	User      string `json:"user,omitempty"`
+	Installed bool      `json:"installed"`
+	Workspace string    `json:"workspace,omitempty"`
+	User      string    `json:"user,omitempty"`
+	Since     time.Time `json:"since,omitempty"`
 }
 
 func (e *Ext) handleStatus(w http.ResponseWriter, r *http.Request, c extensions.Caller) {
@@ -258,14 +341,14 @@ func (e *Ext) handleStatus(w http.ResponseWriter, r *http.Request, c extensions.
 		return
 	}
 	in, ok := e.install(c.Org)
-	extensions.WriteJSON(w, http.StatusOK, Status{Installed: ok, Workspace: in.Name, User: in.UserName})
+	extensions.WriteJSON(w, http.StatusOK, Status{Installed: ok, Workspace: in.Name, User: in.UserName, Since: in.InstalledAt})
 }
 
 // ── send and read ───────────────────────────────────────────────────────────
 
 // Send comments on an issue. When an agent sends, later comments on the issue are pushed to it.
 func (e *Ext) Send(ctx context.Context, c extensions.Caller, target, text, from, replyTo string) (pool.SendResult, *pool.Error) {
-	cl, _, perr := e.client(c.Org)
+	cl, _, perr := e.client(ctx, c.Org)
 	if perr != nil {
 		return pool.SendResult{}, perr
 	}
@@ -342,7 +425,7 @@ func (e *Ext) handleRead(w http.ResponseWriter, r *http.Request, c extensions.Ca
 	if !extensions.Decode(w, r, &in) {
 		return
 	}
-	cl, _, perr := e.client(c.Org)
+	cl, _, perr := e.client(r.Context(), c.Org)
 	if perr != nil {
 		extensions.Fail(w, perr)
 		return
@@ -420,7 +503,10 @@ func (e *Ext) handleEvents(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	e.mu.Unlock()
-	secret, err := e.host.Unseal(inst.SecretSealed)
+	secret, err := e.WebhookSecret, error(nil)
+	if inst.SecretSealed != "" {
+		secret, err = e.host.Unseal(inst.SecretSealed)
+	}
 	if inst.Org == "" || err != nil || Verify(secret, r.Header, body, time.Now()) != nil {
 		extensions.WriteError(w, http.StatusUnauthorized, "unauthorized", "bad or unknown webhook")
 		return

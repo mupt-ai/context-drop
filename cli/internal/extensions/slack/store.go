@@ -16,6 +16,8 @@ type Workspace struct {
 	TokenSealed string    `json:"token_sealed"`
 	InstalledBy string    `json:"installed_by"`
 	InstalledAt time.Time `json:"installed_at"`
+	// Restricted limits agents to linked members. Off by default: anyone in the workspace can reach agents.
+	Restricted bool `json:"restricted,omitempty"`
 }
 
 // Member is a Slack user linked to an org. Only members' DMs and thread replies reach agents.
@@ -202,3 +204,15 @@ func (e *Ext) routed(org, channel, ts string) []string {
 
 // Connect installs a workspace for an org without the OAuth round trip, for tests and tools.
 func (e *Ext) Connect(w Workspace, token string) error { return e.install(w, token) }
+
+// setRestricted turns the linked-members-only rule on or off for an org's workspace.
+func (e *Ext) setRestricted(org string, on bool) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	idx := slices.IndexFunc(e.st.Installs, func(i Workspace) bool { return i.Org == org })
+	if idx < 0 {
+		return ErrNotInstalled
+	}
+	e.st.Installs[idx].Restricted = on
+	return e.save()
+}

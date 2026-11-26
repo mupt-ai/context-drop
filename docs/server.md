@@ -100,6 +100,7 @@ docker run --rm -p 8080:8080 \
 | `CONTEXT_DROP_DENO` | for mods | `deno` on PATH | Deno executable that runs [mods](mods.md); without it, mods are off. |
 | `CONTEXT_DROP_MODS_DIR` | no | `<data dir>/mods` | Deployed mods and their key-value data. |
 | `CONTEXT_DROP_TOKEN_KEY` | for Slack or Linear | unset | Seals the tokens [extensions](extensions.md) store; unset turns Slack and Linear off, and changing it disconnects every org. `CONTEXT_DROP_SLACK_KEY` is its older name. |
+| `CONTEXT_DROP_LINEAR_CLIENT_ID`, `_CLIENT_SECRET`, `_WEBHOOK_SECRET` | for the Linear app | unset | The [Linear](linear.md) OAuth app; without it, orgs connect Linear with an API key. |
 | `CONTEXT_DROP_SLACK_CLIENT_ID` | for Slack | unset | The Slack app's client ID; unset turns [Slack](slack.md) off. |
 | `CONTEXT_DROP_SLACK_CLIENT_SECRET` | for Slack | — | The Slack app's client secret. |
 | `CONTEXT_DROP_SLACK_SIGNING_SECRET` | for Slack | — | Verifies events Slack sends to `/v1/slack/events`. |

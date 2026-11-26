@@ -140,9 +140,18 @@ func (f *fakeMachine) sentCount() int {
 	return len(f.sent)
 }
 
+// restrict limits the org's agents to linked people, as `slack restrict` does.
+func restrict(t *testing.T, c pool.Client) {
+	t.Helper()
+	if err := c.Post(context.Background(), "slack/restrict", map[string]bool{"restricted": true}, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAgentAsksAPersonAndTheirThreadReplyComesBack(t *testing.T) {
 	o, fs, laptop, c := slackOrg(t)
 	ctx := context.Background()
+	restrict(t, c)
 	if err := c.Post(ctx, "slack/members", map[string]string{"op": "add", "user": "@avyay"}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -197,8 +206,9 @@ func TestDMGoesToTheAgentThatOpenedIt(t *testing.T) {
 	waitFor(t, "the DM to reach the agent", func() bool { return laptop.sentCount() == 1 })
 }
 
-func TestUnlinkedPeopleAreToldInsteadOfReachingAgents(t *testing.T) {
+func TestUnlinkedPeopleAreToldInsteadOfReachingAgentsWhenRestricted(t *testing.T) {
 	o, fs, laptop, c := slackOrg(t)
+	restrict(t, c)
 	if _, err := c.Send(context.Background(), pool.SendRequest{Slack: "@avyay", Text: "hi", Agent: "cc-00000001"}); err != nil {
 		t.Fatal(err)
 	}
@@ -359,5 +369,20 @@ func TestBotTokenIsSealedAtRest(t *testing.T) {
 	raw, _ := json.Marshal(o.server.store.st)
 	if bytes.Contains(raw, []byte("xoxb-secret")) {
 		t.Fatal("the bot token is stored in the clear")
+	}
+}
+
+func TestAnyoneInTheWorkspaceReachesAgentsByDefault(t *testing.T) {
+	o, _, laptop, c := slackOrg(t)
+	// Nobody is linked, and the org is not restricted.
+	if _, err := c.Send(context.Background(), pool.SendRequest{To: "@avyay", Text: "Which region?", Agent: "cc-00000001"}); err != nil {
+		t.Fatal(err)
+	}
+	o.slackEvent(t, "E1", map[string]any{"type": "message", "user": "U0000AVY", "text": "us-east", "channel": "D0000AVY", "channel_type": "im", "ts": "1700000020.000000"})
+	waitFor(t, "an unlinked teammate's DM to reach the agent", func() bool { return laptop.sentCount() == 1 })
+	laptop.mu.Lock()
+	defer laptop.mu.Unlock()
+	if got := laptop.sent[0]; !strings.Contains(got.Text, "us-east") || got.From != "Avyay on Slack" {
+		t.Fatalf("agent got %+v", got)
 	}
 }

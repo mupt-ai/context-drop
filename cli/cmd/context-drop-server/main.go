@@ -121,7 +121,10 @@ func newOrgServer(cfg config.ServerConfig) (*orgserver.Server, error) {
 		return s, nil
 	}
 	st.SetSealKey(cfg.TokenKey)
-	s.Extensions = append(s.Extensions, &linear.Ext{})
+	if cfg.LinearClientID != "" && (cfg.LinearClientSecret == "" || cfg.LinearWebhookSecret == "") {
+		return nil, fmt.Errorf("a Linear app needs CONTEXT_DROP_LINEAR_CLIENT_SECRET and CONTEXT_DROP_LINEAR_WEBHOOK_SECRET with CONTEXT_DROP_LINEAR_CLIENT_ID")
+	}
+	s.Extensions = append(s.Extensions, &linear.Ext{ClientID: cfg.LinearClientID, ClientSecret: cfg.LinearClientSecret, WebhookSecret: cfg.LinearWebhookSecret})
 	switch {
 	case cfg.SlackClientID == "":
 		slog.Info("slack is off (set CONTEXT_DROP_SLACK_CLIENT_ID to turn it on)")
