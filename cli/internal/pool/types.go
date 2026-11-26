@@ -122,15 +122,28 @@ type SendRequest struct {
 	From   string   `json:"from,omitempty"`
 	// Agent is the sending agent's session on the calling machine, if an agent sends.
 	Agent string `json:"agent,omitempty"`
-	// Slack sends to people on the org's Slack instead of to agents: "#channel", "@person" (a
-	// handle, email, or user ID), or "slack:CHANNEL/TS" to reply in a thread. Replies in the
-	// thread it starts, and in a DM, come back to the sending agent as prompts.
+	// To sends to people through one of the org's extensions instead of to agents: on Slack,
+	// "#channel", "@person", or "slack:CHANNEL/TS"; on Linear, "linear:ENG-123". Replies to the
+	// sending agent's message come back to it as prompts.
+	To string `json:"to,omitempty"`
+	// Slack is the older name for To, still accepted from clients that predate extensions.
 	Slack string `json:"slack,omitempty"`
 }
 
-// IsSlackTarget reports whether a send target names people on Slack rather than an agent.
-func IsSlackTarget(t string) bool {
-	return strings.HasPrefix(t, "#") || strings.HasPrefix(t, "@") || strings.HasPrefix(t, "slack:")
+// PeopleTarget returns where the request sends to people, or "" when it sends to agents.
+func (r SendRequest) PeopleTarget() string {
+	if r.To != "" {
+		return r.To
+	}
+	return r.Slack
+}
+
+var scheme = regexp.MustCompile(`^[a-z][a-z0-9]*:`)
+
+// IsPeopleTarget reports whether a send target names people through an extension rather than an
+// agent: "#channel", "@person", or "scheme:…" such as "slack:C1/TS" or "linear:ENG-123".
+func IsPeopleTarget(t string) bool {
+	return strings.HasPrefix(t, "#") || strings.HasPrefix(t, "@") || scheme.MatchString(t)
 }
 
 // SlackReadRequest pulls messages from a Slack conversation.

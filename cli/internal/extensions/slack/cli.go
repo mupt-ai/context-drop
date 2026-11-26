@@ -1,4 +1,4 @@
-package cli
+package slack
 
 import (
 	"context"
@@ -10,19 +10,18 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"contextdrop.dev/context-drop/internal/extensions"
 	"contextdrop.dev/context-drop/internal/pool"
-	"contextdrop.dev/context-drop/internal/slack"
 )
 
-// slackSend posts a message to people on the org's Slack. When an agent sends it, replies in the
-// thread (or DM) come back to that agent as prompts; --wait also prints the first replies here.
-func slackSend(cmd *cobra.Command, target, text, from string, wait bool, timeout time.Duration) error {
-	m, err := orgMembership()
+// Send posts a message to people on the org's Slack from the CLI. When an agent sends it, replies in
+// the thread (or DM) come back to that agent as prompts; wait also prints the first replies here.
+func Send(cmd *cobra.Command, env extensions.CLI, target, text, from string, wait bool, timeout time.Duration) error {
+	c, _, err := env.Client()
 	if err != nil {
 		return err
 	}
-	c := pool.Client{Membership: m}
-	out, err := c.Send(cmd.Context(), pool.SendRequest{Slack: target, Text: text, From: from, Agent: callerAgent(cmd.Context())})
+	out, err := c.Send(cmd.Context(), pool.SendRequest{To: target, Text: text, From: from, Agent: env.Agent(cmd.Context())})
 	if err != nil {
 		return err
 	}
@@ -40,14 +39,14 @@ func slackSend(cmd *cobra.Command, target, text, from string, wait bool, timeout
 	if since == "" {
 		_, since, _ = strings.Cut(strings.TrimPrefix(ref, "slack:"), "/")
 	}
-	return slackWait(cmd, c, ref, since, timeout)
+	return waitForReply(cmd, c, ref, since, timeout)
 }
 
-// slackWaitEvery is how often slackWait reads Slack.
-var slackWaitEvery = 3 * time.Second
+// waitEvery is how often waitForReply reads Slack.
+var waitEvery = 3 * time.Second
 
-// slackWait reads a thread (and, for a DM, the DM itself) until a person replies, and prints the replies.
-func slackWait(cmd *cobra.Command, c pool.Client, ref, since string, timeout time.Duration) error {
+// waitForReply reads a thread (and, for a DM, the DM itself) until a person replies, and prints the replies.
+func waitForReply(cmd *cobra.Command, c pool.Client, ref, since string, timeout time.Duration) error {
 	targets := []string{ref}
 	if ch, _, _ := strings.Cut(strings.TrimPrefix(ref, "slack:"), "/"); strings.HasPrefix(ch, "D") {
 		targets = append(targets, "slack:"+ch)
@@ -63,26 +62,26 @@ func slackWait(cmd *cobra.Command, c pool.Client, ref, since string, timeout tim
 				continue
 			}
 			for _, msg := range res.Messages {
-				if !msg.Bot && !seen[msg.TS] && slackAfter(msg.TS, since) {
+				if !msg.Bot && !seen[msg.TS] && after(msg.TS, since) {
 					seen[msg.TS] = true
 					replies = append(replies, msg)
 				}
 			}
 		}
 		if len(replies) > 0 {
-			printSlack(cmd, replies)
+			printMessages(cmd, replies)
 			return nil
 		}
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("timed out after %s waiting for a reply on %s", timeout, ref)
-		case <-time.After(slackWaitEvery):
+		case <-time.After(waitEvery):
 		}
 	}
 }
 
-// slackAfter reports whether Slack timestamp ts is later than since; an empty since accepts everything.
-func slackAfter(ts, since string) bool {
+// after reports whether Slack timestamp ts is later than since; an empty since accepts everything.
+func after(ts, since string) bool {
 	if since == "" {
 		return true
 	}
@@ -94,10 +93,16 @@ func slackAfter(ts, since string) bool {
 	return a > b
 }
 
-func printSlack(cmd *cobra.Command, msgs []pool.SlackMessage) {
+func printMessages(cmd *cobra.Command, msgs []pool.SlackMessage) {
 	w := cmd.OutOrStdout()
 	for _, msg := range msgs {
-		who := firstNonEmptyString(msg.Name, msg.User, "bot")
+		who := msg.Name
+		if who == "" {
+			who = msg.User
+		}
+		if who == "" {
+			who = "bot"
+		}
 		if msg.Bot {
 			who += " (app)"
 		}
@@ -113,7 +118,8 @@ func printSlack(cmd *cobra.Command, msgs []pool.SlackMessage) {
 	}
 }
 
-func newSlackCommand() *cobra.Command {
+// Command is `context-drop slack`.
+func Command(env extensions.CLI) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "slack",
 		Short: "Connect the org to Slack, so agents can message people and people can answer",
@@ -122,28 +128,29 @@ func newSlackCommand() *cobra.Command {
 			"to that agent as its next prompt. Other channel messages are never pushed; read them with `slack read`.\n" +
 			"Only people linked with `slack allow` can reach agents.",
 	}
-	cmd.AddCommand(newSlackInstallCommand(), newSlackConnectCommand(), newSlackStatusCommand(), newSlackAllowCommand(), newSlackDisallowCommand(),
-		newSlackReadCommand(), newSlackUninstallCommand(), newSlackManifestCommand())
+	cmd.AddCommand(installCommand(env), connectCommand(env), statusCommand(env), allowCommand(env), disallowCommand(env),
+		restrictCommand(env, true), restrictCommand(env, false),
+		readCommand(env), uninstallCommand(env), manifestCommand(env))
 	return cmd
 }
 
-func newSlackInstallCommand() *cobra.Command {
+func installCommand(env extensions.CLI) *cobra.Command {
 	return &cobra.Command{
 		Use:   "install",
 		Short: "Print a link that connects the org to a Slack workspace",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			m, err := orgMembership()
+			c, m, err := env.Client()
 			if err != nil {
 				return err
 			}
 			var out struct{ URL string }
-			if err := (pool.Client{Membership: m}).Post(cmd.Context(), "slack/install", struct{}{}, &out); err != nil {
+			if err := c.Post(cmd.Context(), "slack/install", struct{}{}, &out); err != nil {
 				return err
 			}
 			fmt.Fprintf(cmd.ErrOrStderr(), "Connecting org %s to Slack in your browser (the link expires in 30 minutes):\n", m.Org)
 			fmt.Fprintln(cmd.OutOrStdout(), out.URL)
-			if err := openBrowser(out.URL); err != nil {
+			if err := extensions.OpenBrowser(out.URL); err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "Open the link above yourself: %v\n", err)
 			}
 			return nil
@@ -151,37 +158,38 @@ func newSlackInstallCommand() *cobra.Command {
 	}
 }
 
-type slackMember struct {
+type memberRow struct {
 	UserID  string    `json:"user_id"`
 	Name    string    `json:"name"`
 	AddedBy string    `json:"added_by"`
 	AddedAt time.Time `json:"added_at"`
 }
 
-func newSlackStatusCommand() *cobra.Command {
+func statusCommand(env extensions.CLI) *cobra.Command {
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show the org's Slack workspace and the people linked to it",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			m, err := orgMembership()
+			c, m, err := env.Client()
 			if err != nil {
 				return err
 			}
 			var st struct {
-				Configured bool          `json:"configured"`
-				Installed  bool          `json:"installed"`
-				Team       string        `json:"team"`
-				TeamID     string        `json:"team_id"`
-				BotUserID  string        `json:"bot_user_id"`
-				Members    []slackMember `json:"members"`
+				Configured bool        `json:"configured"`
+				Installed  bool        `json:"installed"`
+				Team       string      `json:"team"`
+				TeamID     string      `json:"team_id"`
+				BotUserID  string      `json:"bot_user_id"`
+				Restricted bool        `json:"restricted"`
+				Members    []memberRow `json:"members"`
 			}
-			if err := (pool.Client{Membership: m}).Post(cmd.Context(), "slack/status", struct{}{}, &st); err != nil {
+			if err := c.Post(cmd.Context(), "slack/status", struct{}{}, &st); err != nil {
 				return err
 			}
 			if asJSON {
-				return writeJSON(cmd.OutOrStdout(), st)
+				return env.JSON(cmd.OutOrStdout(), st)
 			}
 			out := cmd.OutOrStdout()
 			switch {
@@ -193,8 +201,15 @@ func newSlackStatusCommand() *cobra.Command {
 				return nil
 			}
 			fmt.Fprintf(out, "Org %s is connected to Slack workspace %s (%s).\n", m.Org, st.Team, st.TeamID)
+			if st.Restricted {
+				fmt.Fprintln(out, "Only linked people can reach agents (`slack unrestrict` opens it to the whole workspace).")
+			} else {
+				fmt.Fprintln(out, "Anyone in the workspace can reach agents (`slack restrict` limits it to linked people).")
+			}
 			if len(st.Members) == 0 {
-				fmt.Fprintln(out, "Nobody is linked yet, so no one can answer agents. Run `context-drop slack allow @person`.")
+				if st.Restricted {
+					fmt.Fprintln(out, "Nobody is linked yet, so no one can answer agents. Run `context-drop slack allow @person`.")
+				}
 				return nil
 			}
 			w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
@@ -209,16 +224,16 @@ func newSlackStatusCommand() *cobra.Command {
 	return cmd
 }
 
-func slackMembers(cmd *cobra.Command, op, user string) (slackMember, error) {
-	var out slackMember
-	m, err := orgMembership()
+func members(cmd *cobra.Command, env extensions.CLI, op, user string) (memberRow, error) {
+	var out memberRow
+	c, _, err := env.Client()
 	if err != nil {
 		return out, err
 	}
-	return out, (pool.Client{Membership: m}).Post(cmd.Context(), "slack/members", map[string]string{"op": op, "user": user}, &out)
+	return out, c.Post(cmd.Context(), "slack/members", map[string]string{"op": op, "user": user}, &out)
 }
 
-func newSlackAllowCommand() *cobra.Command {
+func allowCommand(env extensions.CLI) *cobra.Command {
 	return &cobra.Command{
 		Use:   "allow @PERSON...",
 		Short: "Let people answer agents: their DMs and thread replies reach the agents waiting on them",
@@ -226,7 +241,7 @@ func newSlackAllowCommand() *cobra.Command {
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			for _, who := range args {
-				p, err := slackMembers(cmd, "add", who)
+				p, err := members(cmd, env, "add", who)
 				if err != nil {
 					return fmt.Errorf("%s: %w", who, err)
 				}
@@ -237,14 +252,41 @@ func newSlackAllowCommand() *cobra.Command {
 	}
 }
 
-func newSlackDisallowCommand() *cobra.Command {
+func restrictCommand(env extensions.CLI, on bool) *cobra.Command {
+	use, short := "unrestrict", "Let anyone in the Slack workspace reach agents (the default)"
+	if on {
+		use, short = "restrict", "Only people linked with `slack allow` can reach agents"
+	}
+	return &cobra.Command{
+		Use:   use,
+		Short: short,
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			c, m, err := env.Client()
+			if err != nil {
+				return err
+			}
+			if err := c.Post(cmd.Context(), "slack/restrict", map[string]bool{"restricted": on}, nil); err != nil {
+				return err
+			}
+			if on {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Org %s: only linked people reach agents now.\n", m.Org)
+			} else {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Org %s: anyone in the Slack workspace can reach agents.\n", m.Org)
+			}
+			return nil
+		},
+	}
+}
+
+func disallowCommand(env extensions.CLI) *cobra.Command {
 	return &cobra.Command{
 		Use:   "disallow @PERSON...",
 		Short: "Stop people's messages from reaching agents",
 		Args:  cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			for _, who := range args {
-				p, err := slackMembers(cmd, "remove", who)
+				p, err := members(cmd, env, "remove", who)
 				if err != nil {
 					return fmt.Errorf("%s: %w", who, err)
 				}
@@ -255,7 +297,7 @@ func newSlackDisallowCommand() *cobra.Command {
 	}
 }
 
-func newSlackReadCommand() *cobra.Command {
+func readCommand(env extensions.CLI) *cobra.Command {
 	var limit int
 	var oldest string
 	var asJSON bool
@@ -265,18 +307,18 @@ func newSlackReadCommand() *cobra.Command {
 		Long:  "TARGET is #channel, @person (their DM with the app), or slack:CHANNEL/TS for a thread.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			m, err := orgMembership()
+			c, _, err := env.Client()
 			if err != nil {
 				return err
 			}
-			res, err := (pool.Client{Membership: m}).SlackRead(cmd.Context(), pool.SlackReadRequest{Target: args[0], Limit: limit, Oldest: oldest})
+			res, err := c.SlackRead(cmd.Context(), pool.SlackReadRequest{Target: args[0], Limit: limit, Oldest: oldest})
 			if err != nil {
 				return err
 			}
 			if asJSON {
-				return writeJSON(cmd.OutOrStdout(), res)
+				return env.JSON(cmd.OutOrStdout(), res)
 			}
-			printSlack(cmd, res.Messages)
+			printMessages(cmd, res.Messages)
 			return nil
 		},
 	}
@@ -286,17 +328,17 @@ func newSlackReadCommand() *cobra.Command {
 	return cmd
 }
 
-func newSlackUninstallCommand() *cobra.Command {
+func uninstallCommand(env extensions.CLI) *cobra.Command {
 	return &cobra.Command{
 		Use:   "uninstall",
 		Short: "Disconnect the org from Slack and forget its linked people",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			m, err := orgMembership()
+			c, m, err := env.Client()
 			if err != nil {
 				return err
 			}
-			if err := (pool.Client{Membership: m}).Post(cmd.Context(), "slack/uninstall", struct{}{}, nil); err != nil {
+			if err := c.Post(cmd.Context(), "slack/uninstall", struct{}{}, nil); err != nil {
 				return err
 			}
 			fmt.Fprintf(cmd.ErrOrStderr(), "Org %s is disconnected from Slack. Remove the app in Slack too to revoke its token.\n", m.Org)
@@ -305,7 +347,7 @@ func newSlackUninstallCommand() *cobra.Command {
 	}
 }
 
-func newSlackManifestCommand() *cobra.Command {
+func manifestCommand(env extensions.CLI) *cobra.Command {
 	var server, name string
 	cmd := &cobra.Command{
 		Use:   "manifest",
@@ -315,13 +357,9 @@ func newSlackManifestCommand() *cobra.Command {
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if server == "" {
-				if m, ok, _ := joined(); ok {
-					server = m.Server
-				} else {
-					server = pool.DefaultServer
-				}
+				server = env.Server()
 			}
-			fmt.Fprint(cmd.OutOrStdout(), slack.Manifest(name, server))
+			fmt.Fprint(cmd.OutOrStdout(), Manifest(name, server))
 			return nil
 		},
 	}

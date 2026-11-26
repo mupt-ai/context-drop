@@ -99,10 +99,11 @@ docker run --rm -p 8080:8080 \
 | `CONTEXT_DROP_ORG_STATE` | no | `<data dir>/orgs.json` | File holding orgs and joined machines (credentials are stored as hashes). |
 | `CONTEXT_DROP_DENO` | for mods | `deno` on PATH | Deno executable that runs [mods](mods.md); without it, mods are off. |
 | `CONTEXT_DROP_MODS_DIR` | no | `<data dir>/mods` | Deployed mods and their key-value data. |
+| `CONTEXT_DROP_TOKEN_KEY` | for Slack or Linear | unset | Seals the tokens [extensions](extensions.md) store; unset turns Slack and Linear off, and changing it disconnects every org. `CONTEXT_DROP_SLACK_KEY` is its older name. |
+| `CONTEXT_DROP_LINEAR_CLIENT_ID`, `_CLIENT_SECRET`, `_WEBHOOK_SECRET` | for the Linear app | unset | The [Linear](linear.md) OAuth app; without it, orgs connect Linear with an API key. |
 | `CONTEXT_DROP_SLACK_CLIENT_ID` | for Slack | unset | The Slack app's client ID; unset turns [Slack](slack.md) off. |
 | `CONTEXT_DROP_SLACK_CLIENT_SECRET` | for Slack | — | The Slack app's client secret. |
 | `CONTEXT_DROP_SLACK_SIGNING_SECRET` | for Slack | — | Verifies events Slack sends to `/v1/slack/events`. |
-| `CONTEXT_DROP_SLACK_KEY` | for Slack | — | Seals each org's bot token at rest; changing it disconnects every org. |
 
 ## Orgs
 
@@ -121,6 +122,6 @@ Machines hold a WebSocket to `GET /v1/{org}/connect`; `POST /v1/{org}/list`, `/r
 
 `https://contextdrop.dev` runs on one VM, `context-drop` in GCP project `context-drop` (us-central1-a, e2-medium, static IP `130.211.238.184`, daily disk snapshots kept 7 days). Caddy terminates TLS and proxies to the server, which runs as the systemd unit `context-drop`. Drops are stored in the `context-drop-prod` bucket; orgs live in `/var/lib/context-drop/orgs.json` on the VM's disk.
 
-Deploy the current checkout with `deploy/vm/deploy.sh`. It builds the server, copies it with the settings in `deploy/vm/env` and the admin token from Secret Manager (`context-drop-admin-token`), and restarts it. When `context-drop-slack-client-id` exists in Secret Manager, it also loads `context-drop-slack-client-secret`, `context-drop-slack-signing-secret`, and `context-drop-slack-key`, which turns on [Slack](slack.md) with the shared production app. Restarting drops every daemon's connection for a second; they reconnect on their own. Logs: `gcloud compute ssh context-drop --zone us-central1-a --project context-drop --tunnel-through-iap -- sudo journalctl -u context-drop -f`. SSH is open only to Google's IAP range (`35.235.240.0/20`), so it always goes through `--tunnel-through-iap`.
+Deploy the current checkout with `deploy/vm/deploy.sh`. It builds the server, copies it with the settings in `deploy/vm/env` and the admin token from Secret Manager (`context-drop-admin-token`), and restarts it. When `context-drop-slack-client-id` exists in Secret Manager, it also loads `context-drop-slack-client-secret`, `context-drop-slack-signing-secret`, and `context-drop-slack-key`, which turns on [Slack](slack.md) with the shared production app and [Linear](linear.md). Restarting drops every daemon's connection for a second; they reconnect on their own. Logs: `gcloud compute ssh context-drop --zone us-central1-a --project context-drop --tunnel-through-iap -- sudo journalctl -u context-drop -f`. SSH is open only to Google's IAP range (`35.235.240.0/20`), so it always goes through `--tunnel-through-iap`.
 
 The `dari` org's join token is in Secret Manager as `context-drop-join-dari`.

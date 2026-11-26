@@ -256,11 +256,11 @@ func newSendCommand() *cobra.Command {
 				text = string(data)
 			}
 			text = strings.TrimSpace(text)
-			if !all && pool.IsSlackTarget(args[0]) {
+			if !all && pool.IsPeopleTarget(args[0]) {
 				if ask || len(files) > 0 || filter.set() || org.set() {
-					return fmt.Errorf("a Slack target takes a message, optionally --wait; not --ask, --file, or filters (use `context-drop upload` for a link)")
+					return fmt.Errorf("a person's target takes a message, and --wait on Slack; not --ask, --file, or filters (use `context-drop upload` for a link)")
 				}
-				return slackSend(cmd, args[0], text, from, wait, timeout)
+				return sendToPeople(cmd, args[0], text, from, wait, timeout)
 			}
 			if ask {
 				if all || wait || len(files) > 0 || filter.set() || org.set() {

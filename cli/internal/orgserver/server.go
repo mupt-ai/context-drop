@@ -19,6 +19,7 @@ import (
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
 
+	"contextdrop.dev/context-drop/internal/extensions"
 	"contextdrop.dev/context-drop/internal/mods"
 	"contextdrop.dev/context-drop/internal/pool"
 )
@@ -32,10 +33,11 @@ type Server struct {
 	CallTimeout time.Duration
 	// Mods runs the org's mods; nil turns mods off.
 	Mods *mods.Service
-	// Slack is the server's Slack app; nil turns Slack off.
-	Slack *SlackApp
+	// Extensions connect orgs to where their people talk, such as Slack and Linear.
+	Extensions []extensions.Extension
+	// PublicURL is the server's public origin, which extensions give out for OAuth and webhooks.
+	PublicURL string
 
-	slack    slackState
 	mu       sync.Mutex
 	machines map[key]*machine
 	seq      atomic.Uint64
@@ -60,7 +62,8 @@ func New(store *Store, adminToken string, log *slog.Logger) *Server {
 	return &Server{store: store, adminToken: adminToken, log: log, machines: map[key]*machine{}}
 }
 
-// Register adds the org routes to mux.
+// Register adds the org routes, and every extension's, to mux. An extension whose saved state cannot
+// be read is left off, and logged.
 func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/orgs", s.handleCreateOrg)
 	mux.HandleFunc("POST /v1/orgs/{org}/join-token", s.handleRotateToken)
@@ -75,7 +78,14 @@ func (s *Server) Register(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/{org}/mods/deploy", s.authed(s.handleDeploy))
 	mux.HandleFunc("POST /v1/{org}/mods/{name}/call", s.authed(s.handleCall))
 	mux.HandleFunc("POST /v1/{org}/kv", s.authed(s.handleKV))
-	s.registerSlack(mux)
+	if s == nil {
+		return
+	}
+	for _, e := range s.Extensions {
+		if err := e.Register(mux, host{s}); err != nil {
+			s.log.Error("extension is off", "extension", e.Name(), "err", err)
+		}
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
@@ -558,9 +568,15 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request, c caller) {
 	if !decode(w, r, &in) {
 		return
 	}
-	// Posting to people needs only the slack capability; messaging agents needs send.
-	if in.Slack != "" {
-		if !allowed(w, c, "slack") {
+	// Posting to people needs only the extension's capability; messaging agents needs send.
+	to := in.PeopleTarget()
+	var ext extensions.Extension
+	if to != "" {
+		if ext = s.extension(to); ext == nil {
+			writeError(w, http.StatusBadRequest, "unsupported", fmt.Sprintf("no extension on this server sends to %q", to))
+			return
+		}
+		if !allowed(w, c, ext.Name()) {
 			return
 		}
 	} else if !allowed(w, c, "send") {
@@ -573,28 +589,6 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request, c caller) {
 		writeError(w, http.StatusBadRequest, "bad_request", "message is empty")
 		return
 	}
-	if in.Slack != "" {
-		if !in.Target.IsZero() {
-			writeError(w, http.StatusBadRequest, "bad_request", "send to agents or to Slack, not both at once")
-			return
-		}
-		from := sender(in.From, c.machine)
-		if c.mod != nil {
-			from = "mod " + c.mod.Mod
-		}
-		replyTo := ""
-		if in.Agent != "" {
-			if _, _, ok := pool.SplitID(c.machine + "/" + in.Agent); ok {
-				replyTo = c.machine + "/" + in.Agent
-			}
-		}
-		s.slackSend(w, r, c, in, from, replyTo)
-		return
-	}
-	if in.Target.IsZero() {
-		writeError(w, http.StatusBadRequest, "bad_request", "name a target: an agent ID, or all, machine, cwd, or kind")
-		return
-	}
 	from := sender(in.From, c.machine)
 	if c.mod != nil {
 		from = "mod " + c.mod.Mod
@@ -604,6 +598,23 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request, c caller) {
 		if _, _, ok := pool.SplitID(c.machine + "/" + in.Agent); ok {
 			replyTo = c.machine + "/" + in.Agent
 		}
+	}
+	if ext != nil {
+		if !in.Target.IsZero() {
+			writeError(w, http.StatusBadRequest, "bad_request", "send to agents or to people, not both at once")
+			return
+		}
+		res, perr := ext.Send(r.Context(), c.ext(), to, in.Text, from, replyTo)
+		if perr != nil {
+			writeError(w, statusFor(perr), perr.Code, perr.Message)
+			return
+		}
+		writeJSON(w, http.StatusOK, pool.SendResponse{Results: []pool.SendResult{res}})
+		return
+	}
+	if in.Target.IsZero() {
+		writeError(w, http.StatusBadRequest, "bad_request", "name a target: an agent ID, or all, machine, cwd, or kind")
+		return
 	}
 	var targets []string
 	if in.Target.ID != "" {

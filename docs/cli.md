@@ -40,7 +40,11 @@ Run a mod. Flags fill its input and are converted to the input's types (a repeat
 
 #### `context-drop mcp`
 
-Run an MCP server on standard input and output that gives an agent `list`, `read`, `send`, `ask`, `slack_read`, and every mod as tools, and tells it when the list changes, so a newly deployed mod reaches running agents without a restart. `send` also takes `#channel`, `@person`, or `slack:CHANNEL/TS` to message people on the org's Slack. Add it to Claude Code with `claude mcp add context-drop -- context-drop mcp`.
+Run an MCP server on standard input and output that gives an agent `list`, `read`, `send`, `ask`, `slack_read`, `linear_read`, and every mod as tools, and tells it when the list changes, so a newly deployed mod reaches running agents without a restart. `send` also takes `#channel`, `@person`, or `slack:CHANNEL/TS` to message people on the org's Slack, and `linear:ENG-123` to comment on a Linear issue. Add it to Claude Code with `claude mcp add context-drop -- context-drop mcp`.
+
+### Linear
+
+`context-drop linear install | status | read ISSUE | uninstall`. See the [Linear guide](linear.md).
 
 ### Slack
 

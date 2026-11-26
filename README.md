@@ -171,16 +171,18 @@ claude mcp add context-drop -- context-drop mcp   # agents get list, read, send,
 
 A mod is one TypeScript file that the server runs in its own Deno process for each call, with only the capabilities its `can` list names: the org's `list`, `read`, and `send`, calling other mods, and its own key-value store. It has no other network, file, or environment access. Deploying a file with the same name replaces the mod. The [mods guide](docs/mods.md) has the full API; [`mods/`](mods) has two reference mods, `stuck` and `lock` (an org-wide lock on a path).
 
-### Talk to people on Slack
+### Talk to people on Slack and Linear
 
 ```sh
 context-drop slack install                 # once per org: connect a workspace in your browser
 context-drop slack connect                 # each person: sign in with Slack to link yourself
 context-drop send '#deploys' 'Ship v2 to prod?'
 context-drop send @avyay 'Which region for the bucket?'
+context-drop linear install                 # once per org: paste a Linear admin's API key
+context-drop send linear:ENG-123 'Fixed in #412. OK to close?'
 ```
 
-On contextdrop.dev, Slack is already set up for every org, so an admin only runs `context-drop slack install` once to connect a workspace. Self-hosted servers need their own Slack app; see the [Slack guide](docs/slack.md). An org can connect one Slack workspace, and `send` then reaches people too: a channel, a person's DM, or a thread. A linked person's reply in an agent's thread, or a DM to the app, comes back to that agent as its next prompt; other channel messages are never pushed, and agents read them on demand. Agents decide on their own when a person is needed. Mods with `slack` in their `can` list can post, read, and react with the org's bot token. The [Slack guide](docs/slack.md) covers setup and routing.
+On contextdrop.dev, Slack is already set up for every org, so an admin only runs `context-drop slack install` once to connect a workspace. Self-hosted servers need their own Slack app; see the [Slack guide](docs/slack.md). An org can connect one Slack workspace, and `send` then reaches people too: a channel, a person's DM, or a thread. A linked person's reply in an agent's thread, or a DM to the app, comes back to that agent as its next prompt; other channel messages are never pushed, and agents read them on demand. Agents decide on their own when a person is needed. Mods with `slack` in their `can` list can post, read, and react with the org's bot token. A new comment on a Linear issue an agent commented on comes back to that agent the same way. See [extensions](docs/extensions.md), the [Slack guide](docs/slack.md), and the [Linear guide](docs/linear.md).
 
 ### Upload a file
 

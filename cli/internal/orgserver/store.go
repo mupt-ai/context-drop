@@ -38,20 +38,24 @@ type Machine struct {
 }
 
 type state struct {
-	Orgs          []Org          `json:"orgs"`
-	Machines      []Machine      `json:"machines"`
-	SlackInstalls []SlackInstall `json:"slack_installs,omitempty"`
-	SlackMembers  []SlackMember  `json:"slack_members,omitempty"`
-	SlackRoutes   []SlackRoute   `json:"slack_routes,omitempty"`
+	Orgs     []Org     `json:"orgs"`
+	Machines []Machine `json:"machines"`
+	// Extensions holds each extension's own saved state, by extension name.
+	Extensions map[string]json.RawMessage `json:"extensions,omitempty"`
+
+	// Slack's state from before Slack became an extension; OpenStore moves it into Extensions.
+	SlackInstalls json.RawMessage `json:"slack_installs,omitempty"`
+	SlackMembers  json.RawMessage `json:"slack_members,omitempty"`
+	SlackRoutes   json.RawMessage `json:"slack_routes,omitempty"`
 }
 
 // Store keeps orgs and machines in one JSON file. It is enough for a single
 // server; a multi-instance relay moves this to Postgres.
 type Store struct {
-	path     string
-	mu       sync.Mutex
-	st       state
-	slackKey []byte // seals Slack bot tokens; nil turns Slack off
+	path    string
+	mu      sync.Mutex
+	st      state
+	sealKey []byte // seals extensions' tokens; nil means they cannot store any
 }
 
 // OpenStore loads the store at path, creating it on first write.
@@ -67,7 +71,68 @@ func OpenStore(path string) (*Store, error) {
 	if err := json.Unmarshal(raw, &s.st); err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
+	if err := s.st.moveSlack(); err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
 	return s, nil
+}
+
+// moveSlack moves Slack's state from its old top-level keys into Extensions["slack"], keeping each
+// record as it was. The file is rewritten in the new shape on the next save.
+func (st *state) moveSlack() error {
+	if st.SlackInstalls == nil && st.SlackMembers == nil && st.SlackRoutes == nil {
+		return nil
+	}
+	if _, ok := st.Extensions["slack"]; !ok {
+		raw, err := json.Marshal(map[string]json.RawMessage{"installs": st.SlackInstalls, "members": st.SlackMembers, "routes": st.SlackRoutes})
+		if err != nil {
+			return err
+		}
+		if st.Extensions == nil {
+			st.Extensions = map[string]json.RawMessage{}
+		}
+		st.Extensions["slack"] = raw
+	}
+	st.SlackInstalls, st.SlackMembers, st.SlackRoutes = nil, nil, nil
+	return nil
+}
+
+// LoadExtension reads an extension's saved state into v; v stays as it is when nothing is saved.
+func (s *Store) LoadExtension(name string, v any) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	raw, ok := s.st.Extensions[name]
+	if !ok {
+		return nil
+	}
+	return json.Unmarshal(raw, v)
+}
+
+// SaveExtension writes an extension's state.
+func (s *Store) SaveExtension(name string, v any) error {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.st.Extensions == nil {
+		s.st.Extensions = map[string]json.RawMessage{}
+	}
+	s.st.Extensions[name] = raw
+	return s.save()
+}
+
+// HasOrg reports whether an org exists.
+func (s *Store) HasOrg(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, o := range s.st.Orgs {
+		if o.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Store) save() error {

@@ -3,7 +3,7 @@
 //   import { mod, z } from "@contextdrop/mod"
 //   export default mod({ name, description, input, can, run(input, cd) { ... } })
 
-export type Capability = "list" | "read" | "send" | "call" | "kv" | "slack"
+export type Capability = "list" | "read" | "send" | "call" | "kv" | "slack" | "linear"
 
 export type SlackMessage = {
   ts: string
@@ -26,7 +26,8 @@ export type ContextDrop = {
   caller: Caller
   list(selector?: Record<string, unknown>): Promise<Record<string, unknown>[]>
   read(id: string, options?: { last?: number; all?: boolean; after?: string }): Promise<Record<string, unknown>>
-  // A target of "#channel", "@person", or "slack:CHANNEL/TS" posts to Slack (needs "slack" in can).
+  // "#channel", "@person", or "slack:CHANNEL/TS" posts to Slack (needs "slack" in can); "linear:ENG-123"
+  // comments on a Linear issue (needs "linear" in can).
   send(target: string | Record<string, unknown>, text: string): Promise<Record<string, unknown>>
   // The org's Slack workspace, with the app's bot token (needs "slack" in can).
   slack: {
@@ -34,6 +35,11 @@ export type ContextDrop = {
     api(method: string, args?: Record<string, unknown>): Promise<Record<string, unknown>>
     // Messages in "#channel", "@person" (their DM with the app), or a "slack:CHANNEL/TS" thread, oldest first.
     read(target: string, options?: { limit?: number; oldest?: string }): Promise<{ channel: string; messages: SlackMessage[] }>
+  }
+  // The org's Linear workspace (needs "linear" in can).
+  linear: {
+    // An issue ("linear:ENG-123") and its latest comments, oldest first.
+    read(target: string, options?: { limit?: number }): Promise<{ issue: Record<string, unknown>; comments: Record<string, unknown>[] }>
   }
   call(name: string, input?: Record<string, unknown>): Promise<unknown>
   kv: {

@@ -32,6 +32,13 @@ sed "s|@HOSTS@|$HOSTS|" "$here/Caddyfile" >"$work/Caddyfile"
 				"$(gcloud secrets versions access latest --secret "context-drop-slack-${s%%:*}" --project "$PROJECT")"
 		done
 	fi
+	# The Linear app is on only when its client ID secret exists; then all three are required.
+	if gcloud secrets describe context-drop-linear-client-id --project "$PROJECT" >/dev/null 2>&1; then
+		for s in client-id:CLIENT_ID client-secret:CLIENT_SECRET webhook-secret:WEBHOOK_SECRET; do
+			printf 'CONTEXT_DROP_LINEAR_%s=%s\n' "${s#*:}" \
+				"$(gcloud secrets versions access latest --secret "context-drop-linear-${s%%:*}" --project "$PROJECT")"
+		done
+	fi
 } >"$work/env"
 chmod 600 "$work/env"
 

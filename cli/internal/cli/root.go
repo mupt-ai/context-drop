@@ -67,7 +67,7 @@ func NewRootCommand(build BuildInfo) *cobra.Command {
 	cmd.AddCommand(newModsCommand())
 	cmd.AddCommand(newCallCommand())
 	cmd.AddCommand(newMCPCommand())
-	cmd.AddCommand(newSlackCommand())
+	cmd.AddCommand(extensionCommands()...)
 	return cmd
 }
 

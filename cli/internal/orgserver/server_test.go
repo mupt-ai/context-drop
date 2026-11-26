@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"contextdrop.dev/context-drop/internal/extensions"
 	"contextdrop.dev/context-drop/internal/pool"
 )
 
@@ -70,17 +71,20 @@ type org struct {
 	cancel []context.CancelFunc
 }
 
-func newOrg(t *testing.T) *org {
+func newOrg(t *testing.T, exts ...extensions.Extension) *org {
 	t.Helper()
 	store, err := OpenStore(filepath.Join(t.TempDir(), "orgs.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	store.SetSealKey("token-key")
 	s := New(store, "admin-secret", nil)
 	s.CallTimeout = 5 * time.Second
+	s.Extensions = exts
 	mux := http.NewServeMux()
 	s.Register(mux)
 	o := &org{t: t, server: s, srv: httptest.NewServer(mux)}
+	s.PublicURL = o.srv.URL
 	t.Cleanup(func() {
 		for _, c := range o.cancel {
 			c()

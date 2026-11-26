@@ -218,12 +218,17 @@ type ServerConfig struct {
 	Deno string
 	// ModsDir holds deployed mods, their key-value data, and secrets.
 	ModsDir string
-	// Slack app credentials; without a client ID, signing secret, and token key, Slack is off.
+	// TokenKey seals the tokens extensions store, such as Slack bot tokens and Linear API keys.
+	// Without it, Slack and Linear are off.
+	TokenKey string
+	// Linear OAuth app credentials; without a client ID, orgs connect Linear with an API key instead.
+	LinearClientID      string
+	LinearClientSecret  string
+	LinearWebhookSecret string
+	// Slack app credentials; without a client ID, Slack is off.
 	SlackClientID      string
 	SlackClientSecret  string
 	SlackSigningSecret string
-	// SlackKey seals each org's bot token at rest.
-	SlackKey string
 }
 
 func LoadServerConfig() (ServerConfig, error) {
@@ -241,10 +246,14 @@ func LoadServerConfig() (ServerConfig, error) {
 		ModsDir:     strings.TrimSpace(os.Getenv("CONTEXT_DROP_MODS_DIR")),
 		MaxBytes:    envInt64("CONTEXT_DROP_MAX_BYTES", 25*1024*1024),
 
-		SlackClientID:      strings.TrimSpace(os.Getenv("CONTEXT_DROP_SLACK_CLIENT_ID")),
-		SlackClientSecret:  strings.TrimSpace(os.Getenv("CONTEXT_DROP_SLACK_CLIENT_SECRET")),
-		SlackSigningSecret: strings.TrimSpace(os.Getenv("CONTEXT_DROP_SLACK_SIGNING_SECRET")),
-		SlackKey:           strings.TrimSpace(os.Getenv("CONTEXT_DROP_SLACK_KEY")),
+		LinearClientID:      strings.TrimSpace(os.Getenv("CONTEXT_DROP_LINEAR_CLIENT_ID")),
+		LinearClientSecret:  strings.TrimSpace(os.Getenv("CONTEXT_DROP_LINEAR_CLIENT_SECRET")),
+		LinearWebhookSecret: strings.TrimSpace(os.Getenv("CONTEXT_DROP_LINEAR_WEBHOOK_SECRET")),
+		SlackClientID:       strings.TrimSpace(os.Getenv("CONTEXT_DROP_SLACK_CLIENT_ID")),
+		SlackClientSecret:   strings.TrimSpace(os.Getenv("CONTEXT_DROP_SLACK_CLIENT_SECRET")),
+		SlackSigningSecret:  strings.TrimSpace(os.Getenv("CONTEXT_DROP_SLACK_SIGNING_SECRET")),
+		// CONTEXT_DROP_SLACK_KEY is the token key's older name.
+		TokenKey: strings.TrimSpace(firstEnv("CONTEXT_DROP_TOKEN_KEY", "CONTEXT_DROP_SLACK_KEY")),
 
 		UploadsPerHour:     int(envInt64("CONTEXT_DROP_UPLOADS_PER_HOUR", 60)),
 		UploadBytesPerHour: envInt64("CONTEXT_DROP_UPLOAD_BYTES_PER_HOUR", 250*1024*1024),
@@ -317,4 +326,14 @@ func LoadCLIConfigFile() (CLIConfig, error) {
 // Configured reports whether setup has run or the launcher has been set up.
 func (c CLIConfig) Configured() bool {
 	return c.SetupDone || c.LaunchIn != "" || c.LaunchCommand != ""
+}
+
+// firstEnv is the first of the named environment variables that is set.
+func firstEnv(names ...string) string {
+	for _, n := range names {
+		if v := os.Getenv(n); v != "" {
+			return v
+		}
+	}
+	return ""
 }
