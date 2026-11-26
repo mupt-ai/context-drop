@@ -178,10 +178,14 @@ func (s *GCSStore) PutState(ctx context.Context, name, path string) error {
 		return err
 	}
 	defer f.Close()
+	// Cancelling the writer's context abandons the upload, so a failed copy never replaces the object.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	w := s.client.Bucket(s.bucket).Object(s.stateObject(name)).NewWriter(ctx)
 	w.ContentType = "application/octet-stream"
 	if _, err := io.Copy(w, f); err != nil {
-		w.Close()
+		cancel()
+		_ = w.Close()
 		return err
 	}
 	return w.Close()
