@@ -55,10 +55,10 @@ type Host interface {
 	Deliver(ctx context.Context, org, agent, text, from string) *pool.Error
 	// HasOrg reports whether an org exists.
 	HasOrg(org string) bool
-	// Load reads the extension's saved state into v; v stays as it is when nothing is saved.
-	Load(name string, v any) error
-	// Save writes the extension's state.
-	Save(name string, v any) error
+	// Load calls each with every org's saved state for the extension.
+	Load(name string, each func(org string, data json.RawMessage) error) error
+	// Save writes the extension's state for one org. Saving per org keeps each write small.
+	Save(name, org string, v any) error
 	// Seal encrypts a secret, such as a token, for storage; Unseal reverses it.
 	Seal(plain string) (string, error)
 	Unseal(sealed string) (string, error)

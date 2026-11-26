@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -364,10 +365,9 @@ func TestSlackAPIRefusesAdminMethods(t *testing.T) {
 
 func TestBotTokenIsSealedAtRest(t *testing.T) {
 	o, _, _, _ := slackOrg(t)
-	o.server.store.mu.Lock()
-	defer o.server.store.mu.Unlock()
-	raw, _ := json.Marshal(o.server.store.st)
-	if bytes.Contains(raw, []byte("xoxb-secret")) {
+	o.server.store.Close() // flush the write-ahead log into the file
+	raw, _ := os.ReadFile(o.server.store.Path())
+	if len(raw) == 0 || bytes.Contains(raw, []byte("xoxb-secret")) {
 		t.Fatal("the bot token is stored in the clear")
 	}
 }

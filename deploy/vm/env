@@ -8,6 +8,6 @@ CONTEXT_DROP_MAX_TTL=168h
 CONTEXT_DROP_MAX_BYTES=26214400
 CONTEXT_DROP_PROXY_HOPS=1
 CONTEXT_DROP_DATA_DIR=/var/lib/context-drop
-CONTEXT_DROP_ORG_STATE=/var/lib/context-drop/orgs.json
+CONTEXT_DROP_ORG_STATE=/var/lib/context-drop/orgs.db
 CONTEXT_DROP_DENO=/usr/local/bin/deno
 CONTEXT_DROP_MODS_DIR=/var/lib/context-drop/mods

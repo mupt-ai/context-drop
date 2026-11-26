@@ -99,7 +99,16 @@ func (e *Ext) Owns(target string) bool { return strings.HasPrefix(target, Prefix
 // Register implements extensions.Extension.
 func (e *Ext) Register(mux *http.ServeMux, h extensions.Host) error {
 	e.host = h
-	if err := h.Load(Name, &e.st); err != nil {
+	err := h.Load(Name, func(_ string, data json.RawMessage) error {
+		var st state
+		if err := json.Unmarshal(data, &st); err != nil {
+			return err
+		}
+		e.st.Installs = append(e.st.Installs, st.Installs...)
+		e.st.Routes = append(e.st.Routes, st.Routes...)
+		return nil
+	})
+	if err != nil {
 		return err
 	}
 	mux.HandleFunc("POST /v1/linear/events", e.handleEvents)
@@ -111,7 +120,21 @@ func (e *Ext) Register(mux *http.ServeMux, h extensions.Host) error {
 	return nil
 }
 
-func (e *Ext) save() error { return e.host.Save(Name, e.st) }
+// save writes one org's state; the caller holds e.mu.
+func (e *Ext) save(org string) error {
+	st := state{}
+	for _, i := range e.st.Installs {
+		if i.Org == org {
+			st.Installs = append(st.Installs, i)
+		}
+	}
+	for _, r := range e.st.Routes {
+		if r.Org == org {
+			st.Routes = append(st.Routes, r)
+		}
+	}
+	return e.host.Save(Name, org, st)
+}
 
 func (e *Ext) install(org string) (Install, bool) {
 	e.mu.Lock()
@@ -174,7 +197,7 @@ func (e *Ext) token(ctx context.Context, org string) (string, error) {
 			e.st.Installs[i].TokenSealed, e.st.Installs[i].RefreshSealed, e.st.Installs[i].Expires = in.TokenSealed, in.RefreshSealed, in.Expires
 		}
 	}
-	return tok.Access, e.save()
+	return tok.Access, e.save(org)
 }
 
 // storeToken seals a token into an install.
@@ -199,7 +222,7 @@ func (e *Ext) saveInstall(inst Install) error {
 		return errTaken
 	}
 	e.st.Installs = append(slices.DeleteFunc(e.st.Installs, func(i Install) bool { return i.Org == inst.Org }), inst)
-	return e.save()
+	return e.save(inst.Org)
 }
 
 func asPoolError(err error) *pool.Error {
@@ -319,7 +342,7 @@ func (e *Ext) handleUninstall(w http.ResponseWriter, r *http.Request, c extensio
 	e.mu.Lock()
 	e.st.Installs = slices.DeleteFunc(e.st.Installs, func(i Install) bool { return i.Org == c.Org })
 	e.st.Routes = slices.DeleteFunc(e.st.Routes, func(rt Route) bool { return rt.Org == c.Org })
-	err := e.save()
+	err := e.save(c.Org)
 	e.mu.Unlock()
 	if err != nil {
 		extensions.WriteError(w, http.StatusInternalServerError, "failed", err.Error())
@@ -386,11 +409,11 @@ func (e *Ext) route(org string, issue Issue, agent string) error {
 			if !slices.Contains(r.Agents, agent) {
 				r.Agents = append(r.Agents, agent)
 			}
-			return e.save()
+			return e.save(org)
 		}
 	}
 	e.st.Routes = append(e.st.Routes, Route{Org: org, IssueID: issue.ID, Identifier: issue.Identifier, Agents: []string{agent}, At: now})
-	return e.save()
+	return e.save(org)
 }
 
 func (e *Ext) routed(org, issueID string) (Route, bool) {
