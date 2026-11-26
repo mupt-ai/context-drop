@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,9 +24,23 @@ type fakeLinear struct {
 	mu       sync.Mutex
 	comments []string
 	secret   string
+	auth     []string // the Authorization header of each GraphQL call
+	grants   []string // the grant type of each token request
 }
 
 func (f *fakeLinear) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/oauth/token" {
+		_ = r.ParseForm()
+		f.mu.Lock()
+		f.grants = append(f.grants, r.PostForm.Get("grant_type"))
+		n := len(f.grants)
+		f.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "tok-" + string(rune('0'+n)), "refresh_token": "ref", "expires_in": 86399})
+		return
+	}
+	f.mu.Lock()
+	f.auth = append(f.auth, r.Header.Get("Authorization"))
+	f.mu.Unlock()
 	var in struct {
 		Query     string         `json:"query"`
 		Variables map[string]any `json:"variables"`
@@ -179,5 +194,55 @@ func TestSlackStateFromBeforeExtensionsStillWorks(t *testing.T) {
 	saved, _ := os.ReadFile(path)
 	if bytes.Contains(saved, []byte("slack_installs")) || !bytes.Contains(saved, []byte(`"extensions"`)) || bytes.Contains(saved, []byte("xoxb-")) {
 		t.Fatalf("saved file: %s", saved)
+	}
+}
+
+func TestAnAdminConnectsLinearByApprovingTheApp(t *testing.T) {
+	fl := &fakeLinear{}
+	api := httptest.NewServer(fl)
+	t.Cleanup(api.Close)
+	ext := &linear.Ext{ClientID: "lin-cid", ClientSecret: "lin-cs", WebhookSecret: "app-hook", API: api.URL, TokenURL: api.URL + "/oauth/token"}
+	o := newOrg(t, ext)
+	laptop := &fakeMachine{name: "laptop", agents: []pool.Agent{agent("laptop", "cc-00000001", "/work/app", "main", "", "2026-11-17T10:00:00Z")}}
+	c := o.join(laptop)
+	waitFor(t, "the laptop's agents", func() bool { return len(o.server.agents("acme")) == 1 })
+
+	var start struct{ URL string }
+	if err := c.Post(context.Background(), "linear/install", map[string]string{}, &start); err != nil {
+		t.Fatal(err)
+	}
+	u, _ := url.Parse(start.URL)
+	if u.Host != "linear.app" || u.Query().Get("actor") != "app" {
+		t.Fatalf("install link %s, want Linear's approval page acting as the app", start.URL)
+	}
+	if code, _ := get(t, o.srv.URL+"/v1/linear/oauth?code=c1&state=x"+url.QueryEscape(u.Query().Get("state"))); code != http.StatusBadRequest {
+		t.Fatalf("tampered state: %d, want 400", code)
+	}
+	if code, page := get(t, o.srv.URL+"/v1/linear/oauth?code=c1&state="+url.QueryEscape(u.Query().Get("state"))); code != http.StatusOK {
+		t.Fatalf("callback %d: %s", code, page)
+	}
+
+	// Agents comment with the app's token, and replies signed with the app's secret come back.
+	if _, err := c.Send(context.Background(), pool.SendRequest{To: "linear:ENG-1", Text: "Which region?", Agent: "cc-00000001"}); err != nil {
+		t.Fatal(err)
+	}
+	fl.mu.Lock()
+	lastAuth := fl.auth[len(fl.auth)-1]
+	fl.mu.Unlock()
+	if lastAuth != "Bearer tok-1" {
+		t.Fatalf("commented with %q, want the app's token", lastAuth)
+	}
+	o.comment(t, "app-hook", "c-9", "us-east-1")
+	waitFor(t, "the reply to reach the agent", func() bool { return laptop.sentCount() == 1 })
+
+	// A token about to expire is refreshed before the next call.
+	ext.ExpireTokenForTest("acme")
+	if _, err := c.Send(context.Background(), pool.SendRequest{To: "linear:ENG-1", Text: "Thanks", Agent: "cc-00000001"}); err != nil {
+		t.Fatal(err)
+	}
+	fl.mu.Lock()
+	defer fl.mu.Unlock()
+	if len(fl.grants) != 2 || fl.grants[1] != "refresh_token" || fl.auth[len(fl.auth)-1] != "Bearer tok-2" {
+		t.Fatalf("grants %v, last auth %q: want a refresh and the new token", fl.grants, fl.auth[len(fl.auth)-1])
 	}
 }

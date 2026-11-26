@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -19,9 +20,10 @@ import (
 // DefaultAPI is Linear's GraphQL endpoint.
 const DefaultAPI = "https://api.linear.app/graphql"
 
-// Client calls Linear's GraphQL API with one API key.
+// Client calls Linear's GraphQL API.
 type Client struct {
-	Key string
+	// Auth is the Authorization header: a personal API key as is, or "Bearer " and an OAuth token.
+	Auth string
 	// URL is the GraphQL endpoint; empty means DefaultAPI.
 	URL  string
 	HTTP *http.Client
@@ -47,7 +49,7 @@ func (c Client) Do(ctx context.Context, query string, vars map[string]any, out a
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", c.Key)
+	req.Header.Set("Authorization", c.Auth)
 	hc := c.HTTP
 	if hc == nil {
 		hc = &http.Client{Timeout: 30 * time.Second}
@@ -259,4 +261,57 @@ func Sign(secret string, body []byte) http.Header {
 	h := http.Header{}
 	h.Set("Linear-Signature", hex.EncodeToString(mac.Sum(nil)))
 	return h
+}
+
+// TokenURL is where Linear's OAuth codes and refresh tokens are exchanged.
+const TokenURL = "https://api.linear.app/oauth/token"
+
+// AuthorizeURL is where a workspace admin approves the app. Its comments appear as the app itself.
+func AuthorizeURL(clientID, redirect, state string) string {
+	q := url.Values{"client_id": {clientID}, "redirect_uri": {redirect}, "response_type": {"code"}, "scope": {"read,write"},
+		"state": {state}, "actor": {"app"}, "prompt": {"consent"}}
+	return "https://linear.app/oauth/authorize?" + q.Encode()
+}
+
+// Token is an OAuth access token and the refresh token that renews it.
+type Token struct {
+	Access  string
+	Refresh string
+	Expires time.Time
+}
+
+// Exchange trades an authorization code (grant "authorization_code") or a refresh token (grant
+// "refresh_token") for a token.
+func Exchange(ctx context.Context, tokenURL string, form url.Values) (Token, error) {
+	if tokenURL == "" {
+		tokenURL = TokenURL
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return Token{}, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		return Token{}, err
+	}
+	defer resp.Body.Close()
+	var out struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+		ExpiresIn    int    `json:"expires_in"`
+		Error        string `json:"error"`
+		Description  string `json:"error_description"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&out); err != nil {
+		return Token{}, fmt.Errorf("linear oauth: %s", resp.Status)
+	}
+	if out.AccessToken == "" {
+		return Token{}, &Error{Message: strings.TrimSpace("oauth: " + out.Error + " " + out.Description)}
+	}
+	exp := time.Now().Add(time.Duration(out.ExpiresIn) * time.Second)
+	if out.ExpiresIn == 0 {
+		exp = time.Now().Add(24 * time.Hour)
+	}
+	return Token{Access: out.AccessToken, Refresh: out.RefreshToken, Expires: exp}, nil
 }

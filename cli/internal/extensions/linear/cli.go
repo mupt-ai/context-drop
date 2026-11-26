@@ -2,14 +2,17 @@ package linear
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
 	"contextdrop.dev/context-drop/internal/extensions"
+	"contextdrop.dev/context-drop/internal/pool"
 )
 
 // Command is `context-drop linear`.
@@ -28,10 +31,10 @@ func installCommand(env extensions.CLI) *cobra.Command {
 	var key string
 	cmd := &cobra.Command{
 		Use:   "install",
-		Short: "Connect the org to Linear with a workspace admin's API key",
-		Long: "Create a personal API key in Linear (Settings → Security & access → Personal API keys) as a workspace\n" +
-			"admin, then run this and paste it. Agents' comments appear under that key's user. The key is also read\n" +
-			"from --key or $LINEAR_API_KEY.",
+		Short: "Connect the org to Linear: approve the app in your browser",
+		Long: "Opens Linear so a workspace admin can approve Context Drop; agents' comments then appear as the app.\n" +
+			"On a server without a Linear app, paste a workspace admin's personal API key instead (Settings →\n" +
+			"Security & access → Personal API keys), or pass it with --key or $LINEAR_API_KEY.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			c, m, err := env.Client()
@@ -42,6 +45,12 @@ func installCommand(env extensions.CLI) *cobra.Command {
 				key = os.Getenv("LINEAR_API_KEY")
 			}
 			if key == "" {
+				// With a Linear app on the server, an admin approves it in the browser.
+				var start struct{ URL string }
+				err := c.Post(cmd.Context(), "linear/install", map[string]string{}, &start)
+				if err == nil && start.URL != "" {
+					return approveInBrowser(cmd, c, m.Org, start.URL)
+				}
 				if key, err = readKey(cmd); err != nil {
 					return err
 				}
@@ -154,5 +163,33 @@ func uninstallCommand(env extensions.CLI) *cobra.Command {
 			fmt.Fprintf(cmd.ErrOrStderr(), "Org %s is disconnected from Linear. Revoke the API key in Linear too.\n", m.Org)
 			return nil
 		},
+	}
+}
+
+// installWait is how long `linear install` waits for the browser approval, and how often it checks.
+var installWait, installEvery = 10 * time.Minute, 2 * time.Second
+
+// approveInBrowser opens Linear's approval page and waits until the org shows as connected.
+func approveInBrowser(cmd *cobra.Command, c pool.Client, org, link string) error {
+	fmt.Fprintf(cmd.ErrOrStderr(), "Approve Context Drop in Linear to connect org %s:\n", org)
+	fmt.Fprintln(cmd.OutOrStdout(), link)
+	if err := extensions.OpenBrowser(link); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Open the link above yourself: %v\n", err)
+	}
+	var before Status
+	_ = c.Post(cmd.Context(), "linear/status", struct{}{}, &before)
+	ctx, cancel := context.WithTimeout(cmd.Context(), installWait)
+	defer cancel()
+	for {
+		var st Status
+		if err := c.Post(ctx, "linear/status", struct{}{}, &st); err == nil && st.Installed && st.Since != before.Since {
+			fmt.Fprintf(cmd.OutOrStdout(), "Org %s is connected to Linear workspace %s.\n", org, st.Workspace)
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("timed out after %s waiting for the Linear approval", installWait)
+		case <-time.After(installEvery):
+		}
 	}
 }

@@ -129,6 +129,7 @@ func Command(env extensions.CLI) *cobra.Command {
 			"Only people linked with `slack allow` can reach agents.",
 	}
 	cmd.AddCommand(installCommand(env), connectCommand(env), statusCommand(env), allowCommand(env), disallowCommand(env),
+		restrictCommand(env, true), restrictCommand(env, false),
 		readCommand(env), uninstallCommand(env), manifestCommand(env))
 	return cmd
 }
@@ -181,6 +182,7 @@ func statusCommand(env extensions.CLI) *cobra.Command {
 				Team       string      `json:"team"`
 				TeamID     string      `json:"team_id"`
 				BotUserID  string      `json:"bot_user_id"`
+				Restricted bool        `json:"restricted"`
 				Members    []memberRow `json:"members"`
 			}
 			if err := c.Post(cmd.Context(), "slack/status", struct{}{}, &st); err != nil {
@@ -199,8 +201,15 @@ func statusCommand(env extensions.CLI) *cobra.Command {
 				return nil
 			}
 			fmt.Fprintf(out, "Org %s is connected to Slack workspace %s (%s).\n", m.Org, st.Team, st.TeamID)
+			if st.Restricted {
+				fmt.Fprintln(out, "Only linked people can reach agents (`slack unrestrict` opens it to the whole workspace).")
+			} else {
+				fmt.Fprintln(out, "Anyone in the workspace can reach agents (`slack restrict` limits it to linked people).")
+			}
 			if len(st.Members) == 0 {
-				fmt.Fprintln(out, "Nobody is linked yet, so no one can answer agents. Run `context-drop slack allow @person`.")
+				if st.Restricted {
+					fmt.Fprintln(out, "Nobody is linked yet, so no one can answer agents. Run `context-drop slack allow @person`.")
+				}
 				return nil
 			}
 			w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
@@ -237,6 +246,33 @@ func allowCommand(env extensions.CLI) *cobra.Command {
 					return fmt.Errorf("%s: %w", who, err)
 				}
 				fmt.Fprintf(cmd.ErrOrStderr(), "linked %s (%s)\n", p.Name, p.UserID)
+			}
+			return nil
+		},
+	}
+}
+
+func restrictCommand(env extensions.CLI, on bool) *cobra.Command {
+	use, short := "unrestrict", "Let anyone in the Slack workspace reach agents (the default)"
+	if on {
+		use, short = "restrict", "Only people linked with `slack allow` can reach agents"
+	}
+	return &cobra.Command{
+		Use:   use,
+		Short: short,
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			c, m, err := env.Client()
+			if err != nil {
+				return err
+			}
+			if err := c.Post(cmd.Context(), "slack/restrict", map[string]bool{"restricted": on}, nil); err != nil {
+				return err
+			}
+			if on {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Org %s: only linked people reach agents now.\n", m.Org)
+			} else {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Org %s: anyone in the Slack workspace can reach agents.\n", m.Org)
 			}
 			return nil
 		},
