@@ -207,7 +207,9 @@ func statusCommand(env extensions.CLI) *cobra.Command {
 				fmt.Fprintln(out, "Anyone in the workspace can reach agents (`slack restrict` limits it to linked people).")
 			}
 			if len(st.Members) == 0 {
-				fmt.Fprintln(out, "Nobody is linked yet, so no one can answer agents. Run `context-drop slack allow @person`.")
+				if st.Restricted {
+					fmt.Fprintln(out, "Nobody is linked yet, so no one can answer agents. Run `context-drop slack allow @person`.")
+				}
 				return nil
 			}
 			w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)

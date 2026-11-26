@@ -89,6 +89,7 @@ func (e *Ext) handleOAuth(w http.ResponseWriter, r *http.Request) {
 		fail(http.StatusInternalServerError, err.Error())
 		return
 	}
+	old, hadOld := e.install(org)
 	if err := e.saveInstall(in); err != nil {
 		if errors.Is(err, errTaken) {
 			fail(http.StatusConflict, "Linear workspace "+who.OrgName+" is already connected to another org.")
@@ -96,6 +97,9 @@ func (e *Ext) handleOAuth(w http.ResponseWriter, r *http.Request) {
 		}
 		fail(http.StatusInternalServerError, err.Error())
 		return
+	}
+	if hadOld {
+		e.deleteWebhook(r.Context(), old) // an earlier API key install's webhook would deliver twice
 	}
 	e.host.Log().Info("linear connected", "org", org, "workspace", who.OrgID, "by", machine)
 	extensions.Page(w, http.StatusOK, "Linear connected", fmt.Sprintf("<p>Linear workspace <b>%s</b> is connected to org <b>%s</b>. Agents can comment on issues now, and replies come back to them.</p><p>You can close this tab.</p>",

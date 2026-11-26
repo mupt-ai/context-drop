@@ -74,6 +74,10 @@ func (e *Ext) install(in Workspace, token string) error {
 	}
 	in.TokenSealed = sealed
 	in.InstalledAt = time.Now().UTC()
+	// Reinstalling keeps the org's choice of who reaches agents.
+	if i := slices.IndexFunc(e.st.Installs, func(i Workspace) bool { return i.Org == in.Org }); i >= 0 {
+		in.Restricted = e.st.Installs[i].Restricted
+	}
 	e.st.Installs = append(slices.DeleteFunc(e.st.Installs, func(i Workspace) bool { return i.Org == in.Org }), in)
 	return e.save()
 }
