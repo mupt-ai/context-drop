@@ -34,6 +34,19 @@ It finds sessions from each agent's own on-disk state and running processes, so 
 curl -fsSL https://raw.githubusercontent.com/mupt-ai/context-drop/main/cli/install.sh | bash
 ```
 
+### Join your team on contextdrop.dev
+
+Your org's admin gives you a join token. Then:
+
+```sh
+context-drop join --server https://contextdrop.dev <join token>
+context-drop daemon --share ~/code     # keep running; shares agents working under ~/code
+context-drop slack connect             # opens Slack; sign in to link yourself to Slack
+claude mcp add context-drop -- context-drop mcp
+```
+
+`daemon` needs to keep running, so start it with your usual tooling or in its own terminal. `--share` chooses which agents the org can reach, and `--share-all` shares every agent on your machine.
+
 ## Quick start
 
 ```sh
@@ -167,7 +180,7 @@ context-drop send '#deploys' 'Ship v2 to prod?'
 context-drop send @avyay 'Which region for the bucket?'
 ```
 
-An org can connect one Slack workspace, and `send` then reaches people too: a channel, a person's DM, or a thread. A linked person's reply in an agent's thread, or a DM to the app, comes back to that agent as its next prompt; other channel messages are never pushed, and agents read them on demand. Agents decide on their own when a person is needed. Mods with `slack` in their `can` list can post, read, and react with the org's bot token. The [Slack guide](docs/slack.md) covers setup and routing.
+On contextdrop.dev, Slack is already set up for every org, so an admin only runs `context-drop slack install` once to connect a workspace. Self-hosted servers need their own Slack app; see the [Slack guide](docs/slack.md). An org can connect one Slack workspace, and `send` then reaches people too: a channel, a person's DM, or a thread. A linked person's reply in an agent's thread, or a DM to the app, comes back to that agent as its next prompt; other channel messages are never pushed, and agents read them on demand. Agents decide on their own when a person is needed. Mods with `slack` in their `can` list can post, read, and react with the org's bot token. The [Slack guide](docs/slack.md) covers setup and routing.
 
 ### Upload a file
 
