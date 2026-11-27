@@ -43,6 +43,15 @@ func (s *Store) Connected(org, machine, server, conn string) error {
 	return err
 }
 
+// Reclaim records conn as a machine's connection only if no other connection is recorded, for a socket
+// whose presence write failed. It never takes the row from a newer connection.
+func (s *Store) Reclaim(org, machine, server, conn string) error {
+	_, err := s.db.Exec(`INSERT INTO presence VALUES (?, ?, ?, ?, '[]', ?)
+		ON CONFLICT (org, machine) DO UPDATE SET server = excluded.server, conn = excluded.conn, seen = excluded.seen
+		WHERE presence.conn = ''`, org, machine, server, conn, time.Now().UnixMilli())
+	return err
+}
+
 // Disconnected marks a machine offline, unless a newer connection has replaced conn.
 func (s *Store) Disconnected(org, machine, conn string) error {
 	_, err := s.db.Exec(`UPDATE presence SET server = '', conn = '' WHERE org = ? AND machine = ? AND conn = ?`, org, machine, conn)

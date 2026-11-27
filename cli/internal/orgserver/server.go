@@ -139,7 +139,7 @@ func (s *Server) dropStale() {
 				continue
 			}
 			if member {
-				if err := s.store.Connected(c.k.org, c.k.name, s.ID, c.id); err != nil {
+				if err := s.store.Reclaim(c.k.org, c.k.name, s.ID, c.id); err != nil {
 					s.log.Warn("presence", "err", err)
 				}
 				continue
