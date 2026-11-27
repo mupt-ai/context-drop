@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -160,4 +161,57 @@ func narrowed(c storage.LifecycleCondition) bool {
 		c.DaysSinceNoncurrentTime > 0 || !c.NoncurrentTimeBefore.IsZero() ||
 		c.DaysSinceCustomTime > 0 || !c.CustomTimeBefore.IsZero() || !c.CreatedBefore.IsZero() ||
 		len(c.MatchesSuffix) > 0 || len(c.MatchesStorageClasses) > 0
+}
+
+// stateObject names a server state file, such as the org database's backup.
+func (s *GCSStore) stateObject(name string) string {
+	if s.prefix == "" {
+		return "state/" + name
+	}
+	return s.prefix + "/state/" + name
+}
+
+// PutState uploads a local file as a state object.
+func (s *GCSStore) PutState(ctx context.Context, name, path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	// Cancelling the writer's context abandons the upload, so a failed copy never replaces the object.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	w := s.client.Bucket(s.bucket).Object(s.stateObject(name)).NewWriter(ctx)
+	w.ContentType = "application/octet-stream"
+	if _, err := io.Copy(w, f); err != nil {
+		cancel()
+		_ = w.Close()
+		return err
+	}
+	return w.Close()
+}
+
+// GetState downloads a state object to a local file; it reports false when there is none.
+func (s *GCSStore) GetState(ctx context.Context, name, path string) (bool, error) {
+	r, err := s.client.Bucket(s.bucket).Object(s.stateObject(name)).NewReader(ctx)
+	if isGCSNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer r.Close()
+	tmp := path + ".download"
+	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return false, err
+	}
+	if _, err := io.Copy(f, r); err != nil {
+		f.Close()
+		return false, err
+	}
+	if err := f.Close(); err != nil {
+		return false, err
+	}
+	return true, os.Rename(tmp, path)
 }

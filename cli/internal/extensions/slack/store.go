@@ -1,6 +1,7 @@
 package slack
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -52,8 +53,41 @@ const routeTTL = 30 * 24 * time.Hour
 // ErrNotInstalled means the org has not connected a Slack workspace.
 var ErrNotInstalled = errors.New("this org has not connected Slack; run `context-drop slack install`")
 
-// save writes the state; the caller holds e.mu.
-func (e *Ext) save() error { return e.host.Save(Name, e.st) }
+// save writes one org's state; the caller holds e.mu.
+func (e *Ext) save(org string) error {
+	of := func(o string) bool { return o == org }
+	st := state{}
+	for _, i := range e.st.Installs {
+		if of(i.Org) {
+			st.Installs = append(st.Installs, i)
+		}
+	}
+	for _, m := range e.st.Members {
+		if of(m.Org) {
+			st.Members = append(st.Members, m)
+		}
+	}
+	for _, r := range e.st.Routes {
+		if of(r.Org) {
+			st.Routes = append(st.Routes, r)
+		}
+	}
+	return e.host.Save(Name, org, st)
+}
+
+// load reads every org's saved state.
+func (e *Ext) load() error {
+	return e.host.Load(Name, func(_ string, data json.RawMessage) error {
+		var st state
+		if err := json.Unmarshal(data, &st); err != nil {
+			return err
+		}
+		e.st.Installs = append(e.st.Installs, st.Installs...)
+		e.st.Members = append(e.st.Members, st.Members...)
+		e.st.Routes = append(e.st.Routes, st.Routes...)
+		return nil
+	})
+}
 
 // install connects an org to a workspace, replacing any earlier connection. A workspace belongs to
 // one org at a time, since its events must reach exactly one org.
@@ -79,7 +113,7 @@ func (e *Ext) install(in Workspace, token string) error {
 		in.Restricted = e.st.Installs[i].Restricted
 	}
 	e.st.Installs = append(slices.DeleteFunc(e.st.Installs, func(i Workspace) bool { return i.Org == in.Org }), in)
-	return e.save()
+	return e.save(in.Org)
 }
 
 // uninstall forgets an org's workspace, its members, and its routes.
@@ -89,7 +123,7 @@ func (e *Ext) uninstall(org string) error {
 	e.st.Installs = slices.DeleteFunc(e.st.Installs, func(i Workspace) bool { return i.Org == org })
 	e.st.Members = slices.DeleteFunc(e.st.Members, func(m Member) bool { return m.Org == org })
 	e.st.Routes = slices.DeleteFunc(e.st.Routes, func(r Route) bool { return r.Org == org })
-	return e.save()
+	return e.save(org)
 }
 
 // workspace returns an org's install and its unsealed bot token.
@@ -130,7 +164,7 @@ func (e *Ext) addMember(m Member) error {
 	defer e.mu.Unlock()
 	m.AddedAt = time.Now().UTC()
 	e.st.Members = append(slices.DeleteFunc(e.st.Members, func(x Member) bool { return x.Org == m.Org && x.UserID == m.UserID }), m)
-	return e.save()
+	return e.save(m.Org)
 }
 
 // removeMember unlinks a Slack user; it reports whether one was linked.
@@ -142,7 +176,7 @@ func (e *Ext) removeMember(org, user string) (bool, error) {
 	if len(e.st.Members) == n {
 		return false, nil
 	}
-	return true, e.save()
+	return true, e.save(org)
 }
 
 // members lists an org's linked Slack users.
@@ -188,10 +222,10 @@ func (e *Ext) route(org, channel, ts, agent string) error {
 		} else if !slices.Contains(r.Agents, agent) {
 			r.Agents = append(r.Agents, agent)
 		}
-		return e.save()
+		return e.save(org)
 	}
 	e.st.Routes = append(e.st.Routes, Route{Org: org, Channel: channel, TS: ts, Agents: []string{agent}, At: now})
-	return e.save()
+	return e.save(org)
 }
 
 // routed returns the agents a conversation's replies go to.
@@ -218,5 +252,5 @@ func (e *Ext) setRestricted(org string, on bool) error {
 		return ErrNotInstalled
 	}
 	e.st.Installs[idx].Restricted = on
-	return e.save()
+	return e.save(org)
 }

@@ -187,13 +187,64 @@ func TestSlackStateFromBeforeExtensionsStillWorks(t *testing.T) {
 	if !store.HasOrg("acme") {
 		t.Fatal("org lost")
 	}
-	// The next save writes the new shape, with the token still sealed.
-	if err := ext.Connect(slack.Workspace{Org: "acme", TeamID: "T1", TeamName: "Acme"}, "xoxb-new"); err != nil {
+	// The JSON file is set aside, so a restart opens the database alone and finds the same state.
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("old file still in place: %v", err)
+	}
+	store.Close()
+	again, err := OpenStore(path)
+	if err != nil {
 		t.Fatal(err)
 	}
-	saved, _ := os.ReadFile(path)
-	if bytes.Contains(saved, []byte("slack_installs")) || !bytes.Contains(saved, []byte(`"extensions"`)) || bytes.Contains(saved, []byte("xoxb-")) {
-		t.Fatalf("saved file: %s", saved)
+	again.SetSealKey("token-key")
+	ext2 := &slack.Ext{ClientID: "cid", ClientSecret: "cs", SigningSecret: "ss"}
+	s2 := New(again, "", nil)
+	s2.Extensions = append(s2.Extensions, ext2)
+	s2.Register(http.NewServeMux())
+	if m, ok := ext2.Member("acme", "U0000AVY"); !ok || m.Name != "Avyay" || len(again.Orgs()) != 1 {
+		t.Fatalf("after restart: member %+v %v, orgs %v", m, ok, again.Orgs())
+	}
+}
+
+// TestEachOrgsExtensionStateIsSavedApart checks that one org's change writes only its own row, and
+// that a restart brings every org's state back.
+func TestEachOrgsExtensionStateIsSavedApart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "orgs.db")
+	store, err := OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.SetSealKey("k")
+	for _, id := range []string{"acme", "beta"} {
+		if _, err := store.CreateOrg(id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ext := &slack.Ext{ClientID: "cid", ClientSecret: "cs", SigningSecret: "ss"}
+	s := New(store, "", nil)
+	s.Extensions = append(s.Extensions, ext)
+	s.Register(http.NewServeMux())
+	for i, id := range []string{"acme", "beta"} {
+		if err := ext.Connect(slack.Workspace{Org: id, TeamID: "T" + id, TeamName: id}, "xoxb-"+string(rune('a'+i))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows := map[string]string{}
+	if err := store.LoadExtension("slack", func(org string, data json.RawMessage) error { rows[org] = string(data); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || strings.Contains(rows["acme"], "Tbeta") || strings.Contains(rows["beta"], "Tacme") {
+		t.Fatalf("rows %v", rows)
+	}
+	store.Close()
+	again, _ := OpenStore(path)
+	again.SetSealKey("k")
+	ext2 := &slack.Ext{ClientID: "cid", ClientSecret: "cs", SigningSecret: "ss"}
+	s2 := New(again, "", nil)
+	s2.Extensions = append(s2.Extensions, ext2)
+	s2.Register(http.NewServeMux())
+	if err := ext2.Connect(slack.Workspace{Org: "beta", TeamID: "Tacme", TeamName: "x"}, "xoxb-z"); err == nil {
+		t.Fatal("after restart, beta took acme's workspace")
 	}
 }
 
@@ -244,5 +295,30 @@ func TestAnAdminConnectsLinearByApprovingTheApp(t *testing.T) {
 	defer fl.mu.Unlock()
 	if len(fl.grants) != 2 || fl.grants[1] != "refresh_token" || fl.auth[len(fl.auth)-1] != "Bearer tok-2" {
 		t.Fatalf("grants %v, last auth %q: want a refresh and the new token", fl.grants, fl.auth[len(fl.auth)-1])
+	}
+}
+
+func TestSnapshotCopiesTheDatabaseWhenItChanged(t *testing.T) {
+	dir := t.TempDir()
+	store, err := OpenStore(filepath.Join(dir, "orgs.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateOrg("acme"); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "copy.db")
+	if wrote, err := store.Snapshot(out, false); err != nil || !wrote {
+		t.Fatalf("first snapshot: %v %v", wrote, err)
+	}
+	if wrote, _ := store.Snapshot(out, false); wrote {
+		t.Fatal("snapshot with nothing changed")
+	}
+	copy, err := OpenStore(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !copy.HasOrg("acme") {
+		t.Fatal("the copy lost the org")
 	}
 }

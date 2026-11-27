@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -91,9 +92,11 @@ func (h host) Deliver(ctx context.Context, org, agent, text, from string) *pool.
 	return perr
 }
 
-func (h host) HasOrg(org string) bool               { return h.s.store.HasOrg(org) }
-func (h host) Load(name string, v any) error        { return h.s.store.LoadExtension(name, v) }
-func (h host) Save(name string, v any) error        { return h.s.store.SaveExtension(name, v) }
+func (h host) HasOrg(org string) bool { return h.s.store.HasOrg(org) }
+func (h host) Load(name string, each func(string, json.RawMessage) error) error {
+	return h.s.store.LoadExtension(name, each)
+}
+func (h host) Save(name, org string, v any) error   { return h.s.store.SaveExtension(name, org, v) }
 func (h host) Seal(plain string) (string, error)    { return h.s.store.Seal(plain) }
 func (h host) Unseal(sealed string) (string, error) { return h.s.store.Unseal(sealed) }
 func (h host) PublicURL() string                    { return h.s.PublicURL }

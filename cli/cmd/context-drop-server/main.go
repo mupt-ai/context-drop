@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -54,7 +55,7 @@ Configuration is provided with environment variables:
   CONTEXT_DROP_UPLOAD_BYTES_PER_HOUR anonymous upload bytes per client IP per hour (default 262144000, 0 = off)
   CONTEXT_DROP_PROXY_HOPS            trusted proxies in front appending X-Forwarded-For (Cloud Run: 1; GCP HTTPS LB: 2)
   CONTEXT_DROP_ADMIN_TOKEN           bearer token for creating orgs (unset disables org creation)
-  CONTEXT_DROP_ORG_STATE             file holding orgs and joined machines (default <data dir>/orgs.json)
+  CONTEXT_DROP_ORG_STATE             SQLite database of orgs, machines, and extensions (default <data dir>/orgs.db; a .json path is imported once). On GCS storage it is backed up to state/ in the bucket
   CONTEXT_DROP_DENO                  Deno executable for mods (default: deno on PATH; without it mods are off)
   CONTEXT_DROP_MODS_DIR              deployed mods, their data, and secrets (default <data dir>/mods)
 `
@@ -76,7 +77,7 @@ func runWithConfig(ctx context.Context, cfg config.ServerConfig) error {
 	if err != nil {
 		return err
 	}
-	orgs, err := newOrgServer(cfg)
+	orgs, err := newOrgServer(ctx, cfg, store)
 	if err != nil {
 		return err
 	}
@@ -89,14 +90,32 @@ func runWithConfig(ctx context.Context, cfg config.ServerConfig) error {
 	return serve(ctx, httpServer, cfg)
 }
 
-func newOrgServer(cfg config.ServerConfig) (*orgserver.Server, error) {
+// stateBackup is where the org database is copied, so a lost disk loses at most a few minutes.
+type stateBackup interface {
+	PutState(ctx context.Context, name, path string) error
+	GetState(ctx context.Context, name, path string) (bool, error)
+}
+
+// backupEvery is how often the org database is copied to the bucket, when it changed.
+const backupEvery = 5 * time.Minute
+
+func newOrgServer(ctx context.Context, cfg config.ServerConfig, drops storage.Store) (*orgserver.Server, error) {
 	path := cfg.OrgState
 	if path == "" {
-		path = filepath.Join(cfg.DataDir, "orgs.json")
+		path = filepath.Join(cfg.DataDir, "orgs.db")
+	}
+	backup, _ := drops.(stateBackup)
+	if backup != nil {
+		if err := restoreState(ctx, backup, path); err != nil {
+			return nil, fmt.Errorf("restore the org database: %w", err)
+		}
 	}
 	st, err := orgserver.OpenStore(path)
 	if err != nil {
 		return nil, err
+	}
+	if backup != nil {
+		go backUpState(ctx, backup, st)
 	}
 	s := orgserver.New(st, cfg.AdminToken, nil)
 	if rt, err := mods.NewRuntime(cfg.Deno); err != nil {
@@ -134,6 +153,58 @@ func newOrgServer(cfg config.ServerConfig) (*orgserver.Server, error) {
 		s.Extensions = append(s.Extensions, &slack.Ext{ClientID: cfg.SlackClientID, ClientSecret: cfg.SlackClientSecret, SigningSecret: cfg.SlackSigningSecret})
 	}
 	return s, nil
+}
+
+// restoreState downloads the last backup when the server has no org state on disk, as on a new VM.
+func restoreState(ctx context.Context, b stateBackup, path string) error {
+	base := strings.TrimSuffix(strings.TrimSuffix(path, ".json"), ".db")
+	db := base + ".db"
+	for _, p := range []string{db, base + ".json"} {
+		if _, err := os.Stat(p); err == nil {
+			return nil
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(db), 0o700); err != nil {
+		return err
+	}
+	ok, err := b.GetState(ctx, "orgs.db", db)
+	if ok {
+		slog.Info("restored the org database from its backup", "path", db)
+	}
+	return err
+}
+
+// backUpState copies the org database to the bucket every few minutes, when it changed, and keeps
+// one copy per day. It uploads at least daily even when nothing changed, since the bucket's lifecycle
+// rule deletes objects after a few days.
+func backUpState(ctx context.Context, b stateBackup, st *orgserver.Store) {
+	tmp := st.Path() + ".backup"
+	var last time.Time
+	t := time.NewTicker(backupEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		wrote, err := st.Snapshot(tmp, time.Since(last) > 24*time.Hour)
+		if err == nil && wrote {
+			err = b.PutState(ctx, "orgs.db", tmp)
+			if err == nil {
+				err = b.PutState(ctx, "daily/orgs-"+time.Now().UTC().Format("2006-01-02")+".db", tmp)
+			}
+			if err == nil {
+				last = time.Now()
+			} else {
+				st.Unsnapshotted() // try again next tick
+			}
+		}
+		if err != nil {
+			slog.Warn("back up the org database", "err", err)
+		}
+		_ = os.Remove(tmp)
+	}
 }
 
 // loopback is the URL mods use to call this server from the same host.

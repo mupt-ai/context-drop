@@ -62,7 +62,7 @@ func (e *Ext) redirect() string {
 // Register implements extensions.Extension.
 func (e *Ext) Register(mux *http.ServeMux, h extensions.Host) error {
 	e.host = h
-	if err := h.Load(Name, &e.st); err != nil {
+	if err := e.load(); err != nil {
 		return err
 	}
 	mux.HandleFunc("GET /v1/slack/oauth", e.handleOAuth)
