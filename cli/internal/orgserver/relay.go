@@ -150,12 +150,47 @@ func (r *relay) forward(ctx context.Context, server string, timeout time.Duratio
 	}
 }
 
-// serve runs a call another server relayed here, and hands back its result.
+// pickUp serves calls relayed here whose notification was missed, as while the listener reconnected.
+func (r *relay) pickUp(ctx context.Context) {
+	tick := time.NewTicker(3 * time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+		rows, err := r.s.store.db.QueryContext(ctx, `SELECT id FROM relay WHERE to_server = ? AND NOT taken`, r.s.ID)
+		if err != nil {
+			continue
+		}
+		var ids []string
+		for rows.Next() {
+			var id string
+			if rows.Scan(&id) == nil {
+				ids = append(ids, id)
+			}
+		}
+		rows.Close()
+		for _, id := range ids {
+			go r.serve(id)
+		}
+	}
+}
+
+// serve runs a call another server relayed here, and hands back its result. Taking the row first
+// means a call is run once, whether its notification or the pick-up loop got here first.
 func (r *relay) serve(id string) {
+	res, err := r.s.store.db.Exec(`UPDATE relay SET taken = TRUE WHERE id = ? AND to_server = ? AND NOT taken`, id, r.s.ID)
+	if err != nil {
+		return
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return
+	}
 	var from, org, machine, method, input string
 	var timeoutMS int64
-	err := r.s.store.db.QueryRow(`SELECT from_server, org, machine, method, input, timeout_ms FROM relay WHERE id = ? AND to_server = ? AND NOT done`,
-		id, r.s.ID).Scan(&from, &org, &machine, &method, &input, &timeoutMS)
+	err = r.s.store.db.QueryRow(`SELECT from_server, org, machine, method, input, timeout_ms FROM relay WHERE id = ?`, id).Scan(&from, &org, &machine, &method, &input, &timeoutMS)
 	if err != nil {
 		return
 	}

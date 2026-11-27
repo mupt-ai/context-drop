@@ -210,6 +210,7 @@ func (e *Ext) storeToken(in *Install, tok Token) error {
 
 // saveInstall records an install unless another org already has that Linear workspace.
 func (e *Ext) saveInstall(inst Install) error {
+	_, held, _ := e.host.Owner(Name, inst.LinearOrg)
 	if err := e.host.Claim(Name, inst.LinearOrg, inst.Org); errors.Is(err, extensions.ErrTaken) {
 		return errTaken
 	} else if err != nil {
@@ -223,6 +224,9 @@ func (e *Ext) saveInstall(inst Install) error {
 		st.Installs = []Install{inst}
 		return nil
 	})
+	if err != nil && !held {
+		_ = e.host.Release(Name, inst.LinearOrg, inst.Org) // nothing was installed; free the workspace
+	}
 	if err == nil && old != "" && old != inst.LinearOrg {
 		_ = e.host.Release(Name, old, inst.Org)
 	}
@@ -334,7 +338,7 @@ func (e *Ext) handleUninstall(w http.ResponseWriter, r *http.Request, c extensio
 		e.deleteWebhook(r.Context(), in)
 	}
 	err := e.update(r.Context(), c.Org, func(st *state) error { *st = state{}; return nil })
-	if ok {
+	if ok && err == nil {
 		_ = e.host.Release(Name, in.LinearOrg, c.Org)
 	}
 	if err != nil {

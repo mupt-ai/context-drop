@@ -2,6 +2,19 @@
 
 The Context Drop server is a self-hosted TTL file store. It exposes health checks, one optionally authenticated upload endpoint, and opaque public download URLs. It has no chains, machine pairing, inboxes, handoffs, listing, pull, or delete APIs.
 
+## Self-host in a minute
+
+One binary, no database to run: with nothing configured, the server keeps orgs in a SQLite file and drops on disk, both under `CONTEXT_DROP_DATA_DIR`.
+
+```sh
+cd cli && go build -o context-drop-server ./cmd/context-drop-server
+CONTEXT_DROP_ADMIN_TOKEN=$(openssl rand -hex 24) CONTEXT_DROP_DATA_DIR=/var/lib/context-drop ./context-drop-server
+```
+
+Or with Docker: `docker build -t context-drop-server cli && docker run -p 8080:8080 -v cd-data:/data -e CONTEXT_DROP_DATA_DIR=/data -e CONTEXT_DROP_ADMIN_TOKEN=… context-drop-server`. Then [create an org](#orgs) and `context-drop join --server https://your-host <token>` on each machine.
+
+Only when one server is not enough, set `CONTEXT_DROP_DATABASE_URL` to a Postgres database and run as many servers as you like behind a load balancer; they share everything through it.
+
 ## API
 
 - `GET /health` and `GET /healthz` return `ok`.

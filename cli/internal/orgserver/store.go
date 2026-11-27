@@ -107,8 +107,12 @@ CREATE TABLE IF NOT EXISTS relay (
 	output TEXT,
 	error TEXT,
 	done BOOLEAN NOT NULL DEFAULT FALSE,
+	taken BOOLEAN NOT NULL DEFAULT FALSE,
 	created BIGINT NOT NULL
 )`
+
+// pgSchema changes tables made by earlier versions; Postgres only, where servers share the relay.
+const pgSchema = `ALTER TABLE relay ADD COLUMN IF NOT EXISTS taken BOOLEAN NOT NULL DEFAULT FALSE`
 
 // OpenStore opens the store at addr: a postgres:// URL or DSN, or a SQLite file given with or without
 // .db. For SQLite, the JSON file older servers kept beside it (orgs.json for orgs.db) is copied in
@@ -119,7 +123,7 @@ func OpenStore(addr string) (*Store, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := d.Migrate(schema); err != nil {
+		if err := d.Migrate(schema + ";" + pgSchema); err != nil {
 			d.Close()
 			return nil, fmt.Errorf("migrate: %w", err)
 		}

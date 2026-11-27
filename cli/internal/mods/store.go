@@ -158,19 +158,39 @@ func (s *Store) KV(org, name, op, key string, value, expected json.RawMessage) (
 			return fmt.Errorf("unknown kv op %q", op)
 		}
 		if isNull(value) {
-			_, err = tx.Exec(`DELETE FROM mod_kv WHERE org = ? AND mod = ? AND key = ?`, org, name, key)
-		} else {
-			var size int64
-			if err := tx.QueryRow(`SELECT COALESCE(SUM(LENGTH(key) + LENGTH(value)), 0) FROM mod_kv WHERE org = ? AND mod = ? AND key <> ?`, org, name, key).Scan(&size); err != nil {
+			if _, err := tx.Exec(`DELETE FROM mod_kv WHERE org = ? AND mod = ? AND key = ?`, org, name, key); err != nil {
 				return err
 			}
-			if size+int64(len(key)+len(value)) > kvLimit {
-				return errors.New("a mod's key-value store is limited to 10 MB")
+			result, ok = value, true
+			return nil
+		}
+		var size int64
+		if err := tx.QueryRow(`SELECT COALESCE(SUM(LENGTH(key) + LENGTH(value)), 0) FROM mod_kv WHERE org = ? AND mod = ? AND key <> ?`, org, name, key).Scan(&size); err != nil {
+			return err
+		}
+		if size+int64(len(key)+len(value)) > kvLimit {
+			return errors.New("a mod's key-value store is limited to 10 MB")
+		}
+		if op == "cas" && !found {
+			// Nothing locked an absent row, so the insert decides who wins: another server may have
+			// written the key since it was read.
+			res, err := tx.Exec(`INSERT INTO mod_kv VALUES (?, ?, ?, ?) ON CONFLICT (org, mod, key) DO NOTHING`, org, name, key, string(value))
+			if err != nil {
+				return err
 			}
-			_, err = tx.Exec(`INSERT INTO mod_kv VALUES (?, ?, ?, ?) ON CONFLICT (org, mod, key) DO UPDATE SET value = excluded.value`, org, name, key, string(value))
+			if n, _ := res.RowsAffected(); n == 0 {
+				var now string
+				if err := tx.QueryRow(`SELECT value FROM mod_kv WHERE org = ? AND mod = ? AND key = ?`, org, name, key).Scan(&now); err != nil {
+					return err
+				}
+				result = json.RawMessage(now)
+				return nil
+			}
+		} else if _, err := tx.Exec(`INSERT INTO mod_kv VALUES (?, ?, ?, ?) ON CONFLICT (org, mod, key) DO UPDATE SET value = excluded.value`, org, name, key, string(value)); err != nil {
+			return err
 		}
 		result, ok = value, true
-		return err
+		return nil
 	})
 	if err != nil {
 		return nil, false, err

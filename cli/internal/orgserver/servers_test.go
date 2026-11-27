@@ -2,10 +2,14 @@ package orgserver
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
+	"contextdrop.dev/context-drop/internal/mods"
 	"contextdrop.dev/context-drop/internal/pool"
 )
 
@@ -112,5 +116,49 @@ func TestServersNeverLoseEachOthersExtensionUpdates(t *testing.T) {
 	}
 	if !a.server.store.Once("slack", "E1") || b.server.store.Once("slack", "E1") {
 		t.Fatal("an event was handled twice across servers")
+	}
+}
+
+func TestARelayedCallWhoseNotificationWasMissedStillRuns(t *testing.T) {
+	a, b := twoServers(t)
+	laptop := &fakeMachine{name: "laptop", agents: []pool.Agent{agent("laptop", "cc-00000001", "/work/app", "main", "", "2026-11-17T10:00:00Z")}}
+	a.join(laptop)
+	waitFor(t, "B to see the laptop", func() bool { return len(b.server.agents("acme")) == 1 })
+	// Write the call for A without notifying it, as if A's listener was reconnecting.
+	in, _ := json.Marshal(pool.LocalSend{ID: "cc-00000001", Text: "missed"})
+	if _, err := b.server.store.db.Exec(`INSERT INTO relay (id, from_server, to_server, org, machine, method, input, timeout_ms, created)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, "missed-1", b.server.ID, a.server.ID, "acme", "laptop", "send", string(in), 5000, time.Now().UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "A to pick up the call", func() bool { return laptop.sentCount() == 1 })
+}
+
+func TestOnlyOneServerWinsAKeyThatWasAbsent(t *testing.T) {
+	a, b := twoServers(t)
+	ma, err := mods.OpenStore(a.server.store.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mb, _ := mods.OpenStore(b.server.store.DB())
+	var wins atomic.Int32
+	var wg sync.WaitGroup
+	for i := range 10 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			st := ma
+			if i%2 == 1 {
+				st = mb
+			}
+			if _, ok, err := st.KV("acme", "lock", "cas", "held", json.RawMessage(`"me"`), nil); err != nil {
+				t.Error(err)
+			} else if ok {
+				wins.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	if wins.Load() != 1 {
+		t.Fatalf("%d callers took the lock", wins.Load())
 	}
 }

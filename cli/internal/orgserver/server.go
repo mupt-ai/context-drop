@@ -76,6 +76,7 @@ func New(store *Store, adminToken string, log *slog.Logger) *Server {
 func (s *Server) Run(ctx context.Context) {
 	if s.relay.dsn != "" {
 		go s.relay.listen(ctx)
+		go s.relay.pickUp(ctx)
 	}
 	beat := time.NewTicker(heartbeat)
 	defer beat.Stop()
