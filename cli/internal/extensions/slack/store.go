@@ -97,7 +97,6 @@ func (e *Ext) install(in Workspace, token string) error {
 	if err != nil {
 		return err
 	}
-	_, held, _ := e.host.Owner(Name, in.TeamID)
 	if err := e.host.Claim(Name, in.TeamID, in.Org); errors.Is(err, extensions.ErrTaken) {
 		return fmt.Errorf("Slack workspace %s is already connected to another org", in.TeamName)
 	} else if err != nil {
@@ -115,8 +114,9 @@ func (e *Ext) install(in Workspace, token string) error {
 		return nil
 	})
 	if err != nil {
-		if !held {
-			_ = e.host.Release(Name, in.TeamID, in.Org) // nothing was installed; free the workspace
+		// Free the workspace unless the org's saved install uses it (another install may have won).
+		if cur, _, werr := e.workspace(in.Org); errors.Is(werr, ErrNotInstalled) || (werr == nil && cur.TeamID != in.TeamID) {
+			_ = e.host.Release(Name, in.TeamID, in.Org)
 		}
 		return err
 	}
