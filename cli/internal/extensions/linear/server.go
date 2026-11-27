@@ -225,7 +225,7 @@ func (e *Ext) saveInstall(inst Install) error {
 	})
 	if err != nil {
 		// Free the workspace unless the org's saved install uses it (another install may have won).
-		if cur, ok := e.install(inst.Org); !ok || cur.LinearOrg != inst.LinearOrg {
+		if st, gerr := e.get(inst.Org); gerr == nil && (len(st.Installs) == 0 || st.Installs[0].LinearOrg != inst.LinearOrg) {
 			_ = e.host.Release(Name, inst.LinearOrg, inst.Org)
 		}
 	}
