@@ -26,7 +26,7 @@ func withMods(t *testing.T) *org {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ms, err := mods.OpenStore(filepath.Join(t.TempDir(), "mods"))
+	ms, err := mods.OpenStore(o.server.store.DB())
 	if err != nil {
 		t.Fatal(err)
 	}

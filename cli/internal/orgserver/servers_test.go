@@ -1,0 +1,116 @@
+package orgserver
+
+import (
+	"context"
+	"os"
+	"sync"
+	"testing"
+
+	"contextdrop.dev/context-drop/internal/pool"
+)
+
+// twoServers is one org served by two servers sharing a Postgres database, as behind a load balancer.
+func twoServers(t *testing.T) (a, b *org) {
+	t.Helper()
+	if os.Getenv("CONTEXT_DROP_TEST_POSTGRES") == "" {
+		t.Skip("set CONTEXT_DROP_TEST_POSTGRES to run tests against Postgres")
+	}
+	addr := testDatabase(t)
+	open := func() *Store {
+		st, err := OpenStore(addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		st.SetSealKey("token-key")
+		t.Cleanup(func() { st.Close() })
+		return st
+	}
+	a = newOrgOn(t, open())
+	b = newOrgOn(t, open())
+	b.token = a.token
+	return a, b
+}
+
+// on is a client for the same machine that talks to another server.
+func on(c pool.Client, o *org) pool.Client {
+	c.Membership.Server = o.srv.URL
+	return c
+}
+
+func TestAMachineOnOneServerIsReachedThroughAnother(t *testing.T) {
+	a, b := twoServers(t)
+	laptop := &fakeMachine{name: "laptop", agents: []pool.Agent{agent("laptop", "cc-00000001", "/work/app", "main", "", "2026-11-17T10:00:00Z")}}
+	devbox := &fakeMachine{name: "devbox", agents: []pool.Agent{agent("devbox", "cc-00000002", "/work/api", "main", "", "2026-11-17T11:00:00Z")}}
+	cl := a.join(laptop) // connected to server A
+	b.join(devbox)       // connected to server B
+	waitFor(t, "both servers to see both machines", func() bool {
+		return len(a.server.agents("acme")) == 2 && len(b.server.agents("acme")) == 2
+	})
+
+	// Through server B, read and message the laptop's agent, which is connected to server A.
+	viaB := on(cl, b)
+	res, err := viaB.Read(context.Background(), "laptop/cc-00000001", pool.ReadOptions{})
+	if err != nil || len(res.Entries) == 0 {
+		t.Fatalf("read through B: %+v %v", res, err)
+	}
+	if _, err := viaB.Send(context.Background(), pool.SendRequest{Target: pool.Selector{ID: "laptop/cc-00000001"}, Text: "hi from B"}); err != nil {
+		t.Fatal(err)
+	}
+	if laptop.sentCount() != 1 {
+		t.Fatalf("laptop got %d messages", laptop.sentCount())
+	}
+	// And the other way: through A, to the devbox on B.
+	if _, err := cl.Send(context.Background(), pool.SendRequest{Target: pool.Selector{ID: "devbox/cc-00000002"}, Text: "hi from A"}); err != nil {
+		t.Fatal(err)
+	}
+	if devbox.sentCount() != 1 {
+		t.Fatal("devbox got nothing")
+	}
+}
+
+func TestAStoppedServersMachinesGoOffline(t *testing.T) {
+	a, b := twoServers(t)
+	laptop := &fakeMachine{name: "laptop", agents: []pool.Agent{agent("laptop", "cc-00000001", "/work/app", "main", "", "2026-11-17T10:00:00Z")}}
+	a.join(laptop)
+	waitFor(t, "B to see the laptop", func() bool { return len(b.server.agents("acme")) == 1 })
+	if err := a.server.store.Stopped(a.server.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := b.server.agents("acme"); got[0].Status != pool.StatusOffline {
+		t.Fatalf("after A stopped, B sees %+v", got)
+	}
+}
+
+func TestServersNeverLoseEachOthersExtensionUpdates(t *testing.T) {
+	a, b := twoServers(t)
+	type counter struct{ N int }
+	var wg sync.WaitGroup
+	for i := range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			st := a.server.store
+			if i%2 == 1 {
+				st = b.server.store
+			}
+			var c counter
+			if err := st.UpdateExtension(context.Background(), "test", "acme", &c, func() error { c.N++; return nil }); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	var c counter
+	if _, err := a.server.store.GetExtension("test", "acme", &c); err != nil || c.N != 20 {
+		t.Fatalf("counter %d, %v; want 20", c.N, err)
+	}
+	if err := a.server.store.ClaimKey("slack", "T1", "acme"); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.server.store.ClaimKey("slack", "T1", "other"); err != ErrTaken {
+		t.Fatalf("a second org claimed T1: %v", err)
+	}
+	if !a.server.store.Once("slack", "E1") || b.server.store.Once("slack", "E1") {
+		t.Fatal("an event was handled twice across servers")
+	}
+}

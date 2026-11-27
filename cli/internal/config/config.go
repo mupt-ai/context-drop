@@ -212,8 +212,10 @@ type ServerConfig struct {
 	ProxyHops int
 	// AdminToken guards org creation; empty disables it.
 	AdminToken string
-	// OrgState is the file holding orgs and joined machines.
+	// OrgState is the SQLite file holding orgs and joined machines, when Database is unset.
 	OrgState string
+	// Database is a Postgres URL or DSN that servers share; it replaces OrgState.
+	Database string
 	// Deno is the Deno executable mods run in; empty looks it up on PATH. Without Deno, mods are off.
 	Deno string
 	// ModsDir holds deployed mods, their key-value data, and secrets.
@@ -242,6 +244,7 @@ func LoadServerConfig() (ServerConfig, error) {
 		UploadToken: strings.TrimSpace(os.Getenv("CONTEXT_DROP_UPLOAD_TOKEN")),
 		AdminToken:  strings.TrimSpace(os.Getenv("CONTEXT_DROP_ADMIN_TOKEN")),
 		OrgState:    strings.TrimSpace(os.Getenv("CONTEXT_DROP_ORG_STATE")),
+		Database:    strings.TrimSpace(os.Getenv("CONTEXT_DROP_DATABASE_URL")),
 		Deno:        strings.TrimSpace(os.Getenv("CONTEXT_DROP_DENO")),
 		ModsDir:     strings.TrimSpace(os.Getenv("CONTEXT_DROP_MODS_DIR")),
 		MaxBytes:    envInt64("CONTEXT_DROP_MAX_BYTES", 25*1024*1024),

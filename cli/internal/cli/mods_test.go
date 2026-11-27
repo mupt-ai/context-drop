@@ -49,7 +49,7 @@ func joinModOrg(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ms, _ := mods.OpenStore(filepath.Join(t.TempDir(), "mods"))
+	ms, _ := mods.OpenStore(store.DB())
 	srv.Mods = mods.NewService(ms, rt, hs.URL, nil)
 	if _, _, err := executeRoot(t, "join", "--server", hs.URL, "--name", "laptop", token); err != nil {
 		t.Fatal(err)

@@ -1,11 +1,15 @@
 package slack
 
 import (
+	"context"
+
 	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
 	"time"
+
+	"contextdrop.dev/context-drop/internal/extensions"
 )
 
 // Workspace is an org's connection to one Slack workspace. The bot token is stored sealed.
@@ -53,38 +57,32 @@ const routeTTL = 30 * 24 * time.Hour
 // ErrNotInstalled means the org has not connected a Slack workspace.
 var ErrNotInstalled = errors.New("this org has not connected Slack; run `context-drop slack install`")
 
-// save writes one org's state; the caller holds e.mu.
-func (e *Ext) save(org string) error {
-	of := func(o string) bool { return o == org }
-	st := state{}
-	for _, i := range e.st.Installs {
-		if of(i.Org) {
-			st.Installs = append(st.Installs, i)
-		}
-	}
-	for _, m := range e.st.Members {
-		if of(m.Org) {
-			st.Members = append(st.Members, m)
-		}
-	}
-	for _, r := range e.st.Routes {
-		if of(r.Org) {
-			st.Routes = append(st.Routes, r)
-		}
-	}
-	return e.host.Save(Name, org, st)
+// get reads an org's state.
+func (e *Ext) get(org string) (state, error) {
+	var st state
+	_, err := e.host.Get(Name, org, &st)
+	return st, err
 }
 
-// load reads every org's saved state.
-func (e *Ext) load() error {
-	return e.host.Load(Name, func(_ string, data json.RawMessage) error {
+// update changes an org's state, with no other server changing it in between.
+func (e *Ext) update(org string, fn func(*state) error) error {
+	var st state
+	return e.host.Update(context.Background(), Name, org, &st, func() error { return fn(&st) })
+}
+
+// index makes sure every installed workspace is claimed by its org, for state saved before workspaces
+// were claimed.
+func (e *Ext) index() error {
+	return e.host.Each(Name, func(org string, data json.RawMessage) error {
 		var st state
 		if err := json.Unmarshal(data, &st); err != nil {
 			return err
 		}
-		e.st.Installs = append(e.st.Installs, st.Installs...)
-		e.st.Members = append(e.st.Members, st.Members...)
-		e.st.Routes = append(e.st.Routes, st.Routes...)
+		for _, i := range st.Installs {
+			if err := e.host.Claim(Name, i.TeamID, org); err != nil {
+				e.host.Log().Warn("slack workspace held by two orgs", "team", i.TeamID, "org", org, "err", err)
+			}
+		}
 		return nil
 	})
 }
@@ -99,105 +97,121 @@ func (e *Ext) install(in Workspace, token string) error {
 	if err != nil {
 		return err
 	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	for _, i := range e.st.Installs {
-		if i.TeamID == in.TeamID && i.Org != in.Org {
-			return fmt.Errorf("Slack workspace %s is already connected to another org", in.TeamName)
+	if err := e.host.Claim(Name, in.TeamID, in.Org); errors.Is(err, extensions.ErrTaken) {
+		return fmt.Errorf("Slack workspace %s is already connected to another org", in.TeamName)
+	} else if err != nil {
+		return err
+	}
+	var old string
+	err = e.update(in.Org, func(st *state) error {
+		if len(st.Installs) > 0 {
+			old = st.Installs[0].TeamID
+			in.Restricted = st.Installs[0].Restricted
 		}
+		in.TokenSealed = sealed
+		in.InstalledAt = time.Now().UTC()
+		st.Installs = []Workspace{in}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
-	in.TokenSealed = sealed
-	in.InstalledAt = time.Now().UTC()
-	// Reinstalling keeps the org's choice of who reaches agents.
-	if i := slices.IndexFunc(e.st.Installs, func(i Workspace) bool { return i.Org == in.Org }); i >= 0 {
-		in.Restricted = e.st.Installs[i].Restricted
+	if old != "" && old != in.TeamID {
+		_ = e.host.Release(Name, old, in.Org)
 	}
-	e.st.Installs = append(slices.DeleteFunc(e.st.Installs, func(i Workspace) bool { return i.Org == in.Org }), in)
-	return e.save(in.Org)
+	return nil
 }
 
 // uninstall forgets an org's workspace, its members, and its routes.
 func (e *Ext) uninstall(org string) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.st.Installs = slices.DeleteFunc(e.st.Installs, func(i Workspace) bool { return i.Org == org })
-	e.st.Members = slices.DeleteFunc(e.st.Members, func(m Member) bool { return m.Org == org })
-	e.st.Routes = slices.DeleteFunc(e.st.Routes, func(r Route) bool { return r.Org == org })
-	return e.save(org)
+	var teams []string
+	err := e.update(org, func(st *state) error {
+		for _, i := range st.Installs {
+			teams = append(teams, i.TeamID)
+		}
+		*st = state{}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	for _, t := range teams {
+		_ = e.host.Release(Name, t, org)
+	}
+	return nil
 }
 
 // workspace returns an org's install and its unsealed bot token.
 func (e *Ext) workspace(org string) (Workspace, string, error) {
-	e.mu.Lock()
-	idx := slices.IndexFunc(e.st.Installs, func(i Workspace) bool { return i.Org == org })
-	var w Workspace
-	if idx >= 0 {
-		w = e.st.Installs[idx]
+	st, err := e.get(org)
+	if err != nil {
+		return Workspace{}, "", err
 	}
-	e.mu.Unlock()
-	if idx < 0 {
+	if len(st.Installs) == 0 {
 		return Workspace{}, "", ErrNotInstalled
 	}
+	w := st.Installs[0]
 	tok, err := e.host.Unseal(w.TokenSealed)
 	return w, tok, err
 }
 
 // byTeam returns the install for a workspace, for routing its events.
 func (e *Ext) byTeam(team string) (Workspace, string, error) {
-	e.mu.Lock()
-	org := ""
-	for _, i := range e.st.Installs {
-		if i.TeamID == team {
-			org = i.Org
-		}
+	org, ok, err := e.host.Owner(Name, team)
+	if err != nil {
+		return Workspace{}, "", err
 	}
-	e.mu.Unlock()
-	if org == "" {
+	if !ok {
 		return Workspace{}, "", ErrNotInstalled
 	}
-	return e.workspace(org)
+	w, tok, err := e.workspace(org)
+	if err == nil && w.TeamID != team {
+		return Workspace{}, "", ErrNotInstalled
+	}
+	return w, tok, err
 }
 
 // addMember links a Slack user to an org.
 func (e *Ext) addMember(m Member) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
 	m.AddedAt = time.Now().UTC()
-	e.st.Members = append(slices.DeleteFunc(e.st.Members, func(x Member) bool { return x.Org == m.Org && x.UserID == m.UserID }), m)
-	return e.save(m.Org)
+	return e.update(m.Org, func(st *state) error {
+		st.Members = append(slices.DeleteFunc(st.Members, func(x Member) bool { return x.UserID == m.UserID }), m)
+		return nil
+	})
 }
+
+// errNoChange makes update write nothing.
+var errNoChange = errors.New("no change")
 
 // removeMember unlinks a Slack user; it reports whether one was linked.
 func (e *Ext) removeMember(org, user string) (bool, error) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	n := len(e.st.Members)
-	e.st.Members = slices.DeleteFunc(e.st.Members, func(x Member) bool { return x.Org == org && x.UserID == user })
-	if len(e.st.Members) == n {
+	err := e.update(org, func(st *state) error {
+		n := len(st.Members)
+		st.Members = slices.DeleteFunc(st.Members, func(x Member) bool { return x.UserID == user })
+		if len(st.Members) == n {
+			return errNoChange
+		}
+		return nil
+	})
+	if errors.Is(err, errNoChange) {
 		return false, nil
 	}
-	return true, e.save(org)
+	return err == nil, err
 }
 
 // members lists an org's linked Slack users.
 func (e *Ext) members(org string) []Member {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	out := []Member{}
-	for _, m := range e.st.Members {
-		if m.Org == org {
-			out = append(out, m)
-		}
+	st, _ := e.get(org)
+	if st.Members == nil {
+		return []Member{}
 	}
-	return out
+	return st.Members
 }
 
 // Member returns the linked member with this Slack user ID.
 func (e *Ext) Member(org, user string) (Member, bool) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	for _, m := range e.st.Members {
-		if m.Org == org && m.UserID == user {
+	for _, m := range e.members(org) {
+		if m.UserID == user {
 			return m, true
 		}
 	}
@@ -207,34 +221,33 @@ func (e *Ext) Member(org, user string) (Member, bool) {
 // route sends replies in a conversation to an agent. For a thread (ts set), the agent joins everyone
 // already in it; for a DM (ts empty), it replaces the agent that opened the DM before.
 func (e *Ext) route(org, channel, ts, agent string) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	now := time.Now().UTC()
-	e.st.Routes = slices.DeleteFunc(e.st.Routes, func(r Route) bool { return now.Sub(r.At) > routeTTL })
-	for i := range e.st.Routes {
-		r := &e.st.Routes[i]
-		if r.Org != org || r.Channel != channel || r.TS != ts {
-			continue
+	return e.update(org, func(st *state) error {
+		now := time.Now().UTC()
+		st.Routes = slices.DeleteFunc(st.Routes, func(r Route) bool { return now.Sub(r.At) > routeTTL })
+		for i := range st.Routes {
+			r := &st.Routes[i]
+			if r.Channel != channel || r.TS != ts {
+				continue
+			}
+			r.At = now
+			if ts == "" {
+				r.Agents = []string{agent}
+			} else if !slices.Contains(r.Agents, agent) {
+				r.Agents = append(r.Agents, agent)
+			}
+			return nil
 		}
-		r.At = now
-		if ts == "" {
-			r.Agents = []string{agent}
-		} else if !slices.Contains(r.Agents, agent) {
-			r.Agents = append(r.Agents, agent)
-		}
-		return e.save(org)
-	}
-	e.st.Routes = append(e.st.Routes, Route{Org: org, Channel: channel, TS: ts, Agents: []string{agent}, At: now})
-	return e.save(org)
+		st.Routes = append(st.Routes, Route{Org: org, Channel: channel, TS: ts, Agents: []string{agent}, At: now})
+		return nil
+	})
 }
 
 // routed returns the agents a conversation's replies go to.
 func (e *Ext) routed(org, channel, ts string) []string {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	for _, r := range e.st.Routes {
-		if r.Org == org && r.Channel == channel && r.TS == ts && time.Since(r.At) <= routeTTL {
-			return slices.Clone(r.Agents)
+	st, _ := e.get(org)
+	for _, r := range st.Routes {
+		if r.Channel == channel && r.TS == ts && time.Since(r.At) <= routeTTL {
+			return r.Agents
 		}
 	}
 	return nil
@@ -245,12 +258,11 @@ func (e *Ext) Connect(w Workspace, token string) error { return e.install(w, tok
 
 // setRestricted turns the linked-members-only rule on or off for an org's workspace.
 func (e *Ext) setRestricted(org string, on bool) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	idx := slices.IndexFunc(e.st.Installs, func(i Workspace) bool { return i.Org == org })
-	if idx < 0 {
-		return ErrNotInstalled
-	}
-	e.st.Installs[idx].Restricted = on
-	return e.save(org)
+	return e.update(org, func(st *state) error {
+		if len(st.Installs) == 0 {
+			return ErrNotInstalled
+		}
+		st.Installs[0].Restricted = on
+		return nil
+	})
 }

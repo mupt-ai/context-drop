@@ -38,20 +38,23 @@ type Server struct {
 	// PublicURL is the server's public origin, which extensions give out for OAuth and webhooks.
 	PublicURL string
 
+	// ID names this server among the servers sharing the database.
+	ID string
+
 	mu       sync.Mutex
-	machines map[key]*machine
+	machines map[key]*machine // the connections this server holds
 	seq      atomic.Uint64
+	relay    relay
 }
 
 type key struct{ org, name string }
 
-// machine is a joined machine's live state: its connection, if any, and the
-// agents it last reported.
+// machine is a connection this server holds, and the calls waiting on it. Its agents are kept in the
+// database, so every server sees them.
 type machine struct {
 	conn    *websocket.Conn
+	id      string // the connection's ID in the presence table
 	pending map[string]chan pool.Frame
-	agents  []pool.Agent
-	seen    time.Time
 }
 
 // New makes a server. adminToken guards org creation; empty disables it.
@@ -59,7 +62,42 @@ func New(store *Store, adminToken string, log *slog.Logger) *Server {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Server{store: store, adminToken: adminToken, log: log, machines: map[key]*machine{}}
+	s := &Server{store: store, adminToken: adminToken, log: log, machines: map[key]*machine{}, ID: newID()}
+	s.relay.s = s
+	if store.db.PG {
+		s.relay.dsn = store.db.DSN
+	}
+	_ = store.Beat(s.ID)
+	return s
+}
+
+// Run keeps this server's presence alive, relays calls from other servers, and sweeps old rows, until
+// ctx ends; then it marks its machines offline.
+func (s *Server) Run(ctx context.Context) {
+	if s.relay.dsn != "" {
+		go s.relay.listen(ctx)
+	}
+	beat := time.NewTicker(heartbeat)
+	defer beat.Stop()
+	sweep := time.NewTicker(10 * time.Minute)
+	defer sweep.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			if err := s.store.Stopped(s.ID); err != nil {
+				s.log.Warn("presence", "err", err)
+			}
+			return
+		case <-beat.C:
+			if err := s.store.Beat(s.ID); err != nil {
+				s.log.Warn("heartbeat", "err", err)
+			}
+		case <-sweep.C:
+			if err := s.store.Sweep(); err != nil {
+				s.log.Warn("sweep", "err", err)
+			}
+		}
+	}
 }
 
 // Register adds the org routes, and every extension's, to mux. An extension whose saved state cannot
@@ -230,6 +268,7 @@ func (s *Server) handleLeave(w http.ResponseWriter, r *http.Request, c caller) {
 		storeError(w, err)
 		return
 	}
+	_ = s.store.Forget(c.org, c.machine)
 	s.mu.Lock()
 	m := s.machines[key{c.org, c.machine}]
 	delete(s.machines, key{c.org, c.machine})
@@ -269,8 +308,12 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request, c caller)
 			ch <- pool.Frame{Type: "result", ID: id, Error: pool.Errorf("offline", "%s reconnected", c.machine)}
 		}
 	}
-	m.conn, m.pending = conn, map[string]chan pool.Frame{}
+	connID := newID()
+	m.conn, m.id, m.pending = conn, connID, map[string]chan pool.Frame{}
 	s.mu.Unlock()
+	if err := s.store.Connected(c.org, c.machine, s.ID, connID); err != nil {
+		s.log.Warn("presence", "err", err)
+	}
 	s.log.Info("machine connected", "org", c.org, "machine", c.machine)
 
 	ctx := r.Context()
@@ -282,7 +325,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request, c caller)
 		}
 		switch f.Type {
 		case "agents":
-			s.report(k, f.Agents)
+			s.report(k, connID, f.Agents)
 		case "result":
 			s.mu.Lock()
 			ch := m.pending[f.ID]
@@ -292,6 +335,9 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request, c caller)
 				ch <- f
 			}
 		}
+	}
+	if err := s.store.Disconnected(c.org, c.machine, connID); err != nil {
+		s.log.Warn("presence", "err", err)
 	}
 	s.mu.Lock()
 	if m.conn == conn {
@@ -325,7 +371,7 @@ func (s *Server) keepAlive(ctx context.Context, conn *websocket.Conn) {
 
 // report replaces a machine's agents, forcing IDs into its namespace so a
 // machine can only speak for its own agents.
-func (s *Server) report(k key, list []pool.Agent) {
+func (s *Server) report(k key, conn string, list []pool.Agent) {
 	kept := make([]pool.Agent, 0, len(list))
 	for _, a := range list {
 		if machine, _, ok := pool.SplitID(a.ID); !ok || machine != k.name {
@@ -334,31 +380,18 @@ func (s *Server) report(k key, list []pool.Agent) {
 		a.Machine = k.name
 		kept = append(kept, a)
 	}
-	s.mu.Lock()
-	m := s.machines[k]
-	if m != nil {
-		m.agents, m.seen = kept, time.Now()
+	if err := s.store.Report(k.org, k.name, conn, kept); err != nil {
+		s.log.Warn("presence", "err", err)
 	}
-	s.mu.Unlock()
 }
 
-// agents returns every agent in the org; a disconnected machine's agents are offline.
+// agents returns every agent in the org, from every server; a disconnected machine's agents are offline.
 func (s *Server) agents(org string) []pool.Agent {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	var out []pool.Agent
-	for k, m := range s.machines {
-		if k.org != org {
-			continue
-		}
-		for _, a := range m.agents {
-			if m.conn == nil {
-				a.Status = pool.StatusOffline
-			}
-			out = append(out, a)
-		}
+	list, err := s.store.Agents(org)
+	if err != nil {
+		s.log.Warn("presence", "err", err)
 	}
-	return byLastActive(out)
+	return byLastActive(list)
 }
 
 // byLastActive orders agents most recently active first, each main agent
@@ -429,14 +462,28 @@ func (s *Server) call(ctx context.Context, org, name, method string, input any) 
 	return s.callFor(ctx, timeout, org, name, method, input)
 }
 
-// callFor is call with its own time limit.
+// callFor is call with its own time limit. A machine connected to another server is reached through it.
 func (s *Server) callFor(ctx context.Context, timeout time.Duration, org, name, method string, input any) (json.RawMessage, *pool.Error) {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
 	raw, err := json.Marshal(input)
 	if err != nil {
 		return nil, pool.AsError(err)
 	}
+	s.mu.Lock()
+	m := s.machines[key{org, name}]
+	local := m != nil && m.conn != nil
+	s.mu.Unlock()
+	if !local && s.relay.dsn != "" {
+		if server, ok := s.store.Where(org, name); ok && server != s.ID {
+			return s.relay.forward(ctx, server, timeout, org, name, method, raw)
+		}
+	}
+	return s.callLocal(ctx, timeout, org, name, method, raw)
+}
+
+// callLocal relays a call to a machine connected to this server.
+func (s *Server) callLocal(ctx context.Context, timeout time.Duration, org, name, method string, raw json.RawMessage) (json.RawMessage, *pool.Error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	id := strconv.FormatUint(s.seq.Add(1), 36)
 	ch := make(chan pool.Frame, 1)
 	s.mu.Lock()
