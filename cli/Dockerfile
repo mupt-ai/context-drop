@@ -10,10 +10,12 @@ FROM denoland/deno:bin-2.9.5 AS deno
 
 FROM debian:bookworm-slim
 RUN apt-get update -q && apt-get install -yq --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/* \
-	&& useradd -M -u 65532 appuser
+	&& useradd -M -u 65532 appuser && mkdir /data && chown appuser /data
 COPY --from=deno /deno /usr/local/bin/deno
 COPY --from=build /out/context-drop-server /context-drop-server
 USER appuser
-ENV CONTEXT_DROP_DENO=/usr/local/bin/deno
+# With nothing else set, orgs live in /data/orgs.db and drops under /data: mount a volume there.
+ENV CONTEXT_DROP_DENO=/usr/local/bin/deno CONTEXT_DROP_DATA_DIR=/data
+VOLUME /data
 EXPOSE 8080
 ENTRYPOINT ["/context-drop-server"]
