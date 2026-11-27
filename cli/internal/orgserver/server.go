@@ -105,22 +105,50 @@ func (s *Server) Run(ctx context.Context) {
 	}
 }
 
-// dropStale closes connections presence no longer gives to this server: the machine left through
-// another server, or reconnected to one while this socket has not yet failed.
+// dropStale settles connections presence does not give to this server. A machine that reconnected
+// elsewhere or left through another server is closed; one whose presence write failed is recorded again.
 func (s *Server) dropStale() {
 	held, err := s.store.Holding(s.ID)
 	if err != nil {
 		s.log.Warn("presence", "err", err)
 		return
 	}
+	type conn struct {
+		k    key
+		id   string
+		conn *websocket.Conn
+	}
+	var unheld []conn
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	for k, m := range s.machines {
 		// A connection younger than a heartbeat may not be recorded yet.
 		if m.conn != nil && !held[m.id] && time.Since(m.since) > heartbeat {
-			m.conn.Close(websocket.StatusPolicyViolation, "connected elsewhere or left the org")
-			s.log.Info("dropped a stale connection", "org", k.org, "machine", k.name)
+			unheld = append(unheld, conn{k, m.id, m.conn})
 		}
+	}
+	s.mu.Unlock()
+	// Closing waits on the peer, so it happens outside the lock.
+	for _, c := range unheld {
+		other, found, err := s.store.Holder(c.k.org, c.k.name)
+		if err != nil {
+			continue
+		}
+		if !found {
+			member, err := s.store.Member(c.k.org, c.k.name)
+			if err != nil {
+				continue
+			}
+			if member {
+				if err := s.store.Connected(c.k.org, c.k.name, s.ID, c.id); err != nil {
+					s.log.Warn("presence", "err", err)
+				}
+				continue
+			}
+		} else if other == c.id {
+			continue // recorded since Holding was read
+		}
+		s.log.Info("dropping a stale connection", "org", c.k.org, "machine", c.k.name)
+		go c.conn.Close(websocket.StatusPolicyViolation, "connected elsewhere or left the org")
 	}
 }
 
@@ -495,11 +523,17 @@ func (s *Server) callFor(ctx context.Context, timeout time.Duration, org, name, 
 	// Presence decides, not a local socket: after the machine reconnects to another server, this
 	// server's old socket can stay open until its keepalive fails.
 	if s.relay.dsn != "" {
-		server, ok := s.store.Where(org, name)
-		if !ok {
-			return nil, pool.Errorf("offline", "machine %s is not connected", name)
-		}
-		if server != s.ID {
+		server, found, err := s.store.Where(org, name)
+		switch {
+		case err != nil:
+			// Presence cannot be read; a socket here is the best guess.
+		case !found:
+			// A socket here without presence is one whose presence write failed, unless the
+			// machine left through another server.
+			if member, err := s.store.Member(org, name); err == nil && !member {
+				return nil, pool.Errorf("offline", "machine %s is not connected", name)
+			}
+		case server != s.ID:
 			return s.relay.forward(ctx, server, timeout, org, name, method, raw)
 		}
 	}

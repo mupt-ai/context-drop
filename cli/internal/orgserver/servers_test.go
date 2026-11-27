@@ -167,13 +167,13 @@ func TestACallFollowsAMachineThatReconnectedToAnotherServer(t *testing.T) {
 	a, b := twoServers(t)
 	old := &fakeMachine{name: "laptop", agents: []pool.Agent{agent("laptop", "cc-00000001", "/work/app", "main", "", "2026-11-17T10:00:00Z")}}
 	cl := a.join(old)
-	waitFor(t, "A to hold the laptop", func() bool { s, ok := a.server.store.Where("acme", "laptop"); return ok && s == a.server.ID })
+	waitFor(t, "A to hold the laptop", func() bool { s, ok, _ := a.server.store.Where("acme", "laptop"); return ok && s == a.server.ID })
 	// The laptop reconnects through B while its socket on A has not failed yet.
 	now := &fakeMachine{name: "laptop", agents: old.agents}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go pool.Daemon{Membership: on(cl, b).Membership, Local: now, ScanEvery: 20 * time.Millisecond}.Run(ctx)
-	waitFor(t, "B to hold the laptop", func() bool { s, ok := a.server.store.Where("acme", "laptop"); return ok && s == b.server.ID })
+	waitFor(t, "B to hold the laptop", func() bool { s, ok, _ := a.server.store.Where("acme", "laptop"); return ok && s == b.server.ID })
 
 	if _, err := cl.Send(context.Background(), pool.SendRequest{Target: pool.Selector{ID: "laptop/cc-00000001"}, Text: "hi"}); err != nil {
 		t.Fatal(err)

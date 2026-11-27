@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"contextdrop.dev/context-drop/internal/db"
 	"contextdrop.dev/context-drop/internal/pool"
 )
 
@@ -65,12 +66,30 @@ func (s *Store) Forget(org, machine string) error {
 	return err
 }
 
-// Where returns the server holding a machine's connection, if a live one does.
-func (s *Store) Where(org, machine string) (string, bool) {
-	var server string
-	err := s.db.QueryRow(`SELECT p.server FROM presence p JOIN servers v ON v.id = p.server
+// Where returns the live server holding a machine's connection; found is false when none does.
+func (s *Store) Where(org, machine string) (server string, found bool, err error) {
+	err = s.db.QueryRow(`SELECT p.server FROM presence p JOIN servers v ON v.id = p.server
 		WHERE p.org = ? AND p.machine = ? AND v.seen > ?`, org, machine, time.Now().Add(-serverTTL).UnixMilli()).Scan(&server)
-	return server, err == nil && server != ""
+	if db.NoRows(err) {
+		return "", false, nil
+	}
+	return server, err == nil && server != "", err
+}
+
+// Holder returns the connection presence records for a machine, live or not.
+func (s *Store) Holder(org, machine string) (conn string, found bool, err error) {
+	err = s.db.QueryRow(`SELECT conn FROM presence WHERE org = ? AND machine = ?`, org, machine).Scan(&conn)
+	if db.NoRows(err) {
+		return "", false, nil
+	}
+	return conn, err == nil && conn != "", err
+}
+
+// Member reports whether a machine still belongs to the org.
+func (s *Store) Member(org, machine string) (bool, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM machines WHERE org = ? AND name = ?`, org, machine).Scan(&n)
+	return n > 0, err
 }
 
 // Holding returns the IDs of the connections presence says server holds.
