@@ -172,21 +172,12 @@ type legacyState struct {
 	SlackRoutes   json.RawMessage `json:"slack_routes,omitempty"`
 }
 
-// ErrNotEmpty means a JSON file was not imported because the database already has orgs.
-var ErrNotEmpty = errors.New("the database already has orgs")
-
-// ImportJSON copies the JSON state file older servers kept into an empty database.
+// ImportJSON copies the JSON state file older servers kept into the database. Orgs, machines, and
+// extension state the database already has are kept, so importing twice changes nothing.
 func (s *Store) ImportJSON(path string) error {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return err
-	}
-	var n int
-	if err := s.db.QueryRow(`SELECT count(*) FROM orgs`).Scan(&n); err != nil {
-		return err
-	}
-	if n > 0 {
-		return ErrNotEmpty
 	}
 	var st legacyState
 	if err := json.Unmarshal(raw, &st); err != nil {
@@ -206,12 +197,12 @@ func (s *Store) ImportJSON(path string) error {
 	}
 	err = s.db.InTx(context.Background(), func(tx *db.Tx) error {
 		for _, o := range st.Orgs {
-			if _, err := tx.Exec(`INSERT INTO orgs VALUES (?, ?, ?)`, o.ID, o.JoinTokenHash, o.CreatedAt.UTC().Format(time.RFC3339Nano)); err != nil {
+			if _, err := tx.Exec(`INSERT INTO orgs VALUES (?, ?, ?) ON CONFLICT DO NOTHING`, o.ID, o.JoinTokenHash, o.CreatedAt.UTC().Format(time.RFC3339Nano)); err != nil {
 				return err
 			}
 		}
 		for _, m := range st.Machines {
-			if _, err := tx.Exec(`INSERT INTO machines VALUES (?, ?, ?, ?)`, m.Org, m.Name, m.CredHash, m.JoinedAt.UTC().Format(time.RFC3339Nano)); err != nil {
+			if _, err := tx.Exec(`INSERT INTO machines VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING`, m.Org, m.Name, m.CredHash, m.JoinedAt.UTC().Format(time.RFC3339Nano)); err != nil {
 				return err
 			}
 		}
@@ -221,7 +212,7 @@ func (s *Store) ImportJSON(path string) error {
 				return fmt.Errorf("extension %s: %w", name, err)
 			}
 			for org, data := range perOrg {
-				if _, err := tx.Exec(`INSERT INTO extension_state VALUES (?, ?, ?)`, name, org, string(data)); err != nil {
+				if _, err := tx.Exec(`INSERT INTO extension_state VALUES (?, ?, ?) ON CONFLICT DO NOTHING`, name, org, string(data)); err != nil {
 					return err
 				}
 			}
