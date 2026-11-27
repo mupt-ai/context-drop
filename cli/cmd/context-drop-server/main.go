@@ -29,6 +29,13 @@ func main() {
 		fmt.Fprint(os.Stdout, serverHelp)
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "import" {
+		if err := importState(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		slog.Error("server failed", "err", err)
 		exit(1)
@@ -39,6 +46,7 @@ const serverHelp = `Run the Context Drop HTTP server.
 
 Usage:
   context-drop-server
+  context-drop-server import ORGS_JSON [MODS_DIR]   copy an older server's state into the database
 
 Configuration is provided with environment variables:
   CONTEXT_DROP_ADDR                  listen address (default :8080)
@@ -55,6 +63,7 @@ Configuration is provided with environment variables:
   CONTEXT_DROP_UPLOAD_BYTES_PER_HOUR anonymous upload bytes per client IP per hour (default 262144000, 0 = off)
   CONTEXT_DROP_PROXY_HOPS            trusted proxies in front appending X-Forwarded-For (Cloud Run: 1; GCP HTTPS LB: 2)
   CONTEXT_DROP_ADMIN_TOKEN           bearer token for creating orgs (unset disables org creation)
+  CONTEXT_DROP_DATABASE_URL          Postgres URL or DSN; servers sharing one database act as one (unset uses SQLite)
   CONTEXT_DROP_ORG_STATE             SQLite database of orgs, machines, and extensions (default <data dir>/orgs.db; a .json path is imported once). On GCS storage it is backed up to state/ in the bucket
   CONTEXT_DROP_DENO                  Deno executable for mods (default: deno on PATH; without it mods are off)
   CONTEXT_DROP_MODS_DIR              deployed mods, their data, and secrets (default <data dir>/mods)
@@ -86,6 +95,7 @@ func runWithConfig(ctx context.Context, cfg config.ServerConfig) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	startCleanup(ctx, store, cfg)
+	go orgs.Run(ctx)
 
 	return serve(ctx, httpServer, cfg)
 }
@@ -104,7 +114,13 @@ func newOrgServer(ctx context.Context, cfg config.ServerConfig, drops storage.St
 	if path == "" {
 		path = filepath.Join(cfg.DataDir, "orgs.db")
 	}
+	if cfg.Database != "" {
+		path = cfg.Database
+	}
 	backup, _ := drops.(stateBackup)
+	if cfg.Database != "" {
+		backup = nil // Postgres keeps its own backups
+	}
 	if backup != nil {
 		if err := restoreState(ctx, backup, path); err != nil {
 			return nil, fmt.Errorf("restore the org database: %w", err)
@@ -121,13 +137,18 @@ func newOrgServer(ctx context.Context, cfg config.ServerConfig, drops storage.St
 	if rt, err := mods.NewRuntime(cfg.Deno); err != nil {
 		slog.Warn("mods are off", "err", err)
 	} else {
+		ms, err := mods.OpenStore(st.DB())
+		if err != nil {
+			return nil, err
+		}
 		dir := cfg.ModsDir
 		if dir == "" {
 			dir = filepath.Join(cfg.DataDir, "mods")
 		}
-		ms, err := mods.OpenStore(dir)
-		if err != nil {
-			return nil, err
+		if n, err := ms.ImportDir(dir); err != nil {
+			return nil, fmt.Errorf("import mods from %s: %w", dir, err)
+		} else if n > 0 {
+			slog.Info("imported mods from disk", "count", n, "dir", dir)
 		}
 		s.Mods = mods.NewService(ms, rt, loopback(cfg.Addr), nil)
 	}
@@ -311,4 +332,40 @@ func startCleanup(ctx context.Context, store storage.Store, cfg config.ServerCon
 			}
 		}()
 	}
+}
+
+// importState copies an older server's JSON state, and optionally its mods directory, into the database
+// CONTEXT_DROP_DATABASE_URL names.
+func importState(args []string) error {
+	if len(args) < 1 || len(args) > 2 {
+		return fmt.Errorf("usage: context-drop-server import ORGS_JSON [MODS_DIR]")
+	}
+	cfg, err := config.LoadServerConfig()
+	if err != nil {
+		return err
+	}
+	if cfg.Database == "" {
+		return fmt.Errorf("set CONTEXT_DROP_DATABASE_URL to the database to import into")
+	}
+	st, err := orgserver.OpenStore(cfg.Database)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	if err := st.ImportJSON(args[0]); err != nil {
+		return err
+	}
+	fmt.Printf("imported %d orgs from %s\n", len(st.Orgs()), args[0])
+	if len(args) == 2 {
+		ms, err := mods.OpenStore(st.DB())
+		if err != nil {
+			return err
+		}
+		n, err := ms.ImportDir(args[1])
+		if err != nil {
+			return err
+		}
+		fmt.Printf("imported %d mods from %s\n", n, args[1])
+	}
+	return nil
 }

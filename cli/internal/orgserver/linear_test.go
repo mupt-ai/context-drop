@@ -230,7 +230,7 @@ func TestEachOrgsExtensionStateIsSavedApart(t *testing.T) {
 		}
 	}
 	rows := map[string]string{}
-	if err := store.LoadExtension("slack", func(org string, data json.RawMessage) error { rows[org] = string(data); return nil }); err != nil {
+	if err := store.EachExtension("slack", func(org string, data json.RawMessage) error { rows[org] = string(data); return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if len(rows) != 2 || strings.Contains(rows["acme"], "Tbeta") || strings.Contains(rows["beta"], "Tacme") {

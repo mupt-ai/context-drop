@@ -1,6 +1,7 @@
 package linear
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -108,11 +109,10 @@ func (e *Ext) handleOAuth(w http.ResponseWriter, r *http.Request) {
 
 // ExpireTokenForTest marks an org's OAuth token as expired, so the next call refreshes it.
 func (e *Ext) ExpireTokenForTest(org string) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	for i := range e.st.Installs {
-		if e.st.Installs[i].Org == org {
-			e.st.Installs[i].Expires = time.Now().Add(-time.Minute)
+	_ = e.update(context.Background(), org, func(st *state) error {
+		for i := range st.Installs {
+			st.Installs[i].Expires = time.Now().Add(-time.Minute)
 		}
-	}
+		return nil
+	})
 }

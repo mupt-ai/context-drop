@@ -12,6 +12,15 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: pw
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 2s --health-timeout 5s --health-retries 15
+
     steps:
       - uses: actions/checkout@v4
 
@@ -22,3 +31,9 @@ jobs:
 
       - run: make coverage test
         working-directory: cli
+
+      - name: Org server against Postgres
+        run: go test -race -count=1 ./internal/orgserver ./internal/mods
+        working-directory: cli
+        env:
+          CONTEXT_DROP_TEST_POSTGRES: postgres://postgres:pw@localhost:5432/postgres?sslmode=disable

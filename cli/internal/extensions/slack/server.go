@@ -36,12 +36,9 @@ type Ext struct {
 	API string
 
 	host extensions.Host
-	mu   sync.Mutex // guards st
-	st   state
 
 	cacheMu sync.Mutex
-	names   map[string]string    // org|kind|key → value: channel names → IDs, user IDs → names
-	events  map[string]time.Time // event IDs already handled, since Slack retries
+	names   map[string]string // org|kind|key → value: channel names → IDs, user IDs → names
 }
 
 // Name implements extensions.Extension.
@@ -62,7 +59,7 @@ func (e *Ext) redirect() string {
 // Register implements extensions.Extension.
 func (e *Ext) Register(mux *http.ServeMux, h extensions.Host) error {
 	e.host = h
-	if err := e.load(); err != nil {
+	if err := e.index(); err != nil {
 		return err
 	}
 	mux.HandleFunc("GET /v1/slack/oauth", e.handleOAuth)
@@ -95,28 +92,8 @@ func (e *Ext) remember(org, kind, key, value string) {
 	e.names[org+"|"+kind+"|"+key] = value
 }
 
-// seenEvent reports whether an event was handled already, and marks it handled.
-func (e *Ext) seenEvent(id string) bool {
-	if id == "" {
-		return false
-	}
-	e.cacheMu.Lock()
-	defer e.cacheMu.Unlock()
-	if e.events == nil {
-		e.events = map[string]time.Time{}
-	}
-	now := time.Now()
-	for k, t := range e.events {
-		if now.Sub(t) > time.Hour {
-			delete(e.events, k)
-		}
-	}
-	if _, ok := e.events[id]; ok {
-		return true
-	}
-	e.events[id] = now
-	return false
-}
+// seenEvent reports whether an event was handled already, by any server, and marks it handled.
+func (e *Ext) seenEvent(id string) bool { return !e.host.Once(Name, id) }
 
 // client is the org's Web API client.
 func (e *Ext) client(org string) (Client, Workspace, *pool.Error) {

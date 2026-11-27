@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 
 	"contextdrop.dev/context-drop/internal/extensions"
@@ -39,11 +38,7 @@ type Ext struct {
 	API      string
 	TokenURL string
 
-	host      extensions.Host
-	mu        sync.Mutex
-	st        state
-	seen      map[string]time.Time // comment IDs already delivered, since Linear retries
-	refreshMu sync.Mutex           // one token refresh at a time
+	host extensions.Host
 }
 
 func (e *Ext) oauth() bool { return e.ClientID != "" }
@@ -99,13 +94,16 @@ func (e *Ext) Owns(target string) bool { return strings.HasPrefix(target, Prefix
 // Register implements extensions.Extension.
 func (e *Ext) Register(mux *http.ServeMux, h extensions.Host) error {
 	e.host = h
-	err := h.Load(Name, func(_ string, data json.RawMessage) error {
+	err := h.Each(Name, func(org string, data json.RawMessage) error {
 		var st state
 		if err := json.Unmarshal(data, &st); err != nil {
 			return err
 		}
-		e.st.Installs = append(e.st.Installs, st.Installs...)
-		e.st.Routes = append(e.st.Routes, st.Routes...)
+		for _, i := range st.Installs {
+			if err := h.Claim(Name, i.LinearOrg, org); err != nil {
+				h.Log().Warn("linear workspace held by two orgs", "workspace", i.LinearOrg, "org", org, "err", err)
+			}
+		}
 		return nil
 	})
 	if err != nil {
@@ -120,31 +118,24 @@ func (e *Ext) Register(mux *http.ServeMux, h extensions.Host) error {
 	return nil
 }
 
-// save writes one org's state; the caller holds e.mu.
-func (e *Ext) save(org string) error {
-	st := state{}
-	for _, i := range e.st.Installs {
-		if i.Org == org {
-			st.Installs = append(st.Installs, i)
-		}
-	}
-	for _, r := range e.st.Routes {
-		if r.Org == org {
-			st.Routes = append(st.Routes, r)
-		}
-	}
-	return e.host.Save(Name, org, st)
+func (e *Ext) get(org string) (state, error) {
+	var st state
+	_, err := e.host.Get(Name, org, &st)
+	return st, err
+}
+
+// update changes an org's state, with no other server changing it in between.
+func (e *Ext) update(ctx context.Context, org string, fn func(*state) error) error {
+	var st state
+	return e.host.Update(ctx, Name, org, &st, func() error { return fn(&st) })
 }
 
 func (e *Ext) install(org string) (Install, bool) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	for _, in := range e.st.Installs {
-		if in.Org == org {
-			return in, true
-		}
+	st, err := e.get(org)
+	if err != nil || len(st.Installs) == 0 {
+		return Install{}, false
 	}
-	return Install{}, false
+	return st.Installs[0], true
 }
 
 // client is the org's Linear client, refreshing an OAuth token that is about to expire.
@@ -167,10 +158,9 @@ func (e *Ext) client(ctx context.Context, org string) (Client, Install, *pool.Er
 	return Client{Auth: "Bearer " + tok, URL: e.API}, in, nil
 }
 
-// token is an OAuth install's access token, refreshed when it has under five minutes left.
+// token is an OAuth install's access token, refreshed when it has under five minutes left. The
+// refresh holds the org's state, so two servers never spend the same refresh token.
 func (e *Ext) token(ctx context.Context, org string) (string, error) {
-	e.refreshMu.Lock()
-	defer e.refreshMu.Unlock()
 	in, ok := e.install(org)
 	if !ok {
 		return "", ErrNotInstalled
@@ -178,26 +168,30 @@ func (e *Ext) token(ctx context.Context, org string) (string, error) {
 	if time.Until(in.Expires) > 5*time.Minute {
 		return e.host.Unseal(in.TokenSealed)
 	}
-	refresh, err := e.host.Unseal(in.RefreshSealed)
-	if err != nil {
-		return "", err
-	}
-	tok, err := Exchange(ctx, e.TokenURL, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refresh},
-		"client_id": {e.ClientID}, "client_secret": {e.ClientSecret}})
-	if err != nil {
-		return "", err
-	}
-	if err := e.storeToken(&in, tok); err != nil {
-		return "", err
-	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	for i := range e.st.Installs {
-		if e.st.Installs[i].Org == org {
-			e.st.Installs[i].TokenSealed, e.st.Installs[i].RefreshSealed, e.st.Installs[i].Expires = in.TokenSealed, in.RefreshSealed, in.Expires
+	var access string
+	err := e.update(ctx, org, func(st *state) error {
+		if len(st.Installs) == 0 {
+			return ErrNotInstalled
 		}
-	}
-	return tok.Access, e.save(org)
+		cur := &st.Installs[0]
+		if time.Until(cur.Expires) > 5*time.Minute { // another server refreshed it meanwhile
+			var err error
+			access, err = e.host.Unseal(cur.TokenSealed)
+			return err
+		}
+		refresh, err := e.host.Unseal(cur.RefreshSealed)
+		if err != nil {
+			return err
+		}
+		tok, err := Exchange(ctx, e.TokenURL, url.Values{"grant_type": {"refresh_token"}, "refresh_token": {refresh},
+			"client_id": {e.ClientID}, "client_secret": {e.ClientSecret}})
+		if err != nil {
+			return err
+		}
+		access = tok.Access
+		return e.storeToken(cur, tok)
+	})
+	return access, err
 }
 
 // storeToken seals a token into an install.
@@ -216,13 +210,29 @@ func (e *Ext) storeToken(in *Install, tok Token) error {
 
 // saveInstall records an install unless another org already has that Linear workspace.
 func (e *Ext) saveInstall(inst Install) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if slices.ContainsFunc(e.st.Installs, func(i Install) bool { return i.LinearOrg == inst.LinearOrg && i.Org != inst.Org }) {
+	if err := e.host.Claim(Name, inst.LinearOrg, inst.Org); errors.Is(err, extensions.ErrTaken) {
 		return errTaken
+	} else if err != nil {
+		return err
 	}
-	e.st.Installs = append(slices.DeleteFunc(e.st.Installs, func(i Install) bool { return i.Org == inst.Org }), inst)
-	return e.save(inst.Org)
+	var old string
+	err := e.update(context.Background(), inst.Org, func(st *state) error {
+		if len(st.Installs) > 0 {
+			old = st.Installs[0].LinearOrg
+		}
+		st.Installs = []Install{inst}
+		return nil
+	})
+	if err != nil {
+		// Free the workspace unless the org's saved install uses it (another install may have won).
+		if st, gerr := e.get(inst.Org); gerr == nil && (len(st.Installs) == 0 || st.Installs[0].LinearOrg != inst.LinearOrg) {
+			_ = e.host.Release(Name, inst.LinearOrg, inst.Org)
+		}
+	}
+	if err == nil && old != "" && old != inst.LinearOrg {
+		_ = e.host.Release(Name, old, inst.Org)
+	}
+	return err
 }
 
 func asPoolError(err error) *pool.Error {
@@ -264,21 +274,11 @@ func (e *Ext) handleInstall(w http.ResponseWriter, r *http.Request, c extensions
 		extensions.WriteError(w, http.StatusBadRequest, "bad_request", "Linear refused the key: "+err.Error())
 		return
 	}
-	e.mu.Lock()
-	for _, i := range e.st.Installs {
-		if i.LinearOrg == who.OrgID && i.Org != c.Org {
-			e.mu.Unlock()
-			extensions.WriteError(w, http.StatusConflict, "exists", "Linear workspace "+who.OrgName+" is already connected to another org")
-			return
-		}
+	if owner, ok, _ := e.host.Owner(Name, who.OrgID); ok && owner != c.Org {
+		extensions.WriteError(w, http.StatusConflict, "exists", "Linear workspace "+who.OrgName+" is already connected to another org")
+		return
 	}
-	old, hadOld := Install{}, false
-	for _, i := range e.st.Installs {
-		if i.Org == c.Org {
-			old, hadOld = i, true
-		}
-	}
-	e.mu.Unlock()
+	old, hadOld := e.install(c.Org)
 
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
@@ -339,11 +339,10 @@ func (e *Ext) handleUninstall(w http.ResponseWriter, r *http.Request, c extensio
 	if ok {
 		e.deleteWebhook(r.Context(), in)
 	}
-	e.mu.Lock()
-	e.st.Installs = slices.DeleteFunc(e.st.Installs, func(i Install) bool { return i.Org == c.Org })
-	e.st.Routes = slices.DeleteFunc(e.st.Routes, func(rt Route) bool { return rt.Org == c.Org })
-	err := e.save(c.Org)
-	e.mu.Unlock()
+	err := e.update(r.Context(), c.Org, func(st *state) error { *st = state{}; return nil })
+	if ok && err == nil {
+		_ = e.host.Release(Name, in.LinearOrg, c.Org)
+	}
 	if err != nil {
 		extensions.WriteError(w, http.StatusInternalServerError, "failed", err.Error())
 		return
@@ -398,30 +397,28 @@ func (e *Ext) Send(ctx context.Context, c extensions.Caller, target, text, from,
 }
 
 func (e *Ext) route(org string, issue Issue, agent string) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	now := time.Now().UTC()
-	e.st.Routes = slices.DeleteFunc(e.st.Routes, func(r Route) bool { return now.Sub(r.At) > routeTTL })
-	for i := range e.st.Routes {
-		r := &e.st.Routes[i]
-		if r.Org == org && r.IssueID == issue.ID {
-			r.At = now
-			if !slices.Contains(r.Agents, agent) {
-				r.Agents = append(r.Agents, agent)
+	return e.update(context.Background(), org, func(st *state) error {
+		now := time.Now().UTC()
+		st.Routes = slices.DeleteFunc(st.Routes, func(r Route) bool { return now.Sub(r.At) > routeTTL })
+		for i := range st.Routes {
+			r := &st.Routes[i]
+			if r.IssueID == issue.ID {
+				r.At = now
+				if !slices.Contains(r.Agents, agent) {
+					r.Agents = append(r.Agents, agent)
+				}
+				return nil
 			}
-			return e.save(org)
 		}
-	}
-	e.st.Routes = append(e.st.Routes, Route{Org: org, IssueID: issue.ID, Identifier: issue.Identifier, Agents: []string{agent}, At: now})
-	return e.save(org)
+		st.Routes = append(st.Routes, Route{Org: org, IssueID: issue.ID, Identifier: issue.Identifier, Agents: []string{agent}, At: now})
+		return nil
+	})
 }
 
 func (e *Ext) routed(org, issueID string) (Route, bool) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	for _, r := range e.st.Routes {
-		if r.Org == org && r.IssueID == issueID && time.Since(r.At) <= routeTTL {
-			r.Agents = slices.Clone(r.Agents)
+	st, _ := e.get(org)
+	for _, r := range st.Routes {
+		if r.IssueID == issueID && time.Since(r.At) <= routeTTL {
 			return r, true
 		}
 	}
@@ -472,25 +469,8 @@ func (e *Ext) handleRead(w http.ResponseWriter, r *http.Request, c extensions.Ca
 
 // ── webhooks: people answering agents ───────────────────────────────────────
 
-// markSeen records a comment as handled; it reports whether it was already.
-func (e *Ext) markSeen(id string) bool {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.seen == nil {
-		e.seen = map[string]time.Time{}
-	}
-	now := time.Now()
-	for k, t := range e.seen {
-		if now.Sub(t) > time.Hour {
-			delete(e.seen, k)
-		}
-	}
-	if _, ok := e.seen[id]; ok {
-		return true
-	}
-	e.seen[id] = now
-	return false
-}
+// markSeen records a comment as handled, by any server; it reports whether it was already.
+func (e *Ext) markSeen(id string) bool { return !e.host.Once(Name, id) }
 
 type webhook struct {
 	Action         string `json:"action"`
@@ -519,13 +499,11 @@ func (e *Ext) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var inst Install
-	e.mu.Lock()
-	for _, i := range e.st.Installs {
-		if i.LinearOrg == hook.OrganizationID {
-			inst = i
+	if org, ok, _ := e.host.Owner(Name, hook.OrganizationID); ok {
+		if in, ok := e.install(org); ok && in.LinearOrg == hook.OrganizationID {
+			inst = in
 		}
 	}
-	e.mu.Unlock()
 	secret, err := e.WebhookSecret, error(nil)
 	if inst.SecretSealed != "" {
 		secret, err = e.host.Unseal(inst.SecretSealed)

@@ -47,7 +47,11 @@ func NewCaller(org, machine, mod string, can map[string]bool) Caller {
 // May reports whether the caller may use a capability.
 func (c Caller) May(capability string) bool { return c.Mod == "" || c.can[capability] }
 
-// Host is what the org server gives an extension.
+// ErrTaken means another org holds a key.
+var ErrTaken = errors.New("held by another org")
+
+// Host is what the org server gives an extension. Extensions keep no state in memory beyond caches:
+// several servers may share one database, so every read and change goes through the host.
 type Host interface {
 	// Authed admits requests carrying a credential for the org in the path, a machine's or a mod's.
 	Authed(func(http.ResponseWriter, *http.Request, Caller)) http.HandlerFunc
@@ -55,10 +59,21 @@ type Host interface {
 	Deliver(ctx context.Context, org, agent, text, from string) *pool.Error
 	// HasOrg reports whether an org exists.
 	HasOrg(org string) bool
-	// Load calls each with every org's saved state for the extension.
-	Load(name string, each func(org string, data json.RawMessage) error) error
-	// Save writes the extension's state for one org. Saving per org keeps each write small.
-	Save(name, org string, v any) error
+	// Each calls fn with every org's saved state for the extension.
+	Each(name string, fn func(org string, data json.RawMessage) error) error
+	// Get reads the extension's state for one org into v; it reports false when there is none.
+	Get(name, org string, v any) (bool, error)
+	// Update reads an org's state into v, runs fn, and writes v back, with no other server changing it
+	// in between. fn must not call the host's state methods. An error from fn writes nothing.
+	Update(ctx context.Context, name, org string, v any, fn func() error) error
+	// Claim gives a key, such as a Slack workspace ID, to an org; it fails with ErrTaken when another
+	// org holds it. Release lets go of it, and Owner looks up who holds it.
+	Claim(name, key, org string) error
+	Release(name, key, org string) error
+	Owner(name, key string) (org string, ok bool, err error)
+	// Once reports whether this is the first time any server has seen an ID, such as a webhook
+	// delivery that may be retried.
+	Once(name, id string) bool
 	// Seal encrypts a secret, such as a token, for storage; Unseal reverses it.
 	Seal(plain string) (string, error)
 	Unseal(sealed string) (string, error)

@@ -7,11 +7,14 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
+	"contextdrop.dev/context-drop/internal/db"
 	"contextdrop.dev/context-drop/internal/extensions"
 	"contextdrop.dev/context-drop/internal/pool"
 )
@@ -71,13 +74,56 @@ type org struct {
 	cancel []context.CancelFunc
 }
 
-func newOrg(t *testing.T, exts ...extensions.Extension) *org {
+// testStore opens a store for a test: SQLite, or a fresh Postgres database on the server
+// CONTEXT_DROP_TEST_POSTGRES names (a URL like postgres://postgres:pw@localhost:55432/postgres).
+func testStore(t *testing.T) *Store {
 	t.Helper()
-	store, err := OpenStore(filepath.Join(t.TempDir(), "orgs.json"))
+	store, err := OpenStore(testDatabase(t))
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { store.Close() })
 	store.SetSealKey("token-key")
+	return store
+}
+
+func testDatabase(t *testing.T) string {
+	t.Helper()
+	base := os.Getenv("CONTEXT_DROP_TEST_POSTGRES")
+	if base == "" {
+		return filepath.Join(t.TempDir(), "orgs.db")
+	}
+	admin, err := db.Open(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close()
+	name := "cdtest_" + newID()
+	if _, err := admin.DB.Exec("CREATE DATABASE " + name); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if a, err := db.Open(base); err == nil {
+			_, _ = a.DB.Exec("DROP DATABASE " + name + " WITH (FORCE)")
+			a.Close()
+		}
+	})
+	u, err := url.Parse(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.Path = "/" + name
+	return u.String()
+}
+
+func newOrg(t *testing.T, exts ...extensions.Extension) *org {
+	t.Helper()
+	return newOrgOn(t, testStore(t), exts...)
+}
+
+// newOrgOn serves an org from a store, which another server may share.
+func newOrgOn(t *testing.T, store *Store, exts ...extensions.Extension) *org {
+	t.Helper()
 	s := New(store, "admin-secret", nil)
 	s.CallTimeout = 5 * time.Second
 	s.Extensions = exts
@@ -85,12 +131,18 @@ func newOrg(t *testing.T, exts ...extensions.Extension) *org {
 	s.Register(mux)
 	o := &org{t: t, server: s, srv: httptest.NewServer(mux)}
 	s.PublicURL = o.srv.URL
+	ctx, stop := context.WithCancel(context.Background())
+	go s.Run(ctx)
 	t.Cleanup(func() {
 		for _, c := range o.cancel {
 			c()
 		}
 		o.srv.Close()
+		stop()
 	})
+	if len(store.Orgs()) > 0 { // a second server on a shared store: the org exists
+		return o
+	}
 	body, _ := json.Marshal(map[string]string{"name": "acme"})
 	req, _ := http.NewRequest("POST", o.srv.URL+"/v1/orgs", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer admin-secret")

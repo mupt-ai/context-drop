@@ -93,14 +93,27 @@ func (h host) Deliver(ctx context.Context, org, agent, text, from string) *pool.
 }
 
 func (h host) HasOrg(org string) bool { return h.s.store.HasOrg(org) }
-func (h host) Load(name string, each func(string, json.RawMessage) error) error {
-	return h.s.store.LoadExtension(name, each)
+func (h host) Each(name string, fn func(string, json.RawMessage) error) error {
+	return h.s.store.EachExtension(name, fn)
 }
-func (h host) Save(name, org string, v any) error   { return h.s.store.SaveExtension(name, org, v) }
-func (h host) Seal(plain string) (string, error)    { return h.s.store.Seal(plain) }
-func (h host) Unseal(sealed string) (string, error) { return h.s.store.Unseal(sealed) }
-func (h host) PublicURL() string                    { return h.s.PublicURL }
-func (h host) Log() *slog.Logger                    { return h.s.log }
+func (h host) Get(name, org string, v any) (bool, error) { return h.s.store.GetExtension(name, org, v) }
+func (h host) Update(ctx context.Context, name, org string, v any, fn func() error) error {
+	return h.s.store.UpdateExtension(ctx, name, org, v, fn)
+}
+func (h host) Claim(name, key, org string) error {
+	if err := h.s.store.ClaimKey(name, key, org); errors.Is(err, ErrTaken) {
+		return extensions.ErrTaken
+	} else {
+		return err
+	}
+}
+func (h host) Release(name, key, org string) error          { return h.s.store.ReleaseKey(name, key, org) }
+func (h host) Owner(name, key string) (string, bool, error) { return h.s.store.KeyOwner(name, key) }
+func (h host) Once(name, id string) bool                    { return h.s.store.Once(name, id) }
+func (h host) Seal(plain string) (string, error)            { return h.s.store.Seal(plain) }
+func (h host) Unseal(sealed string) (string, error)         { return h.s.store.Unseal(sealed) }
+func (h host) PublicURL() string                            { return h.s.PublicURL }
+func (h host) Log() *slog.Logger                            { return h.s.log }
 
 // ext is the caller as extensions see it.
 func (c caller) ext() extensions.Caller {
