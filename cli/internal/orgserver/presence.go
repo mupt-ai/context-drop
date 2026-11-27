@@ -73,6 +73,24 @@ func (s *Store) Where(org, machine string) (string, bool) {
 	return server, err == nil && server != ""
 }
 
+// Holding returns the IDs of the connections presence says server holds.
+func (s *Store) Holding(server string) (map[string]bool, error) {
+	rows, err := s.db.Query(`SELECT conn FROM presence WHERE server = ?`, server)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	held := map[string]bool{}
+	for rows.Next() {
+		var conn string
+		if err := rows.Scan(&conn); err != nil {
+			return nil, err
+		}
+		held[conn] = true
+	}
+	return held, rows.Err()
+}
+
 // Agents returns every agent the org's machines last reported; agents of a machine with no live
 // connection are offline.
 func (s *Store) Agents(org string) ([]pool.Agent, error) {

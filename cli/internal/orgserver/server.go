@@ -53,7 +53,8 @@ type key struct{ org, name string }
 // database, so every server sees them.
 type machine struct {
 	conn    *websocket.Conn
-	id      string // the connection's ID in the presence table
+	id      string    // the connection's ID in the presence table
+	since   time.Time // when the connection was made
 	pending map[string]chan pool.Frame
 }
 
@@ -93,10 +94,32 @@ func (s *Server) Run(ctx context.Context) {
 			if err := s.store.Beat(s.ID); err != nil {
 				s.log.Warn("heartbeat", "err", err)
 			}
+			if s.relay.dsn != "" {
+				s.dropStale()
+			}
 		case <-sweep.C:
 			if err := s.store.Sweep(); err != nil {
 				s.log.Warn("sweep", "err", err)
 			}
+		}
+	}
+}
+
+// dropStale closes connections presence no longer gives to this server: the machine left through
+// another server, or reconnected to one while this socket has not yet failed.
+func (s *Server) dropStale() {
+	held, err := s.store.Holding(s.ID)
+	if err != nil {
+		s.log.Warn("presence", "err", err)
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k, m := range s.machines {
+		// A connection younger than a heartbeat may not be recorded yet.
+		if m.conn != nil && !held[m.id] && time.Since(m.since) > heartbeat {
+			m.conn.Close(websocket.StatusPolicyViolation, "connected elsewhere or left the org")
+			s.log.Info("dropped a stale connection", "org", k.org, "machine", k.name)
 		}
 	}
 }
@@ -310,7 +333,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request, c caller)
 		}
 	}
 	connID := newID()
-	m.conn, m.id, m.pending = conn, connID, map[string]chan pool.Frame{}
+	m.conn, m.id, m.since, m.pending = conn, connID, time.Now(), map[string]chan pool.Frame{}
 	s.mu.Unlock()
 	if err := s.store.Connected(c.org, c.machine, s.ID, connID); err != nil {
 		s.log.Warn("presence", "err", err)
@@ -469,12 +492,14 @@ func (s *Server) callFor(ctx context.Context, timeout time.Duration, org, name, 
 	if err != nil {
 		return nil, pool.AsError(err)
 	}
-	s.mu.Lock()
-	m := s.machines[key{org, name}]
-	local := m != nil && m.conn != nil
-	s.mu.Unlock()
-	if !local && s.relay.dsn != "" {
-		if server, ok := s.store.Where(org, name); ok && server != s.ID {
+	// Presence decides, not a local socket: after the machine reconnects to another server, this
+	// server's old socket can stay open until its keepalive fails.
+	if s.relay.dsn != "" {
+		server, ok := s.store.Where(org, name)
+		if !ok {
+			return nil, pool.Errorf("offline", "machine %s is not connected", name)
+		}
+		if server != s.ID {
 			return s.relay.forward(ctx, server, timeout, org, name, method, raw)
 		}
 	}

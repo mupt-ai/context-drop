@@ -189,13 +189,19 @@ func (r *relay) serve(id string) {
 		return
 	}
 	var from, org, machine, method, input string
-	var timeoutMS int64
-	err = r.s.store.db.QueryRow(`SELECT from_server, org, machine, method, input, timeout_ms FROM relay WHERE id = ?`, id).Scan(&from, &org, &machine, &method, &input, &timeoutMS)
+	var timeoutMS, created int64
+	err = r.s.store.db.QueryRow(`SELECT from_server, org, machine, method, input, timeout_ms, created FROM relay WHERE id = ?`, id).Scan(&from, &org, &machine, &method, &input, &timeoutMS, &created)
 	if err != nil {
 		return
 	}
+	// The caller stops waiting timeout after it wrote the call, so the call gets only what is left;
+	// a call run after the caller gave up could be run again by a retry.
+	left := time.Until(time.UnixMilli(created + timeoutMS))
+	if left <= 0 {
+		return
+	}
 	ctx := context.Background()
-	out, perr := r.s.callLocal(ctx, time.Duration(timeoutMS)*time.Millisecond, org, machine, method, json.RawMessage(input))
+	out, perr := r.s.callLocal(ctx, left, org, machine, method, json.RawMessage(input))
 	var outS, errS *string
 	if out != nil {
 		v := string(out)
