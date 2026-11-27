@@ -96,6 +96,7 @@ docker run --rm -p 8080:8080 \
 | `CONTEXT_DROP_UPLOAD_BYTES_PER_HOUR` | no | `262144000` | Anonymous upload bytes per client IP per hour; `0` disables. |
 | `CONTEXT_DROP_PROXY_HOPS` | behind a proxy | `0` | Trusted proxies appending to `X-Forwarded-For`; the client is the entry that many from the right. |
 | `CONTEXT_DROP_ADMIN_TOKEN` | to create orgs | unset | Bearer token for `POST /v1/orgs` and `POST /v1/orgs/{org}/join-token`; unset disables both. |
+| `CONTEXT_DROP_DATABASE_URL` | no | unset | Postgres URL or DSN. Servers sharing one database act as one server; unset uses SQLite (`CONTEXT_DROP_ORG_STATE`). `context-drop-server import ORGS_JSON [MODS_DIR]` copies an older server's state in. |
 | `CONTEXT_DROP_ORG_STATE` | no | `<data dir>/orgs.db` | SQLite database of orgs, joined machines (credentials stored as hashes), and extensions' state. An `orgs.json` beside it from an older server is imported once. With GCS storage it is copied to `state/` in the bucket every 5 minutes when it changed, and restored from there when the disk has none. |
 | `CONTEXT_DROP_DENO` | for mods | `deno` on PATH | Deno executable that runs [mods](mods.md); without it, mods are off. |
 | `CONTEXT_DROP_MODS_DIR` | no | `<data dir>/mods` | Deployed mods and their key-value data. |
@@ -120,7 +121,7 @@ Machines hold a WebSocket to `GET /v1/{org}/connect`; `POST /v1/{org}/list`, `/r
 
 ## contextdrop.dev
 
-`https://contextdrop.dev` runs on one VM, `context-drop` in GCP project `context-drop` (us-central1-a, e2-medium, static IP `130.211.238.184`, daily disk snapshots kept 7 days). Caddy terminates TLS and proxies to the server, which runs as the systemd unit `context-drop`. Drops are stored in the `context-drop-prod` bucket; orgs live in the SQLite database `/var/lib/context-drop/orgs.db` on the VM's disk, backed up to `gs://context-drop-prod/state/` (latest plus one copy a day).
+`https://contextdrop.dev` runs on Cloud Run (service `context-drop` in GCP project `context-drop`, us-central1, 1–2 servers) with its state in Cloud SQL Postgres (`context-drop:us-central1:context-drop`, daily backups and point-in-time recovery). Servers share everything through the database, including which machine is connected to which server; a call for a machine on another server is relayed through Postgres. Drops are stored in the `context-drop-prod` bucket. Deploy with `deploy/cloudrun/deploy.sh`. The old VM (`deploy/vm`) only forwards to Cloud Run until DNS points at Cloud Run directly.
 
 Deploy the current checkout with `deploy/vm/deploy.sh`. It builds the server, copies it with the settings in `deploy/vm/env` and the admin token from Secret Manager (`context-drop-admin-token`), and restarts it. When `context-drop-slack-client-id` exists in Secret Manager, it also loads `context-drop-slack-client-secret`, `context-drop-slack-signing-secret`, and `context-drop-slack-key`, which turns on [Slack](slack.md) with the shared production app and [Linear](linear.md). Restarting drops every daemon's connection for a second; they reconnect on their own. Logs: `gcloud compute ssh context-drop --zone us-central1-a --project context-drop --tunnel-through-iap -- sudo journalctl -u context-drop -f`. SSH is open only to Google's IAP range (`35.235.240.0/20`), so it always goes through `--tunnel-through-iap`.
 
